@@ -59,6 +59,7 @@ Uncapped, a heavy query on an 8 GB machine with little free disk can crash the c
 ## Invariants
 
 - Every screen sees only data with `filed <= as_of`. No look-ahead.
+- Schema changes are append-only migrations in `src/db/schema.py`. `connect()` applies pending ones; it refuses a database newer than the code.
 - Fact rows are never updated. Restatements are new rows.
 - Market cap = raw close on `as_of` x cover-page shares. Historical share trends are split-adjusted.
 - Conviction buys = non-derivative, code `P`, acquired `A`, price > 0, not a 10b5-1 plan.

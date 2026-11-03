@@ -94,25 +94,14 @@ def upsert_note(path: Path, auto_frontmatter: dict, auto_body: str) -> bool:
 class PersonRegistry:
     """Maps any observed name to one canonical note, keyed by SEC CIK when known.
 
-    Backed by a DuckDB table so resolution survives restarts:
-        person(cik INTEGER PRIMARY KEY, canonical VARCHAR UNIQUE, aliases VARCHAR[])
-    Names from proxies (no CIK) resolve only against people already linked to the
-    same issuer; anything ambiguous goes to Executives/_unresolved/ for review
-    instead of minting a new node.
-    """
-
-    DDL = """
-    CREATE TABLE IF NOT EXISTS person (
-        cik INTEGER PRIMARY KEY, canonical VARCHAR NOT NULL UNIQUE, aliases VARCHAR[] NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS person_issuer (
-        cik INTEGER NOT NULL, issuer_cik INTEGER NOT NULL, PRIMARY KEY (cik, issuer_cik)
-    );
+    Backed by the person and person_issuer tables (src/db/schema.py) so resolution
+    survives restarts. Names from proxies (no CIK) resolve only against people already
+    linked to the same issuer; anything ambiguous goes to Executives/_unresolved/ for
+    review instead of minting a new node.
     """
 
     def __init__(self, con):
         self.con = con
-        con.execute(self.DDL)
 
     @staticmethod
     def display_name(sec_name: str) -> str:
