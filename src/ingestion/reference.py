@@ -59,13 +59,21 @@ COMPANY_SCHEMA = pa.schema([
 ])
 
 
+def _key(sha256: str) -> str:
+    return f"submissions@{sha256[:16]}"
+
+
+def is_loaded(con: duckdb.DuckDBPyConnection, sha256: str | None) -> bool:
+    return bool(sha256) and ledger.is_done(con, _key(sha256), "companies", SCHEMA_VERSION)
+
+
 def load_companies_zip(con: duckdb.DuckDBPyConnection, path: Path, sha256: str) -> int:
     """Upsert company profiles from submissions.zip in one bulk statement.
 
     Most of the ~900k files are individual insiders with no SIC code and no ticker;
     they are skipped because the screen only needs operating companies.
     """
-    key = f"submissions@{sha256[:16]}"
+    key = _key(sha256)
     if ledger.is_done(con, key, "companies", SCHEMA_VERSION):
         return 0
     rows = []

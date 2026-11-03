@@ -162,8 +162,22 @@ CREATE TABLE IF NOT EXISTS person_issuer (
 
 # Append-only. Never edit a migration that has run on a real database; add a new
 # (version, sql) pair instead. Each one runs once, inside its own transaction.
+# Migration 2: count facts per filing, so a later snapshot that adds facts to a known
+# filing is noticed, and register filings loaded before loaded_filings existed (M0
+# databases), which would otherwise be replayed into xbrl_facts' old primary key.
+FILING_COUNTS_DDL = """
+ALTER TABLE loaded_filings ADD COLUMN n_facts BIGINT;
+INSERT INTO loaded_filings (cik, accn)
+    SELECT DISTINCT f.cik, f.accn FROM xbrl_facts f
+    ANTI JOIN loaded_filings l ON l.cik = f.cik AND l.accn = f.accn;
+UPDATE loaded_filings SET n_facts = c.n
+    FROM (SELECT cik, accn, count(*) AS n FROM xbrl_facts GROUP BY cik, accn) c
+    WHERE loaded_filings.cik = c.cik AND loaded_filings.accn = c.accn;
+"""
+
 MIGRATIONS: list[tuple[int, str]] = [
     (1, BASELINE_DDL),
+    (2, FILING_COUNTS_DDL),
 ]
 
 # Macros are code, not data: recreated on every connect so edits always take effect.
