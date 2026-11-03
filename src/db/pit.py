@@ -24,7 +24,7 @@ def concept_sql(policy: Policy) -> str:
     order = "f.filed ASC, f.accn ASC" if policy == "as_first_reported" else "f.filed DESC, f.accn DESC"
     return f"""
     SELECT f.cik, f.period_start, f.period_end, f.period_days, f.period_kind, f.fy, f.fp,
-           f.value, f.taxonomy, f.tag, f.unit, f.accn, f.filed, m.priority
+           f.value, f.taxonomy, f.tag, f.unit, f.accn, f.filed, m.priority, f.form
     FROM xbrl_facts f
     JOIN concept_map m
       ON m.concept = $concept AND m.taxonomy = f.taxonomy AND m.tag = f.tag AND m.unit = f.unit

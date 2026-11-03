@@ -94,25 +94,14 @@ def upsert_note(path: Path, auto_frontmatter: dict, auto_body: str) -> bool:
 class PersonRegistry:
     """Maps any observed name to one canonical note, keyed by SEC CIK when known.
 
-    Backed by a DuckDB table so resolution survives restarts:
-        person(cik INTEGER PRIMARY KEY, canonical VARCHAR UNIQUE, aliases VARCHAR[])
-    Names from proxies (no CIK) resolve only against people already linked to the
-    same issuer; anything ambiguous goes to Executives/_unresolved/ for review
-    instead of minting a new node.
-    """
-
-    DDL = """
-    CREATE TABLE IF NOT EXISTS person (
-        cik INTEGER PRIMARY KEY, canonical VARCHAR NOT NULL UNIQUE, aliases VARCHAR[] NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS person_issuer (
-        cik INTEGER NOT NULL, issuer_cik INTEGER NOT NULL, PRIMARY KEY (cik, issuer_cik)
-    );
+    Backed by the person and person_issuer tables (src/db/schema.py) so resolution
+    survives restarts. Names from proxies (no CIK) resolve only against people already
+    linked to the same issuer; anything ambiguous goes to Executives/_unresolved/ for
+    review instead of minting a new node.
     """
 
     def __init__(self, con):
         self.con = con
-        con.execute(self.DDL)
 
     @staticmethod
     def display_name(sec_name: str) -> str:
@@ -124,10 +113,10 @@ class PersonRegistry:
 
     def register(self, cik: int, sec_name: str, issuer_cik: int) -> str:
         name = slug(self.display_name(sec_name))
-        row = self.con.execute("SELECT canonical, aliases FROM person WHERE cik = ?", [cik]).fetchone()
+        row = next(iter(self.con.execute("SELECT canonical, aliases FROM person WHERE cik = ?", [cik]).fetchall()), None)
         if row is None:
             canonical = name
-            if self.con.execute("SELECT 1 FROM person WHERE canonical = ?", [canonical]).fetchone():
+            if self.con.execute("SELECT 1 FROM person WHERE canonical = ?", [canonical]).fetchall():
                 canonical = f"{name} ({cik})"  # two different people, same name
             self.con.execute("INSERT INTO person VALUES (?, ?, ?)", [cik, canonical, [name, sec_name]])
         else:
@@ -156,5 +145,5 @@ class PersonRegistry:
         return hits.pop() if len(hits) == 1 else None
 
     def aliases(self, canonical: str) -> list[str]:
-        row = self.con.execute("SELECT aliases FROM person WHERE canonical = ?", [canonical]).fetchone()
+        row = next(iter(self.con.execute("SELECT aliases FROM person WHERE canonical = ?", [canonical]).fetchall()), None)
         return [a for a in (row[0] if row else []) if a != canonical]

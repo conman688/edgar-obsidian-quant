@@ -1,16 +1,24 @@
 """DuckDB schema for point-in-time SEC fundamentals, insider flow and the run ledger.
 
 Invariants:
+- Schema changes are append-only MIGRATIONS; connect() applies pending ones.
 - Fact rows are immutable. A restatement (10-K/A, recast comparatives in a later
   10-K) arrives as a new row with a new accession number. Nothing is UPDATEd.
 - `filed` is the date the market could know a number. Every screen filters on it.
-- Instant facts store period_start = period_end so the composite key has no NULLs.
+- Instant facts store period_start = period_end so key columns have no NULLs.
+- xbrl_facts has no PRIMARY KEY: an index over ~100M rows would dominate memory and
+  load time. Uniqueness is enforced per filing by the loader via loaded_filings.
 """
 from __future__ import annotations
 
 import duckdb
 
-DDL = """
+from src import config
+
+# Migration 1 is the schema as of M1. Its CREATE ... IF NOT EXISTS statements also
+# adopt databases built before migrations existed: the tables are already there,
+# so applying it only records the version.
+BASELINE_DDL = """
 CREATE TABLE IF NOT EXISTS xbrl_facts (
     cik           INTEGER NOT NULL,
     taxonomy      VARCHAR NOT NULL,          -- 'us-gaap' | 'dei' | 'ifrs-full'
@@ -26,8 +34,40 @@ CREATE TABLE IF NOT EXISTS xbrl_facts (
     accn          VARCHAR NOT NULL,
     filed         DATE    NOT NULL,
     frame         VARCHAR,
-    value         DOUBLE  NOT NULL,
-    PRIMARY KEY (cik, taxonomy, tag, unit, period_start, period_end, accn)
+    value         DOUBLE  NOT NULL
+);
+
+-- Every (cik, accn) whose facts are fully in xbrl_facts. A filing's facts never change,
+-- so a filing listed here is skipped on reload.
+CREATE TABLE IF NOT EXISTS loaded_filings (
+    cik   INTEGER NOT NULL,
+    accn  VARCHAR NOT NULL,
+    PRIMARY KEY (cik, accn)
+);
+
+-- Current snapshot, replaced each run. Tickers get reused, so CIK is the only
+-- durable key; tickers are for display and lookup only.
+CREATE TABLE IF NOT EXISTS tickers (
+    cik         INTEGER NOT NULL,
+    ticker      VARCHAR NOT NULL,
+    name        VARCHAR,
+    exchange    VARCHAR,
+    fetched_on  DATE    NOT NULL,
+    PRIMARY KEY (ticker)
+);
+
+CREATE TABLE IF NOT EXISTS companies (
+    cik               INTEGER PRIMARY KEY,
+    name              VARCHAR,
+    sic               INTEGER,
+    sic_description   VARCHAR,
+    fiscal_year_end   VARCHAR,          -- 'MMDD'
+    entity_type       VARCHAR,
+    filer_category    VARCHAR,
+    exchanges         VARCHAR[],
+    tickers           VARCHAR[],
+    is_financial      BOOLEAN NOT NULL, -- SIC 6000-6799: EV/EBIT meaningless
+    is_shell          BOOLEAN NOT NULL  -- SIC 6770 blank checks / SPACs
 );
 
 -- Ratio = new shares per old share. 2-for-1 forward split = 2.0, 1-for-10 reverse = 0.1.
@@ -107,6 +147,27 @@ CREATE TABLE IF NOT EXISTS llm_cache (
     created_at  TIMESTAMP NOT NULL DEFAULT current_timestamp
 );
 
+CREATE TABLE IF NOT EXISTS person (
+    cik        INTEGER PRIMARY KEY,
+    canonical  VARCHAR NOT NULL UNIQUE,
+    aliases    VARCHAR[] NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS person_issuer (
+    cik         INTEGER NOT NULL,
+    issuer_cik  INTEGER NOT NULL,
+    PRIMARY KEY (cik, issuer_cik)
+);
+"""
+
+# Append-only. Never edit a migration that has run on a real database; add a new
+# (version, sql) pair instead. Each one runs once, inside its own transaction.
+MIGRATIONS: list[tuple[int, str]] = [
+    (1, BASELINE_DDL),
+]
+
+# Macros are code, not data: recreated on every connect so edits always take effect.
+MACROS = """
 CREATE OR REPLACE MACRO split_factor(p_cik, p_date) AS (
     SELECT coalesce(product(ratio), 1.0) FROM splits WHERE cik = p_cik AND ex_date > p_date
 );
@@ -157,10 +218,55 @@ CONCEPT_SEED: list[tuple[str, str, str, str, int]] = [
 ]
 
 
-def connect(path: str = "data/edgar.duckdb") -> duckdb.DuckDBPyConnection:
-    con = duckdb.connect(path)
-    con.execute(DDL)
-    con.executemany(
-        "INSERT INTO concept_map VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING", CONCEPT_SEED
-    )
+def migrate(con: duckdb.DuckDBPyConnection,
+            migrations: list[tuple[int, str]] = MIGRATIONS) -> list[int]:
+    """Apply pending migrations in version order. Returns the versions applied."""
+    con.execute("""CREATE TABLE IF NOT EXISTS schema_migrations (
+        version INTEGER PRIMARY KEY, applied_at TIMESTAMP NOT NULL DEFAULT current_timestamp)""")
+    applied = {r[0] for r in con.execute("SELECT version FROM schema_migrations").fetchall()}
+    known = {v for v, _ in migrations}
+    if applied - known:
+        raise RuntimeError(f"database schema is at version {max(applied)} but this code only knows "
+                           f"up to {max(known)}; update the code before opening this database")
+    done = []
+    for version, sql in sorted(migrations):
+        if version in applied:
+            continue
+        con.begin()
+        try:
+            con.execute(sql)
+            con.execute("INSERT INTO schema_migrations (version) VALUES (?)", [version])
+            con.commit()
+        except BaseException:
+            con.rollback()
+            raise
+        done.append(version)
+    return done
+
+
+def sync_concept_map(con: duckdb.DuckDBPyConnection) -> None:
+    """Make concept_map equal CONCEPT_SEED. The seed in code is the source of truth,
+    so changed priorities and removed tags reach existing databases too."""
+    current = {tuple(r) for r in con.execute("SELECT * FROM concept_map").fetchall()}
+    if current == set(CONCEPT_SEED):
+        return
+    con.begin()
+    try:
+        con.execute("DELETE FROM concept_map")
+        con.executemany("INSERT INTO concept_map VALUES (?, ?, ?, ?, ?)", CONCEPT_SEED)
+        con.commit()
+    except BaseException:
+        con.rollback()
+        raise
+
+
+def connect(path: str = str(config.DB_PATH)) -> duckdb.DuckDBPyConnection:
+    con = duckdb.connect(path, config={
+        "memory_limit": config.DB_MEMORY_LIMIT,
+        "max_temp_directory_size": config.DB_TEMP_MAX,
+        "threads": config.DB_THREADS,
+    })
+    migrate(con)
+    con.execute(MACROS)
+    sync_concept_map(con)
     return con
