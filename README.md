@@ -41,3 +41,5 @@ SEC requires a `User-Agent` with a real contact email and caps traffic at 10 req
 
 Done: schema, PIT layer, screens, Form 4 parser, Obsidian writer, tests (synthetic data).
 Not done: CLI, price loader, split loader, live SEC run, YoY footnote redline, Jinja templates.
+
+See [ROADMAP.md](ROADMAP.md) for goals, milestones and acceptance checks.
