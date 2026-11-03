@@ -20,9 +20,15 @@ uv run python -m src.cli stats
 uv run python -m src.cli facts AAPL revenue --as-of 2024-06-30
 ```
 
-`ingest all` downloads the ticker map, `submissions.zip` (company profiles, SIC codes)
-and `companyfacts.zip` (all XBRL financials). Re-running skips anything SEC has not
-changed. Raw zips are deleted after loading unless `--keep-raw` is passed.
+`ingest all` downloads the ticker map, `submissions.zip` (company profiles, SIC codes),
+`companyfacts.zip` (all XBRL financials) and daily prices. Re-running skips anything SEC
+has not changed. Raw zips are deleted after loading unless `--keep-raw` is passed.
+
+`ingest prices` loads daily closes, volume, splits and dividends from Yahoo Finance
+(via yfinance, unofficial) for non-financial NYSE and Nasdaq companies from 2010
+(`--include-otc` adds OTC names, `--ticker` limits to given tickers). Yahoo adjusts
+history for later splits; the loader stores raw values as printed on the day, so they
+line up with as-filed share counts. Re-running fetches only the last week onward.
 
 First full load (2026-11-02, 8 GB MacBook):
 
@@ -31,8 +37,10 @@ First full load (2026-11-02, 8 GB MacBook):
 | tickers | 1 request | 4 s | 10,410 tickers |
 | companies | 1.6 GB | 2.8 min | 75,242 company profiles |
 | facts | 1.4 GB | 10 min | 17,087 companies, 123.6M facts, 424k filings |
+| prices (first) | Yahoo, 4,184 tickers | 6.1 min | 11.2M daily rows from 2010, 2,823 splits |
+| prices (refresh) | last week only | 3.4 min | network-bound: one request per ticker |
 
-Database size: 3.1 GB. Peak free disk needed during load: about 5 GB (zip + database).
+Database size: 3.1 GB with prices. Peak free disk needed during load: about 5 GB (zip + database).
 
 DuckDB is capped at 2 GB RAM and 4 GB of spill files (`EOQ_DB_MEMORY`, `EOQ_DB_TEMP_MAX`).
 Uncapped, a heavy query on an 8 GB machine with little free disk can crash the computer.
@@ -50,11 +58,16 @@ Uncapped, a heavy query on an 8 GB machine with little free disk can crash the c
 | `src/ingestion/sec.py` | Rate-limited SEC client, streaming conditional download |
 | `src/ingestion/companyfacts.py` | Loads SEC `companyfacts.zip` into `xbrl_facts`, per-filing idempotent |
 | `src/ingestion/reference.py` | Ticker map and company profiles (SIC, fiscal year end) |
+| `src/ingestion/prices.py` | Yahoo daily prices, splits, dividends; raw-price rebuild, coverage tracking |
 | `src/ingestion/form4_insider.py` | Form 4 XML parser |
 | `src/llm/schemas.py` | Optional quote-anchored extraction guard (only if an LLM is added) |
 | `src/obsidian/writer.py` | Atomic note writer, AUTO-block merge, CIK-keyed person registry |
 | `tests/test_failure_modes.py` | One test per audited failure mode |
 | `tests/test_ingest.py` | Bulk load idempotency, crash resume, reference data, conditional download |
+| `tests/test_ingest_recovery.py` | 304 after failed or filtered loads, M0 upgrade, facts added to known filings |
+| `tests/test_schema.py` | Migrations: fresh, legacy adoption, new, failing, newer-than-code |
+| `tests/test_prices.py` | Split undo, refresh idempotency, primary-ticker choice, failed batches |
+| `tests/test_review_fixes.py` | Price split direction, filing order before tag priority |
 
 ## Invariants
 
@@ -72,7 +85,8 @@ SEC requires a `User-Agent` with a real contact email and caps traffic at 10 req
 
 ## Status
 
-Done: schema, PIT layer, screens, Form 4 parser, Obsidian writer, M1 ingestion (live SEC data), CLI.
-Not done: price loader, split loader, Form 4 ingestion, YoY footnote redline, Jinja templates.
+Done: schema with migrations, PIT layer, screens, Form 4 parser, Obsidian writer, M1 ingestion
+(live SEC data), M2 prices/splits/dividends, CLI.
+Not done: Form 4 ingestion, screener CLI, backtest, vault sync, YoY footnote redline, Jinja templates.
 
 See [ROADMAP.md](ROADMAP.md) for goals, milestones and acceptance checks.

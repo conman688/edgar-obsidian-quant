@@ -36,3 +36,14 @@ def test_first_reported_ignores_later_higher_priority_tag(con):
     assert value(date(2022, 1, 1), "as_first_reported") == 100.0
     assert value(date(2022, 1, 1), "as_last_known") == 90.0
     assert value(date(2020, 6, 1), "as_last_known") == 100.0
+
+
+def test_market_cap_adjusts_cover_shares_for_splits_after_the_cover_date(con):
+    # NVDA 2024: cover shares counted 2024-05-24, 10-for-1 split 2024-06-10, next 10-Q in August.
+    load_docs(con, [doc({("dei", "EntityCommonStockSharesOutstanding", "shares"):
+                         [fact(None, "2024-05-24", 2_460_000_000, "2024-05-29", "q1")]})])
+    con.execute("INSERT INTO prices (cik, ticker, price_date, close_raw, source) VALUES (?, 'X', DATE '2024-06-20', 130.78, 't')", [CIK])
+    con.execute("INSERT INTO splits VALUES (?, DATE '2024-06-10', 10.0, 't')", [CIK])
+    rel = valuation(con, date(2024, 6, 21))
+    row = dict(zip(rel.columns, rel.fetchall()[0]))
+    assert row["mcap"] == pytest.approx(24_600_000_000 * 130.78)
