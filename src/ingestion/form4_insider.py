@@ -12,43 +12,12 @@ field semantics are explicit:
 from __future__ import annotations
 
 import re
-import threading
-import time
 import xml.etree.ElementTree as ET
 from datetime import date
 
 import duckdb
-import requests
 
 _10B5_FOOTNOTE = re.compile(r"10b5-?1", re.IGNORECASE)
-
-
-class SecClient:
-    """Process-wide token bucket. SEC fair access caps at 10 req/s; we stay at 8."""
-
-    def __init__(self, user_agent: str, rate_per_s: float = 8.0):
-        if "@" not in user_agent:
-            raise ValueError("SEC User-Agent must include a contact email")
-        self._session = requests.Session()
-        self._session.headers.update({"User-Agent": user_agent, "Accept-Encoding": "gzip, deflate"})
-        self._interval = 1.0 / rate_per_s
-        self._lock = threading.Lock()
-        self._next = 0.0
-
-    def get(self, url: str, retries: int = 5) -> bytes:
-        for attempt in range(retries):
-            with self._lock:
-                wait = self._next - time.monotonic()
-                if wait > 0:
-                    time.sleep(wait)
-                self._next = max(self._next, time.monotonic()) + self._interval
-            r = self._session.get(url, timeout=30)
-            if r.status_code in (403, 429, 503):
-                time.sleep(min(60, 2 ** attempt * 5))  # SEC 403 = throttled; back off hard
-                continue
-            r.raise_for_status()
-            return r.content
-        raise RuntimeError(f"SEC throttled after {retries} attempts: {url}")
 
 
 def _text(node: ET.Element | None, path: str) -> str | None:

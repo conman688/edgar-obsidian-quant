@@ -1,20 +1,48 @@
 """Load SEC companyfacts JSON (bulk companyfacts.zip or /api/xbrl/companyfacts) into xbrl_facts.
 
-Bulk zip is one ~1.3 GB download instead of thousands of API calls. Each fact's
-`filed` and `accn` are kept so restatements become new rows, not overwrites.
+Bulk zip is one download instead of thousands of API calls. Each fact keeps its
+`filed` and `accn`, so restatements become new rows, not overwrites.
+
+Idempotency: rows are inserted per whole filing (cik, accn) and only for filings
+not yet in loaded_filings, inside one transaction per batch. A crash mid-load
+leaves every filing either fully loaded or absent; a rerun fills in the rest.
 """
 from __future__ import annotations
 
 import json
+import re
+import time
 import zipfile
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from typing import Iterable, Iterator
+from typing import Callable, Iterable, Iterator
 
 import duckdb
+import pyarrow as pa
 
+from src.db import ledger
+
+SCHEMA_VERSION = 1
 KEEP_TAXONOMIES = {"us-gaap", "dei", "ifrs-full"}
-KEEP_FORMS = {"10-K", "10-K/A", "10-Q", "10-Q/A", "20-F", "20-F/A", "40-F", "10-KT"}
+KEEP_FORMS = {"10-K", "10-K/A", "10-Q", "10-Q/A", "20-F", "20-F/A", "40-F", "40-F/A", "10-KT", "10-KT/A"}
+_CIK_FILE = re.compile(r"CIK(\d{10})\.json$")
+
+ARROW_SCHEMA = pa.schema([
+    ("cik", pa.int32()), ("taxonomy", pa.string()), ("tag", pa.string()), ("unit", pa.string()),
+    ("period_start", pa.date32()), ("period_end", pa.date32()), ("period_days", pa.int32()),
+    ("period_kind", pa.string()), ("fy", pa.int32()), ("fp", pa.string()), ("form", pa.string()),
+    ("accn", pa.string()), ("filed", pa.date32()), ("frame", pa.string()), ("value", pa.float64()),
+])
+
+
+@dataclass
+class LoadStats:
+    files: int = 0
+    facts_seen: int = 0
+    facts_inserted: int = 0
+    seconds: float = 0.0
+    skipped: bool = False
 
 
 def period_kind(days: int) -> str:
@@ -52,31 +80,82 @@ def iter_fact_rows(doc: dict) -> Iterator[tuple]:
                     )
 
 
-def load_docs(con: duckdb.DuckDBPyConnection, docs: Iterable[dict], batch: int = 200_000) -> int:
-    """Insert facts idempotently; re-running the same file inserts zero new rows."""
-    sql = "INSERT INTO xbrl_facts VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING"
-    buf: list[tuple] = []
-    n = 0
-    for doc in docs:
-        for row in iter_fact_rows(doc):
-            buf.append(row)
-            if len(buf) >= batch:
-                con.executemany(sql, buf)
-                n += len(buf)
-                buf.clear()
-    if buf:
-        con.executemany(sql, buf)
-        n += len(buf)
+def _insert_batch(con: duckdb.DuckDBPyConnection, rows: list[tuple]) -> int:
+    cols = list(zip(*rows))
+    table = pa.Table.from_arrays([pa.array(c, type=f.type) for c, f in zip(cols, ARROW_SCHEMA)],
+                                 schema=ARROW_SCHEMA)
+    con.begin()
+    try:
+        con.register("batch_rows", table)
+        con.execute("""
+            CREATE OR REPLACE TEMP TABLE new_filings AS
+            SELECT DISTINCT b.cik, b.accn FROM batch_rows b
+            ANTI JOIN loaded_filings l ON l.cik = b.cik AND l.accn = b.accn
+        """)
+        n = con.execute("""
+            INSERT INTO xbrl_facts
+            SELECT DISTINCT b.* FROM batch_rows b SEMI JOIN new_filings n ON n.cik = b.cik AND n.accn = b.accn
+        """).fetchall()[0][0]
+        con.execute("INSERT INTO loaded_filings SELECT cik, accn FROM new_filings")
+        con.commit()
+    except BaseException:
+        con.rollback()
+        raise
+    finally:
+        con.unregister("batch_rows")
     return n
+
+
+def load_docs(con: duckdb.DuckDBPyConnection, docs: Iterable[dict], batch_rows: int = 500_000,
+              progress: Callable[[LoadStats], None] | None = None) -> LoadStats:
+    """Insert facts from companyfacts documents. Batches always hold whole companies."""
+    stats, buf, t0 = LoadStats(), [], time.monotonic()
+    for doc in docs:
+        stats.files += 1
+        buf.extend(iter_fact_rows(doc))
+        if len(buf) >= batch_rows:
+            stats.facts_seen += len(buf)
+            stats.facts_inserted += _insert_batch(con, buf)
+            buf = []
+            if progress:
+                progress(stats)
+    if buf:
+        stats.facts_seen += len(buf)
+        stats.facts_inserted += _insert_batch(con, buf)
+    stats.seconds = time.monotonic() - t0
+    return stats
 
 
 def iter_bulk_zip(path: Path, ciks: set[int] | None = None) -> Iterator[dict]:
     with zipfile.ZipFile(path) as z:
         for name in z.namelist():
-            if not name.endswith(".json"):
-                continue
-            if ciks is not None and int(name.removeprefix("CIK").removesuffix(".json")) not in ciks:
+            m = _CIK_FILE.search(name)
+            if not m or (ciks is not None and int(m.group(1)) not in ciks):
                 continue
             doc = json.loads(z.read(name))
-            if "facts" in doc:
-                yield doc
+            if not doc.get("facts"):
+                continue          # some files are just {}
+            if not doc.get("cik"):
+                doc["cik"] = int(m.group(1))  # a few files omit cik; the filename always carries it
+            yield doc
+
+
+def load_zip(con: duckdb.DuckDBPyConnection, path: Path, sha256: str, ciks: set[int] | None = None,
+             progress: Callable[[LoadStats], None] | None = None) -> LoadStats:
+    """Load one companyfacts.zip version. A full load of a version already done is skipped."""
+    key = f"companyfacts@{sha256[:16]}"
+    full = ciks is None
+    if full and ledger.is_done(con, key, "facts", SCHEMA_VERSION):
+        return LoadStats(skipped=True)
+    if full:
+        ledger.mark(con, key, "facts", SCHEMA_VERSION, "pending", sha256)
+    try:
+        stats = load_docs(con, iter_bulk_zip(path, ciks), progress=progress)
+    except BaseException as e:
+        if full:
+            ledger.mark(con, key, "facts", SCHEMA_VERSION, "failed", sha256, error=repr(e)[:500])
+        raise
+    if full:
+        ledger.mark(con, key, "facts", SCHEMA_VERSION, "done", sha256,
+                    output_ref=f"files={stats.files} inserted={stats.facts_inserted}")
+    return stats

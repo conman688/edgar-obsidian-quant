@@ -124,10 +124,10 @@ class PersonRegistry:
 
     def register(self, cik: int, sec_name: str, issuer_cik: int) -> str:
         name = slug(self.display_name(sec_name))
-        row = self.con.execute("SELECT canonical, aliases FROM person WHERE cik = ?", [cik]).fetchone()
+        row = next(iter(self.con.execute("SELECT canonical, aliases FROM person WHERE cik = ?", [cik]).fetchall()), None)
         if row is None:
             canonical = name
-            if self.con.execute("SELECT 1 FROM person WHERE canonical = ?", [canonical]).fetchone():
+            if self.con.execute("SELECT 1 FROM person WHERE canonical = ?", [canonical]).fetchall():
                 canonical = f"{name} ({cik})"  # two different people, same name
             self.con.execute("INSERT INTO person VALUES (?, ?, ?)", [cik, canonical, [name, sec_name]])
         else:
@@ -156,5 +156,5 @@ class PersonRegistry:
         return hits.pop() if len(hits) == 1 else None
 
     def aliases(self, canonical: str) -> list[str]:
-        row = self.con.execute("SELECT aliases FROM person WHERE canonical = ?", [canonical]).fetchone()
+        row = next(iter(self.con.execute("SELECT aliases FROM person WHERE canonical = ?", [canonical]).fetchall()), None)
         return [a for a in (row[0] if row else []) if a != canonical]

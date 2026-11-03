@@ -4,11 +4,15 @@ Invariants:
 - Fact rows are immutable. A restatement (10-K/A, recast comparatives in a later
   10-K) arrives as a new row with a new accession number. Nothing is UPDATEd.
 - `filed` is the date the market could know a number. Every screen filters on it.
-- Instant facts store period_start = period_end so the composite key has no NULLs.
+- Instant facts store period_start = period_end so key columns have no NULLs.
+- xbrl_facts has no PRIMARY KEY: an index over ~100M rows would dominate memory and
+  load time. Uniqueness is enforced per filing by the loader via loaded_filings.
 """
 from __future__ import annotations
 
 import duckdb
+
+from src import config
 
 DDL = """
 CREATE TABLE IF NOT EXISTS xbrl_facts (
@@ -26,8 +30,40 @@ CREATE TABLE IF NOT EXISTS xbrl_facts (
     accn          VARCHAR NOT NULL,
     filed         DATE    NOT NULL,
     frame         VARCHAR,
-    value         DOUBLE  NOT NULL,
-    PRIMARY KEY (cik, taxonomy, tag, unit, period_start, period_end, accn)
+    value         DOUBLE  NOT NULL
+);
+
+-- Every (cik, accn) whose facts are fully in xbrl_facts. A filing's facts never change,
+-- so a filing listed here is skipped on reload.
+CREATE TABLE IF NOT EXISTS loaded_filings (
+    cik   INTEGER NOT NULL,
+    accn  VARCHAR NOT NULL,
+    PRIMARY KEY (cik, accn)
+);
+
+-- Current snapshot, replaced each run. Tickers get reused, so CIK is the only
+-- durable key; tickers are for display and lookup only.
+CREATE TABLE IF NOT EXISTS tickers (
+    cik         INTEGER NOT NULL,
+    ticker      VARCHAR NOT NULL,
+    name        VARCHAR,
+    exchange    VARCHAR,
+    fetched_on  DATE    NOT NULL,
+    PRIMARY KEY (ticker)
+);
+
+CREATE TABLE IF NOT EXISTS companies (
+    cik               INTEGER PRIMARY KEY,
+    name              VARCHAR,
+    sic               INTEGER,
+    sic_description   VARCHAR,
+    fiscal_year_end   VARCHAR,          -- 'MMDD'
+    entity_type       VARCHAR,
+    filer_category    VARCHAR,
+    exchanges         VARCHAR[],
+    tickers           VARCHAR[],
+    is_financial      BOOLEAN NOT NULL, -- SIC 6000-6799: EV/EBIT meaningless
+    is_shell          BOOLEAN NOT NULL  -- SIC 6770 blank checks / SPACs
 );
 
 -- Ratio = new shares per old share. 2-for-1 forward split = 2.0, 1-for-10 reverse = 0.1.
@@ -157,8 +193,12 @@ CONCEPT_SEED: list[tuple[str, str, str, str, int]] = [
 ]
 
 
-def connect(path: str = "data/edgar.duckdb") -> duckdb.DuckDBPyConnection:
-    con = duckdb.connect(path)
+def connect(path: str = str(config.DB_PATH)) -> duckdb.DuckDBPyConnection:
+    con = duckdb.connect(path, config={
+        "memory_limit": config.DB_MEMORY_LIMIT,
+        "max_temp_directory_size": config.DB_TEMP_MAX,
+        "threads": config.DB_THREADS,
+    })
     con.execute(DDL)
     con.executemany(
         "INSERT INTO concept_map VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING", CONCEPT_SEED
