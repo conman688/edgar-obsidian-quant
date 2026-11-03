@@ -79,7 +79,8 @@ def valuation(con: duckdb.DuckDBPyConnection, as_of: date, policy: Policy = "as_
         QUALIFY row_number() OVER (PARTITION BY cik ORDER BY price_date DESC) = 1
     ),
     hi AS (
-        SELECT cik, max(close_raw * split_factor(cik, price_date) / split_factor(cik, $as_of)) AS hi_52w
+        -- Prices move opposite to share counts: a 10-for-1 split divides old prices by 10.
+        SELECT cik, max(close_raw / split_factor(cik, price_date) * split_factor(cik, $as_of)) AS hi_52w
         FROM prices WHERE price_date BETWEEN $as_of - INTERVAL 365 DAY AND $as_of GROUP BY cik
     ),
     base AS (
