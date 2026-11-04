@@ -87,6 +87,6 @@ def test_fact_added_to_existing_filing_is_loaded():
     v2["facts"]["us-gaap"]["OperatingIncomeLoss"] = {"units": {"USD": [
         fact("2023-01-01", "2023-12-31", 42.0, "2024-02-15", "a1")]}}
     s = companyfacts.load_docs(con, [v2])
-    assert s.facts_inserted == 1 and s.filings_grown == 1
+    assert s.facts_inserted == 2 and s.filings_changed == 1   # filing replaced: both rows rewritten
     assert companyfacts.load_docs(con, [v2]).facts_inserted == 0
     assert count(con) == 2

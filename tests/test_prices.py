@@ -49,7 +49,7 @@ def seed(con):
         (1, "Alphabet", 7370, ["GOOGL", "GOOG"], False), (2, "Nvidia", 3674, ["NVDA"], False),
         (3, "JPMorgan", 6021, ["JPM"], True), (4, "Delisted Co", 3674, ["GONE"], False),
         (5, "Pink Co", 3674, ["OTCX"], False)])
-    con.executemany("INSERT INTO loaded_filings VALUES (?, ?, 1)", [(c, f"a{c}") for c in range(1, 6)])
+    con.executemany("INSERT INTO loaded_filings (cik, accn, n_facts) VALUES (?, ?, 1)", [(c, f"a{c}") for c in range(1, 6)])
 
 
 class FakeYahoo:
