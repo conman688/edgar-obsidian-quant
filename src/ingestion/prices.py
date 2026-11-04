@@ -124,20 +124,26 @@ PRICE_SCHEMA = pa.schema([("cik", pa.int32()), ("ticker", pa.string()), ("price_
 
 def _store(con: duckdb.DuckDBPyConnection, batch: list[tuple[int, str, date]],
            frames: dict[str, pd.DataFrame], stats: PriceStats) -> None:
-    """Replace each company's rows from its window start onward, in one transaction."""
+    """Replace each company's prices, splits and dividends inside its refresh window.
+
+    Only companies that returned rows for their own window are replaced: an empty
+    window (no trading that week, or a batch start earlier than the company's) must
+    not delete what is stored. Yahoo's view of the window is authoritative, so a
+    split or dividend it no longer reports is removed with the window.
+    """
     now = datetime.now()
     prices: dict[str, list] = {f.name: [] for f in PRICE_SCHEMA}
-    splits, divs, status = [], [], []
+    windows, splits, divs, status, touched = [], [], [], [], []
     for cik, ticker, start in batch:
+        refresh = start != HISTORY_START
         df = frames.get(ticker)
-        if df is None:
-            status.append((cik, ticker, "no_data", None, None, "no rows from source", now))
-            stats.no_data += 1
-            stats.missing.append(ticker)
-            continue
-        raw, ratios = to_raw(df)
-        if raw.empty:
-            status.append((cik, ticker, "no_data", None, None, "no closes", now))
+        raw, ratios = to_raw(df) if df is not None else (None, None)
+        if raw is None or raw.empty:
+            if refresh and df is not None:
+                touched.append(("no rows in refresh window", now, cik))  # keep status and dates
+                continue
+            reason = "no rows from source" if df is None else "no closes"
+            status.append((cik, ticker, "no_data", None, None, reason, now))
             stats.no_data += 1
             stats.missing.append(ticker)
             continue
@@ -149,6 +155,7 @@ def _store(con: duckdb.DuckDBPyConnection, batch: list[tuple[int, str, date]],
         prices["close_raw"] += raw["close_raw"].tolist()
         prices["volume_raw"] += [None if pd.isna(v) else float(v) for v in raw["volume_raw"]]
         prices["source"] += [SOURCE] * n
+        windows.append((cik, start))
         splits += [(cik, d.date(), float(r), SOURCE) for d, r in ratios.items()]
         divs += [(cik, d.date(), float(v), SOURCE) for d, v in raw["dividend_raw"].items() if v > 0]
         status.append((cik, ticker, "ok", days[0], days[-1], None, now))
@@ -156,31 +163,35 @@ def _store(con: duckdb.DuckDBPyConnection, batch: list[tuple[int, str, date]],
         stats.price_rows += n
         stats.splits += len(ratios)
 
-    table = pa.Table.from_pydict(prices, schema=PRICE_SCHEMA)
-    windows = [(cik, start) for cik, ticker, start in batch if ticker in frames]
     con.begin()
     try:
         if windows:
-            # One set-based delete per batch: a DELETE per company would scan prices each time.
             con.register("windows", pa.table({"cik": pa.array([c for c, _ in windows], pa.int32()),
                                               "start": pa.array([d for _, d in windows], pa.date32())}))
+            # One set-based delete per table and batch: a DELETE per company would rescan prices.
             con.execute("DELETE FROM prices USING windows w WHERE prices.cik = w.cik AND prices.price_date >= w.start")
+            for table in ("splits", "dividends"):
+                con.execute(f"""DELETE FROM {table} USING windows w WHERE {table}.cik = w.cik
+                                AND {table}.ex_date >= w.start AND {table}.source = '{SOURCE}'""")
             con.unregister("windows")
-            con.register("price_rows", table)
+            con.register("price_rows", pa.Table.from_pydict(prices, schema=PRICE_SCHEMA))
             con.execute("INSERT INTO prices SELECT * FROM price_rows")
             con.unregister("price_rows")
         if splits:
-            con.executemany("INSERT OR REPLACE INTO splits VALUES (?, ?, ?, ?)", splits)
+            con.executemany("INSERT INTO splits VALUES (?, ?, ?, ?)", splits)
         if divs:
-            con.executemany("INSERT OR REPLACE INTO dividends VALUES (?, ?, ?, ?)", divs)
-        # Keep the earliest first_date seen: a refresh window starts late.
-        con.executemany("""
-            INSERT INTO price_status VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT (cik) DO UPDATE SET ticker = excluded.ticker, status = excluded.status,
-                first_date = least(price_status.first_date, excluded.first_date),
-                last_date = coalesce(excluded.last_date, price_status.last_date),
-                message = excluded.message, fetched_at = excluded.fetched_at
-        """, status)
+            con.executemany("INSERT INTO dividends VALUES (?, ?, ?, ?)", divs)
+        if status:
+            # Keep the earliest first_date seen: a refresh window starts late.
+            con.executemany("""
+                INSERT INTO price_status VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (cik) DO UPDATE SET ticker = excluded.ticker, status = excluded.status,
+                    first_date = least(price_status.first_date, excluded.first_date),
+                    last_date = coalesce(excluded.last_date, price_status.last_date),
+                    message = excluded.message, fetched_at = excluded.fetched_at
+            """, status)
+        if touched:
+            con.executemany("UPDATE price_status SET message = ?, fetched_at = ? WHERE cik = ?", touched)
         con.commit()
     except BaseException:
         con.rollback()
@@ -206,9 +217,10 @@ def load(con: duckdb.DuckDBPyConnection, exchanges: tuple[str, ...] = EXCHANGES,
             frames = download([t for _, t, _ in batch], start)
         except Exception as e:
             stats.errors += len(batch)
+            # status says the last attempt failed; first/last_date keep the stored coverage.
             con.executemany("""INSERT INTO price_status VALUES (?, ?, 'error', NULL, NULL, ?, ?)
-                               ON CONFLICT (cik) DO UPDATE SET message = excluded.message,
-                               fetched_at = excluded.fetched_at""",
+                               ON CONFLICT (cik) DO UPDATE SET status = 'error',
+                               message = excluded.message, fetched_at = excluded.fetched_at""",
                             [(cik, t, repr(e)[:300], datetime.now()) for cik, t, _ in batch])
             continue
         # A batch downloads from its earliest start; trim each company to its own window.

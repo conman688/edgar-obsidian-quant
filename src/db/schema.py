@@ -2,14 +2,18 @@
 
 Invariants:
 - Schema changes are append-only MIGRATIONS; connect() applies pending ones.
-- Fact rows are immutable. A restatement (10-K/A, recast comparatives in a later
-  10-K) arrives as a new row with a new accession number. Nothing is UPDATEd.
+- A restatement (10-K/A, recast comparatives in a later 10-K) arrives as new rows
+  under a new accession number; earlier filings are never overwritten by it. A
+  filing's own rows are replaced only when SEC's snapshot of that same filing
+  changes (facts added, removed or corrected), detected by its fingerprint.
 - `filed` is the date the market could know a number. Every screen filters on it.
 - Instant facts store period_start = period_end so key columns have no NULLs.
 - xbrl_facts has no PRIMARY KEY: an index over ~100M rows would dominate memory and
   load time. Uniqueness is enforced per filing by the loader via loaded_filings.
 """
 from __future__ import annotations
+
+from typing import Callable
 
 import duckdb
 
@@ -161,7 +165,8 @@ CREATE TABLE IF NOT EXISTS person_issuer (
 """
 
 # Append-only. Never edit a migration that has run on a real database; add a new
-# (version, sql) pair instead. Each one runs once, inside its own transaction.
+# (version, sql) pair instead. Each one runs once, inside its own transaction. A
+# migration is SQL, or a function when it must inspect the database first.
 # Migration 2: count facts per filing, so a later snapshot that adds facts to a known
 # filing is noticed, and register filings loaded before loaded_filings existed (M0
 # databases), which would otherwise be replayed into xbrl_facts' old primary key.
@@ -212,10 +217,49 @@ CREATE TABLE IF NOT EXISTS price_status (
 );
 """
 
-MIGRATIONS: list[tuple[int, str]] = [
+# A filing's fingerprint: order-independent hash of its distinct fact rows. `frame`
+# is left out on purpose: SEC attaches it to the most recently filed fact for a
+# period, so it can move between filings without the facts changing, and nothing
+# here reads it. Changing this expression marks every filing as changed once.
+FILING_FINGERPRINT = """bit_xor(hash(cik, taxonomy, tag, unit, period_start, period_end, period_days,
+                             period_kind, fy, fp, form, accn, filed, value))"""
+
+XBRL_FACTS_V4_DDL = """
+CREATE TABLE xbrl_facts_v4 (
+    cik INTEGER NOT NULL, taxonomy VARCHAR NOT NULL, tag VARCHAR NOT NULL, unit VARCHAR NOT NULL,
+    period_start DATE NOT NULL, period_end DATE NOT NULL, period_days INTEGER NOT NULL,
+    period_kind VARCHAR NOT NULL, fy INTEGER, fp VARCHAR, form VARCHAR NOT NULL, accn VARCHAR NOT NULL,
+    filed DATE NOT NULL, frame VARCHAR, value DOUBLE NOT NULL
+);
+INSERT INTO xbrl_facts_v4 SELECT * FROM xbrl_facts;
+DROP TABLE xbrl_facts;
+ALTER TABLE xbrl_facts_v4 RENAME TO xbrl_facts;
+"""
+
+
+def _filing_fingerprints(con: duckdb.DuckDBPyConnection) -> None:
+    """Migration 4: fingerprint every loaded filing, so a changed SEC snapshot of a known
+    filing replaces its rows. M0 databases still carry a PRIMARY KEY on xbrl_facts that
+    such a replacement can violate; it is dropped by rebuilding the table."""
+    has_pk = con.execute("""SELECT count(*) FROM duckdb_constraints()
+                            WHERE table_name = 'xbrl_facts' AND constraint_type = 'PRIMARY KEY'""").fetchall()[0][0]
+    if has_pk:
+        con.execute(XBRL_FACTS_V4_DDL)
+    con.execute("ALTER TABLE loaded_filings ADD COLUMN fingerprint UBIGINT")
+    con.execute(f"""
+        UPDATE loaded_filings SET fingerprint = f.fingerprint
+        FROM (SELECT cik, accn, {FILING_FINGERPRINT} AS fingerprint FROM xbrl_facts GROUP BY cik, accn) f
+        WHERE loaded_filings.cik = f.cik AND loaded_filings.accn = f.accn
+    """)
+
+
+Migration = str | Callable[[duckdb.DuckDBPyConnection], None]
+
+MIGRATIONS: list[tuple[int, Migration]] = [
     (1, BASELINE_DDL),
     (2, FILING_COUNTS_DDL),
     (3, PRICES_DDL),
+    (4, _filing_fingerprints),
 ]
 
 # Macros are code, not data: recreated on every connect so edits always take effect.
@@ -271,8 +315,9 @@ CONCEPT_SEED: list[tuple[str, str, str, str, int]] = [
 
 
 def migrate(con: duckdb.DuckDBPyConnection,
-            migrations: list[tuple[int, str]] = MIGRATIONS) -> list[int]:
+            migrations: list[tuple[int, Migration]] | None = None) -> list[int]:
     """Apply pending migrations in version order. Returns the versions applied."""
+    migrations = MIGRATIONS if migrations is None else migrations
     con.execute("""CREATE TABLE IF NOT EXISTS schema_migrations (
         version INTEGER PRIMARY KEY, applied_at TIMESTAMP NOT NULL DEFAULT current_timestamp)""")
     applied = {r[0] for r in con.execute("SELECT version FROM schema_migrations").fetchall()}
@@ -286,7 +331,7 @@ def migrate(con: duckdb.DuckDBPyConnection,
             continue
         con.begin()
         try:
-            con.execute(sql)
+            sql(con) if callable(sql) else con.execute(sql)
             con.execute("INSERT INTO schema_migrations (version) VALUES (?)", [version])
             con.commit()
         except BaseException:

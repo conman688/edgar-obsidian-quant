@@ -71,7 +71,7 @@ def ingest_facts(con, args) -> None:
     else:
         print(f"companyfacts: {stats.files:,} companies, {stats.facts_seen:,} facts read, "
               f"{stats.facts_inserted:,} inserted in {stats.seconds:,.0f}s"
-              f"{f'; {stats.filings_grown:,} known filings gained facts' if stats.filings_grown else ''}")
+              f"{f'; {stats.filings_changed:,} known filings changed and were replaced' if stats.filings_changed else ''}")
     # A --cik load is partial: keep the zip so the full load needs no second download.
     _finish(path, delete and not ciks, args.keep_raw)
 

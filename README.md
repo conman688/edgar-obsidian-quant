@@ -73,7 +73,9 @@ Uncapped, a heavy query on an 8 GB machine with little free disk can crash the c
 
 - Every screen sees only data with `filed <= as_of`. No look-ahead.
 - Schema changes are append-only migrations in `src/db/schema.py`. `connect()` applies pending ones; it refuses a database newer than the code.
-- Fact rows are never updated. Restatements are new rows.
+- Restatements are new rows under a new filing; earlier filings are never overwritten by them.
+  A filing's rows are replaced only when SEC's snapshot of that same filing changes (fingerprint).
+- A price refresh replaces prices, splits and dividends only inside windows that returned data.
 - Market cap = raw close on `as_of` x cover-page shares. Historical share trends are split-adjusted.
 - Conviction buys = non-derivative, code `P`, acquired `A`, price > 0, not a 10b5-1 plan.
 - Notes are written atomically. Only the `AUTO-GENERATED` block and auto frontmatter keys change.
