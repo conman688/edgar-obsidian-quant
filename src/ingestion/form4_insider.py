@@ -8,6 +8,10 @@ field semantics are explicit:
   so holdings are summed once per account, never across duplicate rows.
 - The 10b5-1 flag is True/False only when the filing states it. Pre-2023 filings
   without the checkbox and without a footnote stay NULL (unknown).
+- Only non-derivative rows are stored (stock, not options): nothing reads the
+  derivative table, and the bulk data set path stores the same subset.
+- Joint filings list several owners for the same shares; rows go to the owner with
+  the lowest CIK, the same rule the bulk data set path uses.
 """
 from __future__ import annotations
 
@@ -53,7 +57,10 @@ def _footnote_ids(node: ET.Element) -> list[str]:
 def parse_form4(xml: bytes, accn: str, filed: date) -> list[dict]:
     root = ET.fromstring(xml)
     issuer_cik = int(_text(root, "issuer/issuerCik") or 0)
-    footnotes = {f.get("id"): (f.text or "").strip() for f in root.iter("footnote")}
+    form_type = _text(root, "documentType")
+    period = _text(root, "periodOfReport")
+    period_of_report = date.fromisoformat(period[:10]) if period else None
+    footnotes = {f.get("id"): " ".join((f.text or "").split()) for f in root.iter("footnote")}
 
     # 10b5-1 checkbox: EDGAR schema updated 2023-03-20, required for filings from
     # 2023-04-01. Matched on any element whose tag mentions 10b5 rather than a single
@@ -78,20 +85,18 @@ def parse_form4(xml: bytes, accn: str, filed: date) -> list[dict]:
         })
     if not owners or issuer_cik == 0:
         raise ValueError(f"{accn}: missing issuer or reporting owner")
-    # Joint filings list several owners for the same shares. Attribute rows to the
-    # first owner only; attributing to all would multiply the dollar flow.
-    owner = owners[0]
+    # Joint filings list several owners for the same shares. Attribute rows to one
+    # owner only; attributing to all would multiply the dollar flow.
+    owner = min(owners, key=lambda o: o["owner_cik"])
 
     rows: list[dict] = []
     tables = [
         ("nonDerivativeTable/nonDerivativeTransaction", False, False),
         ("nonDerivativeTable/nonDerivativeHolding", False, True),
-        ("derivativeTable/derivativeTransaction", True, False),
-        ("derivativeTable/derivativeHolding", True, True),
     ]
     for path, is_deriv, is_holding in tables:
         for i, t in enumerate(root.findall(path)):
-            notes = [footnotes.get(fid, "") for fid in _footnote_ids(t)]
+            notes = [footnotes.get(fid, "") for fid in sorted(set(_footnote_ids(t)))]
             note_text = " | ".join(n for n in notes if n)
             flag = doc_flag
             if _10B5_FOOTNOTE.search(note_text):
@@ -111,6 +116,8 @@ def parse_form4(xml: bytes, accn: str, filed: date) -> list[dict]:
                 "nature_of_ownership": (_text(t, "ownershipNature/natureOfOwnership") or "").strip().lower(),
                 "is_10b5_1": flag,
                 "footnotes": note_text or None,
+                "form_type": form_type,
+                "period_of_report": period_of_report,
             })
     return rows
 
@@ -119,7 +126,7 @@ COLUMNS = [
     "accn", "line_no", "is_derivative", "is_holding", "issuer_cik", "owner_cik", "owner_name",
     "is_director", "is_officer", "is_ten_pct", "officer_title", "filed", "txn_date",
     "security_title", "txn_code", "acq_disp", "shares", "price", "shares_owned_following",
-    "ownership_form", "nature_of_ownership", "is_10b5_1", "footnotes",
+    "ownership_form", "nature_of_ownership", "is_10b5_1", "footnotes", "form_type", "period_of_report",
 ]
 
 

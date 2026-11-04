@@ -16,7 +16,7 @@ from typing import Callable
 from src import config
 from src.db.pit import concept_sql
 from src.db.schema import connect
-from src.ingestion import companyfacts, prices, reference
+from src.ingestion import companyfacts, form4_sources, prices, reference
 from src.ingestion.sec import SecClient, sha256_file
 
 
@@ -103,12 +103,41 @@ def ingest_prices(con, args) -> None:
           f"{s.splits:,} splits, {s.no_data:,} with no data, {s.errors:,} errors in {s.seconds:,.0f}s")
 
 
+def ingest_form4(con, args) -> None:
+    """Bulk data sets for quarters SEC has published, per-filing XML for the rest."""
+    today = date.today()
+    since = args.since or form4_sources.quarter_of(date(today.year - 2, today.month, 1))
+    wanted = form4_sources.quarters(since, form4_sources.quarter_of(today))
+    client = _client()
+    published = form4_sources.published_quarters(client.get(form4_sources.DATASETS_PAGE).decode("utf-8", "replace"))
+    for q in wanted:
+        if q in published:
+            path, sha, delete = _fetch_zip(published[q], f"{q}_form345.zip", None,
+                                           lambda sha, q=q: form4_sources.dataset_loaded(con, q, sha))
+            if path is None:
+                continue
+            n = form4_sources.load_dataset(con, path, q, sha, config.RAW_DIR / "form345")
+            print(f"form4 {q}: data set, {n or 0:,} rows")
+            _finish(path, delete, args.keep_raw)
+        else:
+            year, n = q[:4], q[-1]
+            text = client.get(form4_sources.INDEX_URL.format(year=year, n=n)).decode("latin-1")
+            print(f"form4 {q}: index, {form4_sources.load_index(con, q, text):,} Form 4 lines")
+
+    def progress(s: form4_sources.FetchStats) -> None:
+        print(f"  {s.done + s.skipped + s.failed:,}/{s.pending:,} filings, {s.rows:,} rows", flush=True)
+
+    s = form4_sources.fetch_filings(con, client.get, args.xml_limit, progress=progress)
+    print(f"form4 xml: {s.done:,} filings loaded, {s.skipped:,} without XML, {s.failed:,} failed, "
+          f"{s.rows:,} rows in {s.seconds:,.0f}s")
+
+
 def cmd_ingest(args) -> None:
     config.DATA_DIR.mkdir(parents=True, exist_ok=True)
     con = connect(str(config.DB_PATH))
     jobs = {"tickers": [ingest_tickers], "companies": [ingest_companies], "facts": [ingest_facts],
-            "prices": [ingest_prices],
-            "all": [ingest_tickers, ingest_companies, ingest_facts, ingest_prices]}[args.what]
+            "prices": [ingest_prices], "form4": [ingest_form4],
+            "all": [ingest_tickers, ingest_companies, ingest_facts, ingest_prices, ingest_form4]}[args.what]
     if args.zip and args.what == "all":
         sys.exit("--zip works with a single source, not 'all'")
     for job in jobs:
@@ -154,6 +183,15 @@ def cmd_stats(args) -> None:
         ("tickers with no price data", "SELECT count(*) FROM price_status WHERE status = 'no_data'"),
         ("latest price", "SELECT max(price_date) FROM prices"),
         ("splits", "SELECT count(*) FROM splits"),
+        ("form 4 rows", "SELECT count(*) FROM form4_transactions"),
+        ("form 4 filings (data set / xml)", """SELECT count(*) FILTER (WHERE source LIKE 'dataset:%') || ' / '
+                                               || count(*) FILTER (WHERE source = 'xml') FROM form4_filings
+                                               WHERE status = 'done'"""),
+        ("form 4 filings pending or failed", """SELECT (SELECT count(DISTINCT accn) FROM form4_index
+                                                        WHERE filer_cik IN (SELECT cik FROM price_status))
+                                                - (SELECT count(*) FROM form4_filings f WHERE f.status IN ('done', 'skipped')
+                                                   AND f.accn IN (SELECT accn FROM form4_index))"""),
+        ("latest form 4 filed", "SELECT max(filed) FROM form4_transactions"),
         # Survivorship gap: filers with a 10-K since 2012 but no current ticker are
         # mostly delisted, and free price sources drop their history.
         ("10-K filers with no ticker", """SELECT count(DISTINCT cik) FROM xbrl_facts
@@ -173,12 +211,14 @@ def main(argv: list[str] | None = None) -> None:
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     ing = sub.add_parser("ingest", help="download and load SEC data")
-    ing.add_argument("what", choices=["tickers", "companies", "facts", "prices", "all"])
+    ing.add_argument("what", choices=["tickers", "companies", "facts", "prices", "form4", "all"])
     ing.add_argument("--zip", help="use an already-downloaded zip instead of fetching")
     ing.add_argument("--cik", type=int, action="append", help="load only these CIKs (repeatable)")
     ing.add_argument("--keep-raw", action="store_true", help="keep downloaded zips after loading")
     ing.add_argument("--ticker", action="append", help="prices: only these tickers (repeatable)")
     ing.add_argument("--include-otc", action="store_true", help="prices: also OTC-traded companies")
+    ing.add_argument("--since", help="form4: first quarter to load, e.g. 2024q4 (default: 2 years back)")
+    ing.add_argument("--xml-limit", type=int, help="form4: fetch at most this many filings as XML")
     ing.set_defaults(func=cmd_ingest)
 
     f = sub.add_parser("facts", help="show point-in-time facts for one company")
