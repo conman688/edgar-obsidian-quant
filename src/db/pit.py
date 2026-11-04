@@ -21,7 +21,7 @@ def concept_sql(policy: Policy) -> str:
     Binds $as_of (DATE) and $concept (VARCHAR). The tag ladder is applied after the
     as-of filter, so a later filing that switches tags cannot leak backwards.
     """
-    order = "f.filed ASC, f.accn ASC" if policy == "as_first_reported" else "f.filed DESC, f.accn DESC"
+    order = "f.filed ASC" if policy == "as_first_reported" else "f.filed DESC"
     return f"""
     SELECT f.cik, f.period_start, f.period_end, f.period_days, f.period_kind, f.fy, f.fp,
            f.value, f.taxonomy, f.tag, f.unit, f.accn, f.filed, m.priority, f.form
@@ -31,7 +31,9 @@ def concept_sql(policy: Policy) -> str:
     WHERE f.filed <= $as_of
     QUALIFY row_number() OVER (
         PARTITION BY f.cik, f.period_kind, f.period_start, f.period_end
-        ORDER BY m.priority ASC, {order}
+        -- The policy picks the filing; the tag ladder only breaks ties within it. Priority
+        -- first would let a later filing's preferred tag override the first-reported value.
+        ORDER BY {order}, m.priority ASC, f.accn {'ASC' if policy == 'as_first_reported' else 'DESC'}
     ) = 1
     """
 

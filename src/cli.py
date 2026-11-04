@@ -16,7 +16,7 @@ from typing import Callable
 from src import config
 from src.db.pit import concept_sql
 from src.db.schema import connect
-from src.ingestion import companyfacts, reference
+from src.ingestion import companyfacts, prices, reference
 from src.ingestion.sec import SecClient, sha256_file
 
 
@@ -91,11 +91,24 @@ def ingest_tickers(con, args) -> None:
     print(f"tickers: {n:,}")
 
 
+def ingest_prices(con, args) -> None:
+    exchanges = prices.EXCHANGES + (("OTC",) if args.include_otc else ())
+
+    def progress(s: prices.PriceStats) -> None:
+        print(f"  {s.priced + s.no_data + s.errors:,}/{s.companies:,} companies, "
+              f"{s.price_rows:,} rows", flush=True)
+
+    s = prices.load(con, exchanges, args.ticker, progress=progress)
+    print(f"prices: {s.priced:,} of {s.companies:,} companies priced, {s.price_rows:,} rows, "
+          f"{s.splits:,} splits, {s.no_data:,} with no data, {s.errors:,} errors in {s.seconds:,.0f}s")
+
+
 def cmd_ingest(args) -> None:
     config.DATA_DIR.mkdir(parents=True, exist_ok=True)
     con = connect(str(config.DB_PATH))
     jobs = {"tickers": [ingest_tickers], "companies": [ingest_companies], "facts": [ingest_facts],
-            "all": [ingest_tickers, ingest_companies, ingest_facts]}[args.what]
+            "prices": [ingest_prices],
+            "all": [ingest_tickers, ingest_companies, ingest_facts, ingest_prices]}[args.what]
     if args.zip and args.what == "all":
         sys.exit("--zip works with a single source, not 'all'")
     for job in jobs:
@@ -136,6 +149,16 @@ def cmd_stats(args) -> None:
         ("tickers", "SELECT count(*) FROM tickers"),
         ("company profiles", "SELECT count(*) FROM companies"),
         ("financials (SIC 6000-6799)", "SELECT count(*) FROM companies WHERE is_financial"),
+        ("price rows", "SELECT count(*) FROM prices"),
+        ("companies priced", "SELECT count(*) FROM price_status WHERE status = 'ok'"),
+        ("tickers with no price data", "SELECT count(*) FROM price_status WHERE status = 'no_data'"),
+        ("latest price", "SELECT max(price_date) FROM prices"),
+        ("splits", "SELECT count(*) FROM splits"),
+        # Survivorship gap: filers with a 10-K since 2012 but no current ticker are
+        # mostly delisted, and free price sources drop their history.
+        ("10-K filers with no ticker", """SELECT count(DISTINCT cik) FROM xbrl_facts
+                                          WHERE form = '10-K' AND filed >= DATE '2012-01-01'
+                                            AND cik NOT IN (SELECT cik FROM tickers)"""),
         # Group count, not row count, sets memory: ~1M filings is cheap, 100M fact tuples is not.
         ("filings missing from ledger", """SELECT count(*) FROM (SELECT DISTINCT cik, accn FROM xbrl_facts) f
                                            ANTI JOIN loaded_filings l USING (cik, accn)"""),
@@ -150,10 +173,12 @@ def main(argv: list[str] | None = None) -> None:
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     ing = sub.add_parser("ingest", help="download and load SEC data")
-    ing.add_argument("what", choices=["tickers", "companies", "facts", "all"])
+    ing.add_argument("what", choices=["tickers", "companies", "facts", "prices", "all"])
     ing.add_argument("--zip", help="use an already-downloaded zip instead of fetching")
     ing.add_argument("--cik", type=int, action="append", help="load only these CIKs (repeatable)")
     ing.add_argument("--keep-raw", action="store_true", help="keep downloaded zips after loading")
+    ing.add_argument("--ticker", action="append", help="prices: only these tickers (repeatable)")
+    ing.add_argument("--include-otc", action="store_true", help="prices: also OTC-traded companies")
     ing.set_defaults(func=cmd_ingest)
 
     f = sub.add_parser("facts", help="show point-in-time facts for one company")

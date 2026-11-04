@@ -1,8 +1,8 @@
 """As-of screeners. Every query takes $as_of and sees only filings with filed <= as_of.
 
 Market cap = raw close on as_of x cover-page shares outstanding from the latest
-filing on or before as_of. Both are on the same (as-of) share basis, so no split
-adjustment is needed. Historical share-count trends ARE split-adjusted to today.
+filing on or before as_of, with the shares scaled for any split between the cover
+date and the price date. Historical share-count trends are split-adjusted to as_of.
 """
 from __future__ import annotations
 
@@ -79,12 +79,16 @@ def valuation(con: duckdb.DuckDBPyConnection, as_of: date, policy: Policy = "as_
         QUALIFY row_number() OVER (PARTITION BY cik ORDER BY price_date DESC) = 1
     ),
     hi AS (
-        SELECT cik, max(close_raw * split_factor(cik, price_date) / split_factor(cik, $as_of)) AS hi_52w
+        -- Prices move opposite to share counts: a 10-for-1 split divides old prices by 10.
+        SELECT cik, max(close_raw / split_factor(cik, price_date) * split_factor(cik, $as_of)) AS hi_52w
         FROM prices WHERE price_date BETWEEN $as_of - INTERVAL 365 DAY AND $as_of GROUP BY cik
     ),
     base AS (
         SELECT px.cik, px.price_date, px.close_raw,
-               px.close_raw * sh.value AS mcap,
+               -- Cover shares are counted before the price date; a split in between
+               -- (NVDA: May 24 count, June 10 split) must scale them to the price's basis.
+               px.close_raw * sh.value * split_factor(px.cik, sh.period_end)
+                   / split_factor(px.cik, px.price_date) AS mcap,
                coalesce(dt.value, dc.value + dn.value) AS debt,
                cash.value + coalesce(sti.value, 0) AS cash_like,
                ebit.value AS ebit_ttm, ebit.basis AS ebit_basis,

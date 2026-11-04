@@ -175,9 +175,47 @@ UPDATE loaded_filings SET n_facts = c.n
     WHERE loaded_filings.cik = c.cik AND loaded_filings.accn = c.accn;
 """
 
+# Migration 3 (M2): prices lose their PRIMARY KEY (~17M rows; refreshes delete and
+# re-insert a date range instead) and gain raw volume. Dividends and per-company
+# price coverage get their own tables.
+PRICES_DDL = """
+CREATE TABLE prices_v3 (
+    cik         INTEGER NOT NULL,
+    ticker      VARCHAR NOT NULL,
+    price_date  DATE    NOT NULL,
+    close_raw   DOUBLE  NOT NULL,      -- as printed that day, on that day's share basis
+    volume_raw  DOUBLE,                -- shares traded that day, unadjusted
+    source      VARCHAR NOT NULL
+);
+INSERT INTO prices_v3 SELECT cik, ticker, price_date, close_raw, NULL, source FROM prices;
+DROP TABLE prices;
+ALTER TABLE prices_v3 RENAME TO prices;
+
+CREATE TABLE IF NOT EXISTS dividends (
+    cik         INTEGER NOT NULL,
+    ex_date     DATE    NOT NULL,
+    amount_raw  DOUBLE  NOT NULL,      -- per share, on that day's share basis
+    source      VARCHAR NOT NULL,
+    PRIMARY KEY (cik, ex_date)
+);
+
+-- One row per company we tried to price. status: 'ok' | 'no_data' (source has
+-- nothing for the ticker, often delisted or renamed) | 'error'.
+CREATE TABLE IF NOT EXISTS price_status (
+    cik         INTEGER PRIMARY KEY,
+    ticker      VARCHAR NOT NULL,
+    status      VARCHAR NOT NULL,
+    first_date  DATE,
+    last_date   DATE,
+    message     VARCHAR,
+    fetched_at  TIMESTAMP NOT NULL
+);
+"""
+
 MIGRATIONS: list[tuple[int, str]] = [
     (1, BASELINE_DDL),
     (2, FILING_COUNTS_DDL),
+    (3, PRICES_DDL),
 ]
 
 # Macros are code, not data: recreated on every connect so edits always take effect.

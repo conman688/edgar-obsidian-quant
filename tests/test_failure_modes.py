@@ -204,7 +204,7 @@ def test_valuation_runs_and_flags_missing_debt(con):
         tags.update(t)
     tags[("us-gaap", "OperatingIncomeLoss", "USD")] = [fact("2023-01-01", "2023-12-31", 3_000_000, "2024-02-15", "k")]
     load_docs(con, [doc(tags)])
-    con.execute("INSERT INTO prices VALUES (?, 'ACME', DATE '2024-03-01', 10.0, 'test')", [CIK])
+    con.execute("INSERT INTO prices (cik, ticker, price_date, close_raw, source) VALUES (?, 'ACME', DATE '2024-03-01', 10.0, 'test')", [CIK])
     rel = valuation(con, date(2024, 3, 5))
     row = dict(zip(rel.columns, rel.fetchall()[0]))
     assert row["mcap"] == 10_000_000 and row["ev"] == 7_000_000
