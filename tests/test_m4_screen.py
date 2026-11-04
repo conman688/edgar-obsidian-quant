@@ -258,3 +258,104 @@ def test_parquet_snapshot_round_trips(con, tmp_path):
     assert got == [("ACME", "shortlist", ["f4-acme"])]
     meta = dict(duckdb.sql(f"SELECT decode(key), decode(value) FROM parquet_kv_metadata('{path}')").fetchall())
     assert meta["as_of"] == "2024-09-03" and "max_ev_ebit" in meta["filters"]
+
+
+# --- review findings on M4 ---------------------------------------------------
+
+def test_short_term_only_debt_is_not_zero(con):
+    tags = cheap_company(debt=False)
+    tags[(GAAP, "ShortTermBorrowings", "USD")] = [inst("2024-06-30", 9_000_000)]
+    add_company(con, CIK, "ACME", tags)
+    add_buy(con, CIK, "f4")
+    assert screen_rows(con)["ACME"]["debt"] == 9_000_000
+
+
+def test_total_does_not_hide_larger_current_debt(con):
+    tags = cheap_company()  # LongTermDebt: $1M
+    tags[(GAAP, "DebtCurrent", "USD")] = [inst("2024-06-30", 9_000_000)]
+    add_company(con, CIK, "ACME", tags)
+    add_buy(con, CIK, "f4")
+    assert screen_rows(con)["ACME"]["status"] != "shortlist"
+
+
+def test_missing_newer_current_debt_is_suspect(con):
+    tags = cheap_company(debt=False)
+    tags[(GAAP, "LongTermDebtNoncurrent", "USD")] = [inst("2024-06-30", 300_000)]
+    tags[(GAAP, "LongTermDebtCurrent", "USD")] = [inst("2023-12-31", 9_000_000, "2024-02-15", "k")]
+    add_company(con, CIK, "ACME", tags)
+    add_buy(con, CIK, "f4")
+    assert screen_rows(con)["ACME"]["status"] != "shortlist"
+
+
+def test_future_cover_date_cannot_reach_shortlist(con):
+    tags = cheap_company()
+    tags[(DEI, "EntityCommonStockSharesOutstanding", "shares")] = [inst("2024-09-06", 1_000_000, "2024-09-01", "later")]
+    add_company(con, CIK, "ACME", tags)
+    add_buy(con, CIK, "f4")
+    assert screen_rows(con)["ACME"]["status"] != "shortlist"
+
+
+def test_mixed_capex_bridge_is_quarantined(con):
+    tags = cheap_company()
+    key = (GAAP, "PaymentsToAcquirePropertyPlantAndEquipment", "USD")
+    fy, current, prior = tags[key]
+    tags[key] = [fy, prior]
+    tags[(GAAP, "PaymentsToAcquireProductiveAssets", "USD")] = [dict(current, val=200_000)]
+    add_company(con, CIK, "ACME", tags)
+    add_buy(con, CIK, "f4")
+    assert screen_rows(con)["ACME"]["status"] != "shortlist"
+
+
+def test_foreign_cash_form_is_not_masked(con):
+    tags = cheap_company()
+    tags[(GAAP, "CashAndCashEquivalentsAtCarryingValue", "USD")] = [
+        fact(None, "2024-06-30", 6_000_000, "2024-08-01", "f", form="20-F")]
+    add_company(con, CIK, "ACME", tags)
+    add_buy(con, CIK, "f4")
+    assert screen_rows(con)["ACME"]["status"] != "shortlist"
+
+
+def test_old_zero_or_immaterial_debt_line_is_not_stale(con):
+    # NVDA: commercial paper last tagged as 0 a year ago. KO: $0.25B of paper missing from
+    # one 10-Q against $41.5B of debt. Neither makes the debt figure untrustworthy.
+    tags = cheap_company(debt=False)
+    tags[(GAAP, "LongTermDebtNoncurrent", "USD")] = [inst("2024-06-30", 1_000_000)]
+    tags[(GAAP, "CommercialPaper", "USD")] = [inst("2023-12-31", 0, "2024-02-15", "k")]
+    tags[(GAAP, "LongTermDebtCurrent", "USD")] = [inst("2023-12-31", 20_000, "2024-02-15", "k")]
+    add_company(con, CIK, "NVDA", tags)
+    row = val_row(con)
+    assert row["debt"] == 1_000_000 and row["issues"] == []
+
+
+def test_debt_line_gone_for_over_a_year_is_not_stale(con):
+    # WFRD: short-term borrowings last tagged 18 months before the newest balance sheet,
+    # so at least one full 10-K has left the line out since.
+    tags = cheap_company(debt=False)
+    tags[(GAAP, "LongTermDebtNoncurrent", "USD")] = [inst("2024-06-30", 1_000_000)]
+    tags[(GAAP, "ShortTermBorrowings", "USD")] = [inst("2022-12-31", 500_000, "2023-02-15", "k22")]
+    add_company(con, CIK, "WFRD", tags)
+    assert val_row(con)["issues"] == []
+
+
+def test_total_equal_to_current_plus_noncurrent_excludes_borrowings(con):
+    # WMT tags DebtLongtermAndShorttermCombinedAmount = current + noncurrent LTD (39.93B)
+    # and reports $10.5B of short-term borrowings beside it.
+    tags = cheap_company(debt=False)
+    tags[(GAAP, "DebtLongtermAndShorttermCombinedAmount", "USD")] = [inst("2024-06-30", 400_000)]
+    tags[(GAAP, "LongTermDebtCurrent", "USD")] = [inst("2024-06-30", 100_000)]
+    tags[(GAAP, "LongTermDebtNoncurrent", "USD")] = [inst("2024-06-30", 300_000)]
+    tags[(GAAP, "ShortTermBorrowings", "USD")] = [inst("2024-06-30", 200_000)]
+    add_company(con, CIK, "WMT", tags)
+    row = val_row(con)
+    assert row["debt"] == 600_000 and row["issues"] == []
+
+
+def test_total_with_partial_split_is_compared_only_when_inconsistent(con):
+    # TSLA: LongTermDebt total 7.96B and DebtCurrent 1.31B, no noncurrent line this quarter.
+    # Current debt can sit inside the total, so the total stands.
+    tags = cheap_company(debt=False)
+    tags[(GAAP, "LongTermDebt", "USD")] = [inst("2024-06-30", 796_000)]
+    tags[(GAAP, "DebtCurrent", "USD")] = [inst("2024-06-30", 131_000)]
+    add_company(con, CIK, "TSLA", tags)
+    row = val_row(con)
+    assert row["debt"] == 796_000 and row["issues"] == []

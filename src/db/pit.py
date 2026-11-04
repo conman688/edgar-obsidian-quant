@@ -28,6 +28,7 @@ def _resolve_sql(policy: Policy, concept_filter: str) -> str:
       -- otherwise win every "latest period" pick for years; a week covers cover pages
       -- dated a day or two after filing.
       AND f.period_end <= f.filed + INTERVAL 7 DAY
+      AND f.period_end <= $as_of               -- nor after the screen date (negative ages)
     QUALIFY row_number() OVER (
         PARTITION BY m.concept, f.cik, f.period_kind, f.period_start, f.period_end
         -- The policy picks the filing; the tag ladder only breaks ties within it. Priority

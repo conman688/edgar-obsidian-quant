@@ -98,44 +98,65 @@ def valuation_sql(policy: Policy = "as_last_known") -> str:
         ) GROUP BY cik
     ),
     debt_src AS (
-        -- Total and current + noncurrent are alternative sources; the newer one wins, so
-        -- last year's 10-K total cannot beat this quarter's split. Ties go to the total.
         SELECT ids.cik, dt.value AS t_val, dt.period_end AS t_end, dt.tag AS t_tag, dt.accn AS t_accn,
                dc.value AS c_val, dc.period_end AS c_end, dc.tag AS c_tag, dc.accn AS c_accn,
                dn.value AS n_val, dn.period_end AS n_end, dn.tag AS n_tag, dn.accn AS n_accn,
                stb.value AS s_val, stb.period_end AS s_end, stb.tag AS s_tag, stb.accn AS s_accn,
-               coalesce(dt.period_end >= greatest(dc.period_end, dn.period_end),
-                        dt.period_end IS NOT NULL) AS use_total
+               greatest(dt.period_end, dc.period_end, dn.period_end, stb.period_end) AS d_end
         FROM (SELECT cik FROM dt UNION SELECT cik FROM dc UNION SELECT cik FROM dn UNION SELECT cik FROM stb) ids
         LEFT JOIN dt USING (cik) LEFT JOIN dc USING (cik) LEFT JOIN dn USING (cik) LEFT JOIN stb USING (cik)
     ),
-    debt_dated AS (
-        -- Lines are summed at one date. A line last reported earlier (current LTD only in
-        -- the 10-K) is left out rather than mixed in: it was usually repaid or reclassified.
+    debt_lines AS (
+        -- Debt is read at its newest date, d_end. Which lines are reported then:
         SELECT *,
-               CASE WHEN use_total THEN t_end ELSE coalesce(greatest(c_end, n_end), s_end) END AS d_end
+               coalesce(t_end = d_end, FALSE) AS has_t,
+               coalesce(c_end = d_end, FALSE) AS has_c,
+               coalesce(n_end = d_end, FALSE) AS has_n,
+               coalesce(s_end = d_end, FALSE) AS has_s,
+               -- A "short and long term" total that equals current + noncurrent LTD leaves
+               -- short-term borrowings out (WMT), whatever its name says.
+               coalesce(t_tag IN {_DEBT_INCL_SHORT_TERM}
+                        AND NOT (t_end = d_end AND c_end = d_end AND n_end = d_end
+                                 AND abs(t_val - c_val - n_val) <= 0.01 * abs(t_val)), FALSE) AS t_incl_s,
+               coalesce(c_tag IN {_DEBT_INCL_SHORT_TERM}, FALSE) AS c_incl_s
         FROM debt_src
     ),
-    debt_lines AS (
-        SELECT cik, d_end, use_total,
-               use_total AS has_t,
-               NOT use_total AND c_end = d_end AS has_c,
-               NOT use_total AND n_end = d_end AS has_n,
-               s_end = d_end AND NOT ((use_total AND t_tag IN {_DEBT_INCL_SHORT_TERM})
-                                      OR (NOT use_total AND c_end = d_end AND c_tag IN {_DEBT_INCL_SHORT_TERM})) AS has_s,
-               t_val, c_val, n_val, s_val, t_tag, c_tag, n_tag, s_tag, t_accn, c_accn, n_accn, s_accn
-        FROM debt_dated
+    debt_sums AS (
+        -- Two alternative sources at d_end: the total, and current + noncurrent. Each gets
+        -- short-term borrowings added unless its tag already includes them.
+        SELECT *,
+               CASE WHEN has_t THEN t_val + CASE WHEN has_s AND NOT t_incl_s THEN s_val ELSE 0 END END AS by_total,
+               CASE WHEN has_c OR has_n OR (has_s AND NOT has_t)
+                    THEN CASE WHEN has_c THEN c_val ELSE 0 END + CASE WHEN has_n THEN n_val ELSE 0 END
+                         + CASE WHEN has_s AND NOT (has_c AND c_incl_s) THEN s_val ELSE 0 END END AS by_split
+        FROM debt_lines
     ),
     debt AS (
         SELECT cik, d_end AS debt_period_end,
-               CASE WHEN has_t THEN t_val ELSE 0 END + CASE WHEN has_c THEN c_val ELSE 0 END
-                 + CASE WHEN has_n THEN n_val ELSE 0 END + CASE WHEN coalesce(has_s, FALSE) THEN s_val ELSE 0 END AS debt,
+               -- The larger source is a lower bound on what is owed.
+               greatest(by_total, by_split) AS debt,
+               -- The sources conflict when a complete split misses the total by over 10%,
+               -- or a current line exceeds a total that should contain it.
+               coalesce(has_t AND has_n AND abs(by_total - by_split) > 0.10 * greatest(abs(by_total), abs(by_split)), FALSE)
+                 OR coalesce(has_t AND has_c AND c_val > 1.10 * t_val, FALSE) AS debt_sources_disagree,
+               -- A positive line reported in the last 400 days but not at d_end, and not
+               -- covered by a line that is, may still be owed: a missing tag is not a
+               -- repayment. Older lines have been left out of a full 10-K since; lines under
+               -- 5% of debt cannot move the screen. Current LTD is covered by short-term
+               -- borrowings (JNJ shows it inside that line in 10-Qs).
+               list_sum([
+                   CASE WHEN t_end < d_end AND NOT has_n AND datediff('day', t_end, d_end) <= 400 THEN t_val END,
+                   CASE WHEN c_end < d_end AND NOT has_t AND NOT has_s AND datediff('day', c_end, d_end) <= 400 THEN c_val END,
+                   CASE WHEN n_end < d_end AND NOT has_t AND datediff('day', n_end, d_end) <= 400 THEN n_val END,
+                   CASE WHEN s_end < d_end AND NOT ((has_t AND t_incl_s) OR (has_c AND c_incl_s))
+                             AND datediff('day', s_end, d_end) <= 400 THEN s_val END
+               ]) AS dropped_recent,
                array_to_string([CASE WHEN has_t THEN t_tag END, CASE WHEN has_c THEN c_tag END,
                                 CASE WHEN has_n THEN n_tag END, CASE WHEN has_s THEN s_tag END], '+') AS debt_tag,
                list_distinct(list_filter([CASE WHEN has_t THEN t_accn END, CASE WHEN has_c THEN c_accn END,
                                           CASE WHEN has_n THEN n_accn END, CASE WHEN has_s THEN s_accn END],
                                          lambda a: a IS NOT NULL)) AS debt_accns
-        FROM debt_lines
+        FROM debt_sums
     ),
     base AS (
         SELECT px.cik, px.price_date, px.close_raw,
@@ -151,13 +172,17 @@ def valuation_sql(policy: Policy = "as_last_known") -> str:
                cash.value + CASE WHEN sti.period_end = cash.period_end THEN sti.value ELSE 0 END AS cash_like,
                -- 20-F / 40-F filers: annual cover shares, often non-USD statements, and an
                -- ADS price against an ordinary-share count. Market cap cannot be trusted.
-               regexp_matches(coalesce(sh.form, cash.form, ''), '^(20|40)-F') AS foreign_filer,
+               regexp_matches(coalesce(sh.form, ''), '^(20|40)-F')
+                   OR regexp_matches(coalesce(cash.form, ''), '^(20|40)-F') AS foreign_filer,
                cash.period_end AS cash_period_end,
-               debt.debt, debt.debt_period_end,
+               debt.debt, debt.debt_period_end, debt.debt_sources_disagree,
+               coalesce(debt.dropped_recent > 0.05 * greatest(debt.debt, 0)
+                        OR (debt.dropped_recent > 0 AND debt.debt <= 0), FALSE) AS debt_line_dropped,
                ebit.value AS ebit_ttm, ebit.basis AS ebit_basis, ebit.tag AS ebit_tag,
                ebit.period_end AS ebit_period_end, ebit.same_tag AS ebit_same_tag,
                cfo.value AS cfo_ttm, capex.value AS capex_ttm, cfo.value - capex.value AS fcf_ttm,
                cfo.period_end AS cfo_period_end, capex.period_end AS capex_period_end,
+               cfo.same_tag AND capex.same_tag AS fcf_same_tag,
                CASE WHEN gw.period_end = eq.period_end THEN gw.value / nullif(eq.value, 0) END AS goodwill_to_equity,
                hi.hi_52w,
                1 - px.close_raw / nullif(hi.hi_52w, 0) AS drawdown_52w,
@@ -192,11 +217,14 @@ def valuation_sql(policy: Policy = "as_last_known") -> str:
             CASE WHEN price_age_days > {STALE_PRICE_DAYS} THEN 'stale_price' END,
             CASE WHEN foreign_filer THEN 'foreign_filer' END,
             CASE WHEN cash_like IS NULL THEN 'missing_cash' WHEN cash_period_end < bs_date THEN 'stale_cash' END,
-            CASE WHEN debt IS NULL THEN 'missing_debt' WHEN debt_period_end < bs_date THEN 'stale_debt' END,
+            CASE WHEN debt IS NULL THEN 'missing_debt'
+                 WHEN debt_period_end < bs_date OR debt_line_dropped THEN 'stale_debt' END,
+            CASE WHEN debt_sources_disagree THEN 'debt_sources_disagree' END,
             CASE WHEN datediff('day', bs_date, $as_of) > {STALE_DAYS} THEN 'stale_balance_sheet' END,
             CASE WHEN ebit_ttm IS NULL THEN 'missing_ebit' WHEN NOT ebit_same_tag THEN 'mixed_ebit_tags' END,
             CASE WHEN fcf_ttm IS NULL THEN 'missing_fcf'
-                 WHEN cfo_period_end <> capex_period_end THEN 'fcf_period_mismatch' END,
+                 WHEN cfo_period_end <> capex_period_end THEN 'fcf_period_mismatch'
+                 WHEN NOT fcf_same_tag THEN 'mixed_fcf_tags' END,
             CASE WHEN datediff('day', least(ebit_period_end, cfo_period_end), $as_of) > {STALE_DAYS}
                  THEN 'stale_financials' END
         ], lambda x: x IS NOT NULL) AS issues
