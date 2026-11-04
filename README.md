@@ -55,7 +55,10 @@ insiders known within 90 days. Every input is point-in-time. Each company gets a
 
 Issues: `missing_*` / `stale_*` (shares, cash, debt, balance sheet, financials older than
 200 days or older than the newest balance-sheet item), `fcf_period_mismatch` (cash flow and
-capex from different periods), `mixed_ebit_tags`, `share_jump` (>40% share change in a
+capex from different periods), `mixed_ebit_tags` / `mixed_fcf_tags` (a TTM bridge mixing
+ladder tags), `debt_sources_disagree` (total and current + noncurrent differ by over 10%;
+the larger is used), `stale_debt` also when a debt line over 5% of debt, reported in the
+last 400 days, is missing from the newest balance sheet, `share_jump` (>40% share change in a
 year: missed split or M&A), `foreign_filer` (20-F/40-F: ADS price vs ordinary shares),
 `stale_price`. Flags, shown but not blocking: `multi_class_risk` (no cover-page share
 count, so a class count or nothing), `ebit_is_pretax` (pre-tax income stands in for EBIT).
@@ -114,7 +117,7 @@ Uncapped, a heavy query on an 8 GB machine with little free disk can crash the c
 ## Invariants
 
 - Every screen sees only data with `filed <= as_of`. No look-ahead.
-- A fact whose period ends more than 7 days after its filing date is a typo and is ignored.
+- A fact whose period ends more than 7 days after its filing date, or after `as_of`, is ignored.
 - Balance-sheet items are compared to the newest one; an older item is stale, never current.
 - Schema changes are append-only migrations in `src/db/schema.py`. `connect()` applies pending ones; it refuses a database newer than the code.
 - Restatements are new rows under a new filing; earlier filings are never overwritten by them.
