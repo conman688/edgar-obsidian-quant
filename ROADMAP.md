@@ -75,7 +75,7 @@ Checks:
 - 3 known cluster buys from the news reproduced by `cluster_buys`.
 - No row with `txn_code = 'A'` ever counted as a buy.
 
-### M4 Screener and shortlist (size: S)
+### M4 Screener and shortlist (size: S, done)
 
 - `cli.py screen --as-of DATE`: joins valuation, share trend and cluster buys into one ranked table.
 - Default filters: drawdown > 50%, FCF > 0, EV/EBIT < 6, net cash or low debt, insider buying in 90 days.
@@ -85,6 +85,24 @@ Checks:
 Checks:
 - Screen finishes in < 30 s.
 - Each shortlisted row traces back to the accession numbers it used.
+
+Result (2026-11-03): full screen 8-10 s (valuation alone 6 s, was 22 s: one scan of the facts
+table instead of eleven); runs under a 600 MB DuckDB cap. `--trace` and the Parquet
+`sources` / `form4_accns` columns give the accessions. As of 2026-11-02 the defaults
+shortlist 0 of 4,182 companies (14 quarantined); as of 2025-06-30, 1 (WFRD). Only 118
+companies have EV/EBIT < 6 and 323 have an insider cluster buy; none of the clean ones is
+also down 50%. M5 should test looser defaults.
+
+Open data gaps found by the quarantine:
+- Debt-free companies have no debt tag, so they cannot be told from untagged debt (1,213
+  `missing_debt`). Convertibles, notes and credit lines on their own lines are not summed.
+- Capex split across several tags takes only one (FCF errs high).
+- ADRs that file 10-Ks (AKTX) get an ADS price times ordinary shares; only 20-F/40-F filers
+  are flagged. The usual 1 ADS = n shares makes them look dearer, so they are missed, not
+  wrongly shortlisted.
+- XOM moved to a new holding-company CIK (2115436) that has 10-Qs only; its history is under
+  the old CIK, so EBIT and FCF are missing. Successor CIKs are not linked.
+- Companies table (SIC, financial exclusion) and tickers are current snapshots, not as of the date.
 
 ### M5 Backtest harness (size: L)
 

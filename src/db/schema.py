@@ -325,6 +325,12 @@ CONCEPT_SEED: list[tuple[str, str, str, str, int]] = [
     ("revenue", "us-gaap", "SalesRevenueNet", "USD", 4),
     ("revenue", "us-gaap", "SalesRevenueGoodsNet", "USD", 5),
     ("operating_income", "us-gaap", "OperatingIncomeLoss", "USD", 1),
+    # EBIT for EV/EBIT. Some filers (XOM, many conglomerates) never tag an operating-income
+    # subtotal; pre-tax income stands in. It is after net interest, so EBIT is understated
+    # for indebted filers and EV/EBIT errs high (conservative). Screens flag the proxy.
+    ("ebit", "us-gaap", "OperatingIncomeLoss", "USD", 1),
+    ("ebit", "us-gaap", "IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest", "USD", 2),
+    ("ebit", "us-gaap", "IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments", "USD", 3),
     ("diluted_shares", "us-gaap", "WeightedAverageNumberOfDilutedSharesOutstanding", "shares", 1),
     ("shares_outstanding", "dei", "EntityCommonStockSharesOutstanding", "shares", 1),
     ("shares_outstanding", "us-gaap", "CommonStockSharesOutstanding", "shares", 2),
@@ -334,13 +340,26 @@ CONCEPT_SEED: list[tuple[str, str, str, str, int]] = [
     ("st_investments", "us-gaap", "MarketableSecuritiesCurrent", "USD", 2),
     ("debt_total", "us-gaap", "DebtLongtermAndShorttermCombinedAmount", "USD", 1),
     ("debt_total", "us-gaap", "LongTermDebt", "USD", 2),
+    # Balance-sheet debt lines. Many 10-Qs (KO, HD, PM, VZ) tag only the *AndCapitalLease*
+    # pair; DebtCurrent already includes short-term borrowings, the others do not.
     ("debt_noncurrent", "us-gaap", "LongTermDebtNoncurrent", "USD", 1),
+    ("debt_noncurrent", "us-gaap", "LongTermDebtAndCapitalLeaseObligations", "USD", 2),
     ("debt_current", "us-gaap", "LongTermDebtCurrent", "USD", 1),
-    ("debt_current", "us-gaap", "DebtCurrent", "USD", 2),
+    ("debt_current", "us-gaap", "LongTermDebtAndCapitalLeaseObligationsCurrent", "USD", 2),
+    ("debt_current", "us-gaap", "DebtCurrent", "USD", 3),
+    ("short_term_debt", "us-gaap", "ShortTermBorrowings", "USD", 1),
+    ("short_term_debt", "us-gaap", "CommercialPaper", "USD", 2),
     ("cfo", "us-gaap", "NetCashProvidedByUsedInOperatingActivities", "USD", 1),
     ("cfo", "us-gaap", "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations", "USD", 2),
+    # A ladder takes one capex line per filing; filers that split capex across lines
+    # are undercounted (FCF errs high). Oil and gas and "other" lines cover VZ, COP.
     ("capex", "us-gaap", "PaymentsToAcquirePropertyPlantAndEquipment", "USD", 1),
     ("capex", "us-gaap", "PaymentsToAcquireProductiveAssets", "USD", 2),
+    ("capex", "us-gaap", "PaymentsToAcquireOtherPropertyPlantAndEquipment", "USD", 3),
+    ("capex", "us-gaap", "PaymentsToAcquireOtherProductiveAssets", "USD", 4),
+    ("capex", "us-gaap", "PaymentsForCapitalImprovements", "USD", 5),
+    ("capex", "us-gaap", "PaymentsToExploreAndDevelopOilAndGasProperties", "USD", 6),
+    ("capex", "us-gaap", "PaymentsToAcquireOilAndGasPropertyAndEquipment", "USD", 7),
     ("goodwill", "us-gaap", "Goodwill", "USD", 1),
     ("equity", "us-gaap", "StockholdersEquity", "USD", 1),
     ("equity", "us-gaap", "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest", "USD", 2),

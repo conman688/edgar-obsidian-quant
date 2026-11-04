@@ -38,6 +38,35 @@ paths from loading a filing twice, and both produce identical rows for the same 
 Default range is two years back (`--since 2024q4` to change; older quarters are cheap).
 Amendments (4/A) replace the filing they amend only from the day they were filed.
 
+## Screen
+
+```bash
+uv run python -m src.cli screen --as-of 2026-11-02            # default filters
+uv run python -m src.cli screen --min-drawdown 0.3 --max-ev-ebit 10 --trace
+```
+
+Ranks priced, non-financial companies on five filters: drawdown from the 52-week high
+> 50%, trailing FCF > 0, EV/EBIT < 6, net debt <= 25% of market cap, and a cluster buy by
+insiders known within 90 days. Every input is point-in-time. Each company gets a status:
+
+- `shortlist`: passes every filter on clean data. Ranked by EV/EBIT, cheapest first.
+- `quarantine`: no filter fails, but an input is missing or suspect (`issues`). Never ranked.
+- `fail`: some filter fails (`failed_filters` says which).
+
+Issues: `missing_*` / `stale_*` (shares, cash, debt, balance sheet, financials older than
+200 days or older than the newest balance-sheet item), `fcf_period_mismatch` (cash flow and
+capex from different periods), `mixed_ebit_tags`, `share_jump` (>40% share change in a
+year: missed split or M&A), `foreign_filer` (20-F/40-F: ADS price vs ordinary shares),
+`stale_price`. Flags, shown but not blocking: `multi_class_risk` (no cover-page share
+count, so a class count or nothing), `ebit_is_pretax` (pre-tax income stands in for EBIT).
+
+The terminal shows the shortlist and quarantine; `--trace` prints the tag, period and
+accession numbers behind each number. Every company, with all metrics, issues, sources and
+Form 4 accessions, is written to `data/screens/screen-<as_of>.parquet`; the filters used are
+in the file metadata. A full screen takes about 9 s.
+
+## First full load
+
 First full load (2026-11-02, 8 GB MacBook):
 
 | Step | Download | Load | Result |
@@ -60,6 +89,7 @@ Uncapped, a heavy query on an 8 GB machine with little free disk can crash the c
 | `src/db/schema.py` | DuckDB tables: immutable XBRL facts, splits, prices, Form 4 rows, run ledger |
 | `src/db/pit.py` | Point-in-time resolution (`filed <= as_of`), tag fallback ladder, TTM |
 | `src/db/queries.py` | Screens: share-count trend, valuation, cluster buys, insider holdings |
+| `src/screen.py` | `screen`: joins the screens into one ranked, traceable table; Parquet snapshot |
 | `src/config.py` | Data paths, SEC URLs, `SEC_USER_AGENT` |
 | `src/cli.py` | `ingest`, `facts`, `stats` commands |
 | `src/db/ledger.py` | Run ledger: skip finished work, resume after crashes |
@@ -79,10 +109,13 @@ Uncapped, a heavy query on an 8 GB machine with little free disk can crash the c
 | `tests/test_review_fixes.py` | Price split direction, filing order before tag priority |
 | `tests/test_m2_review.py` | Price refresh windows, corporate actions, failure status, filing replacement |
 | `tests/test_form4_sources.py` | Data set vs XML parity on a real filing, ledger, amendments, identical lots |
+| `tests/test_m4_screen.py` | Debt source by date, stale items, EBIT/capex ladders, typo dates, screen status and trace |
 
 ## Invariants
 
 - Every screen sees only data with `filed <= as_of`. No look-ahead.
+- A fact whose period ends more than 7 days after its filing date is a typo and is ignored.
+- Balance-sheet items are compared to the newest one; an older item is stale, never current.
 - Schema changes are append-only migrations in `src/db/schema.py`. `connect()` applies pending ones; it refuses a database newer than the code.
 - Restatements are new rows under a new filing; earlier filings are never overwritten by them.
   A filing's rows are replaced only when SEC's snapshot of that same filing changes (fingerprint).
@@ -99,7 +132,7 @@ SEC requires a `User-Agent` with a real contact email and caps traffic at 10 req
 ## Status
 
 Done: schema with migrations, PIT layer, screens, Obsidian writer, M1 ingestion (live SEC data),
-M2 prices/splits/dividends, M3 insider trades, CLI.
-Not done: screener CLI, backtest, vault sync, YoY footnote redline, Jinja templates.
+M2 prices/splits/dividends, M3 insider trades, M4 screener, CLI.
+Not done: backtest, vault sync, YoY footnote redline, Jinja templates.
 
 See [ROADMAP.md](ROADMAP.md) for goals, milestones and acceptance checks.
