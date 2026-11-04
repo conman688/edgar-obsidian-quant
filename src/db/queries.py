@@ -10,11 +10,16 @@ from datetime import date
 
 import duckdb
 
-from src.db.pit import Policy, concept_sql, latest_instant_sql, ttm_flow_sql
+from src.db.pit import Policy, concepts_sql, latest_instant_sql, ttm_flow_sql
 
 
 def share_count_trend(con: duckdb.DuckDBPyConnection, as_of: date, policy: Policy = "as_last_known"):
-    """1y and 3y diluted share CAGR on annual weighted-average diluted shares.
+    """1y and 3y diluted share CAGR on annual weighted-average diluted shares."""
+    return con.sql(share_trend_sql(policy), params={"as_of": as_of})
+
+
+def share_trend_sql(policy: Policy = "as_last_known") -> str:
+    """SQL behind share_count_trend(); binds only $as_of.
 
     Split-adjusts every period to as_of basis via split_factor(cik, period_end).
     |CAGR| > 40%/yr is quarantined: almost always a missed split, a spin-off or an
@@ -23,7 +28,7 @@ def share_count_trend(con: duckdb.DuckDBPyConnection, as_of: date, policy: Polic
     sql = f"""
     WITH s AS (
         SELECT cik, period_end, value * split_factor(cik, period_end) / split_factor(cik, $as_of) AS shares
-        FROM ({concept_sql(policy)}) WHERE period_kind = 'annual'
+        FROM ({concepts_sql(policy, ('diluted_shares',))}) WHERE period_kind = 'annual'
     ),
     r AS (
         SELECT cik, period_end, shares,
@@ -46,34 +51,34 @@ def share_count_trend(con: duckdb.DuckDBPyConnection, as_of: date, policy: Polic
         coalesce(abs(sh_now / nullif(sh_1y, 0) - 1) > 0.40, FALSE) AS quarantine
     FROM j
     """
-    return con.sql(sql, params={"as_of": as_of, "concept": "diluted_shares"})
+    return sql
 
 
-def valuation(con: duckdb.DuckDBPyConnection, as_of: date, policy: Policy = "as_last_known"):
-    """Market cap, EV, EV/EBIT, net cash / mcap, FCF, goodwill/equity, as of a date.
+# Older than this, a cover-page share count, balance sheet or TTM figure no longer
+# describes the company: timely filers report every quarter, within ~90 days of it.
+STALE_DAYS = 200
+STALE_PRICE_DAYS = 7          # last close older than this: halted, delisted or a feed gap
+DEI_SHARES = "EntityCommonStockSharesOutstanding"
 
-    Debt: total if tagged, else current + noncurrent. Missing debt stays NULL so a
-    filer that simply didn't tag debt cannot pass as debt-free.
-    """
-    def bound(sql: str, concept: str) -> str:
-        # DuckDB params are global per statement, so each CTE inlines its own concept.
-        if not concept.replace("_", "").isalnum():
-            raise ValueError(concept)
-        return f"({sql.replace('$concept', repr(concept))})"
+_INSTANTS = {"sh": "shares_outstanding", "cash": "cash", "sti": "st_investments", "dt": "debt_total",
+             "dc": "debt_current", "dn": "debt_noncurrent", "stb": "short_term_debt",
+             "gw": "goodwill", "eq": "equity"}
+# Debt tags that already include short-term borrowings, so those are not added again.
+_DEBT_INCL_SHORT_TERM = ("DebtLongtermAndShorttermCombinedAmount", "DebtCurrent")
+_FLOWS = ("ebit", "cfo", "capex")
 
-    inst = {k: f"(SELECT cik, value, period_end FROM {bound(latest_instant_sql(policy), k)})"
-            for k in ("shares_outstanding", "cash", "st_investments", "debt_total",
-                      "debt_current", "debt_noncurrent", "goodwill", "equity")}
-    flow = {k: bound(ttm_flow_sql(policy), k) for k in ("operating_income", "cfo", "capex")}
-    parts = {
-        "sh": inst["shares_outstanding"], "cash": inst["cash"], "sti": inst["st_investments"],
-        "dt": inst["debt_total"], "dc": inst["debt_current"], "dn": inst["debt_noncurrent"],
-        "gw": inst["goodwill"], "eq": inst["equity"],
-        "ebit": flow["operating_income"], "cfo": flow["cfo"], "capex": flow["capex"],
-    }
-    ctes = ",\n".join(f"{k} AS {v}" for k, v in parts.items())
-    sql = f"""
-    WITH {ctes},
+
+def valuation_sql(policy: Policy = "as_last_known") -> str:
+    """SQL behind valuation(); binds only $as_of, so other screens can embed it."""
+    def one(concept: str) -> str:
+        return f"SELECT * FROM pit WHERE concept = '{concept}'"
+
+    parts = {k: latest_instant_sql(policy, one(c)) for k, c in _INSTANTS.items()}
+    parts |= {k: ttm_flow_sql(policy, one(k)) for k in _FLOWS}
+    ctes = ",\n".join(f"{k} AS ({v})" for k, v in parts.items())
+    return f"""
+    WITH pit AS MATERIALIZED ({concepts_sql(policy, tuple(_INSTANTS.values()) + _FLOWS)}),
+    {ctes},
     px AS (
         SELECT cik, close_raw, price_date FROM prices WHERE price_date <= $as_of
         QUALIFY row_number() OVER (PARTITION BY cik ORDER BY price_date DESC) = 1
@@ -83,23 +88,92 @@ def valuation(con: duckdb.DuckDBPyConnection, as_of: date, policy: Policy = "as_
         SELECT cik, max(close_raw / split_factor(cik, price_date) * split_factor(cik, $as_of)) AS hi_52w
         FROM prices WHERE price_date BETWEEN $as_of - INTERVAL 365 DAY AND $as_of GROUP BY cik
     ),
+    bs AS (
+        -- Balance-sheet date: the newest period among the items EV is built from. An item
+        -- last reported before it is stale (the filer stopped tagging it or moved tags).
+        SELECT cik, max(period_end) AS bs_date FROM (
+            SELECT cik, period_end FROM cash UNION ALL SELECT cik, period_end FROM dt
+            UNION ALL SELECT cik, period_end FROM dc UNION ALL SELECT cik, period_end FROM dn
+            UNION ALL SELECT cik, period_end FROM stb UNION ALL SELECT cik, period_end FROM eq
+        ) GROUP BY cik
+    ),
+    debt_src AS (
+        -- Total and current + noncurrent are alternative sources; the newer one wins, so
+        -- last year's 10-K total cannot beat this quarter's split. Ties go to the total.
+        SELECT ids.cik, dt.value AS t_val, dt.period_end AS t_end, dt.tag AS t_tag, dt.accn AS t_accn,
+               dc.value AS c_val, dc.period_end AS c_end, dc.tag AS c_tag, dc.accn AS c_accn,
+               dn.value AS n_val, dn.period_end AS n_end, dn.tag AS n_tag, dn.accn AS n_accn,
+               stb.value AS s_val, stb.period_end AS s_end, stb.tag AS s_tag, stb.accn AS s_accn,
+               coalesce(dt.period_end >= greatest(dc.period_end, dn.period_end),
+                        dt.period_end IS NOT NULL) AS use_total
+        FROM (SELECT cik FROM dt UNION SELECT cik FROM dc UNION SELECT cik FROM dn UNION SELECT cik FROM stb) ids
+        LEFT JOIN dt USING (cik) LEFT JOIN dc USING (cik) LEFT JOIN dn USING (cik) LEFT JOIN stb USING (cik)
+    ),
+    debt_dated AS (
+        -- Lines are summed at one date. A line last reported earlier (current LTD only in
+        -- the 10-K) is left out rather than mixed in: it was usually repaid or reclassified.
+        SELECT *,
+               CASE WHEN use_total THEN t_end ELSE coalesce(greatest(c_end, n_end), s_end) END AS d_end
+        FROM debt_src
+    ),
+    debt_lines AS (
+        SELECT cik, d_end, use_total,
+               use_total AS has_t,
+               NOT use_total AND c_end = d_end AS has_c,
+               NOT use_total AND n_end = d_end AS has_n,
+               s_end = d_end AND NOT ((use_total AND t_tag IN {_DEBT_INCL_SHORT_TERM})
+                                      OR (NOT use_total AND c_end = d_end AND c_tag IN {_DEBT_INCL_SHORT_TERM})) AS has_s,
+               t_val, c_val, n_val, s_val, t_tag, c_tag, n_tag, s_tag, t_accn, c_accn, n_accn, s_accn
+        FROM debt_dated
+    ),
+    debt AS (
+        SELECT cik, d_end AS debt_period_end,
+               CASE WHEN has_t THEN t_val ELSE 0 END + CASE WHEN has_c THEN c_val ELSE 0 END
+                 + CASE WHEN has_n THEN n_val ELSE 0 END + CASE WHEN coalesce(has_s, FALSE) THEN s_val ELSE 0 END AS debt,
+               array_to_string([CASE WHEN has_t THEN t_tag END, CASE WHEN has_c THEN c_tag END,
+                                CASE WHEN has_n THEN n_tag END, CASE WHEN has_s THEN s_tag END], '+') AS debt_tag,
+               list_distinct(list_filter([CASE WHEN has_t THEN t_accn END, CASE WHEN has_c THEN c_accn END,
+                                          CASE WHEN has_n THEN n_accn END, CASE WHEN has_s THEN s_accn END],
+                                         lambda a: a IS NOT NULL)) AS debt_accns
+        FROM debt_lines
+    ),
     base AS (
         SELECT px.cik, px.price_date, px.close_raw,
+               datediff('day', px.price_date, $as_of) AS price_age_days,
                -- Cover shares are counted before the price date; a split in between
                -- (NVDA: May 24 count, June 10 split) must scale them to the price's basis.
                px.close_raw * sh.value * split_factor(px.cik, sh.period_end)
                    / split_factor(px.cik, px.price_date) AS mcap,
-               coalesce(dt.value, dc.value + dn.value) AS debt,
-               cash.value + coalesce(sti.value, 0) AS cash_like,
-               ebit.value AS ebit_ttm, ebit.basis AS ebit_basis,
-               cfo.value - capex.value AS fcf_ttm,
-               gw.value / nullif(eq.value, 0) AS goodwill_to_equity,
+               sh.tag AS shares_tag, sh.period_end AS shares_period_end,
+               datediff('day', sh.period_end, $as_of) AS shares_age_days,
+               bs.bs_date,
+               -- Investments only count at the cash date: an old figure may be long sold.
+               cash.value + CASE WHEN sti.period_end = cash.period_end THEN sti.value ELSE 0 END AS cash_like,
+               -- 20-F / 40-F filers: annual cover shares, often non-USD statements, and an
+               -- ADS price against an ordinary-share count. Market cap cannot be trusted.
+               regexp_matches(coalesce(sh.form, cash.form, ''), '^(20|40)-F') AS foreign_filer,
+               cash.period_end AS cash_period_end,
+               debt.debt, debt.debt_period_end,
+               ebit.value AS ebit_ttm, ebit.basis AS ebit_basis, ebit.tag AS ebit_tag,
+               ebit.period_end AS ebit_period_end, ebit.same_tag AS ebit_same_tag,
+               cfo.value AS cfo_ttm, capex.value AS capex_ttm, cfo.value - capex.value AS fcf_ttm,
+               cfo.period_end AS cfo_period_end, capex.period_end AS capex_period_end,
+               CASE WHEN gw.period_end = eq.period_end THEN gw.value / nullif(eq.value, 0) END AS goodwill_to_equity,
+               hi.hi_52w,
                1 - px.close_raw / nullif(hi.hi_52w, 0) AS drawdown_52w,
-               datediff('day', sh.period_end, $as_of) AS shares_age_days
+               list_filter([
+                   {{'item': 'shares', 'tag': sh.tag, 'period_end': sh.period_end, 'accns': [sh.accn]}},
+                   {{'item': 'cash', 'tag': cash.tag, 'period_end': cash.period_end, 'accns': [cash.accn]}},
+                   {{'item': 'st_investments', 'tag': sti.tag, 'period_end': sti.period_end,
+                     'accns': CASE WHEN sti.period_end = cash.period_end THEN [sti.accn] END}},
+                   {{'item': 'debt', 'tag': debt.debt_tag, 'period_end': debt.debt_period_end, 'accns': debt.debt_accns}},
+                   {{'item': 'ebit', 'tag': ebit.tag, 'period_end': ebit.period_end, 'accns': ebit.accns}},
+                   {{'item': 'cfo', 'tag': cfo.tag, 'period_end': cfo.period_end, 'accns': cfo.accns}},
+                   {{'item': 'capex', 'tag': capex.tag, 'period_end': capex.period_end, 'accns': capex.accns}}
+               ], lambda s: s.accns[1] IS NOT NULL) AS sources
         FROM px
-        JOIN sh USING (cik)
-        LEFT JOIN cash USING (cik) LEFT JOIN sti USING (cik)
-        LEFT JOIN dt USING (cik) LEFT JOIN dc USING (cik) LEFT JOIN dn USING (cik)
+        LEFT JOIN sh USING (cik) LEFT JOIN bs USING (cik)
+        LEFT JOIN cash USING (cik) LEFT JOIN sti USING (cik) LEFT JOIN debt USING (cik)
         LEFT JOIN gw USING (cik) LEFT JOIN eq USING (cik)
         LEFT JOIN ebit USING (cik) LEFT JOIN cfo USING (cik) LEFT JOIN capex USING (cik)
         LEFT JOIN hi USING (cik)
@@ -108,14 +182,46 @@ def valuation(con: duckdb.DuckDBPyConnection, as_of: date, policy: Policy = "as_
         mcap + debt - cash_like AS ev,
         CASE WHEN ebit_ttm > 0 THEN (mcap + debt - cash_like) / ebit_ttm END AS ev_ebit,
         (cash_like - debt) / nullif(mcap, 0) AS net_cash_to_mcap,
-        shares_age_days > 200 AS stale_shares
+        shares_age_days > {STALE_DAYS} AS stale_shares,
+        -- Multi-class filers tag cover shares per class, which companyfacts drops; what is
+        -- left is a balance-sheet count of one class, or nothing (META, BRK, V).
+        shares_tag IS DISTINCT FROM '{DEI_SHARES}' AS multi_class_risk,
+        list_filter([
+            CASE WHEN mcap IS NULL THEN 'missing_shares'
+                 WHEN shares_age_days > {STALE_DAYS} THEN 'stale_shares' END,
+            CASE WHEN price_age_days > {STALE_PRICE_DAYS} THEN 'stale_price' END,
+            CASE WHEN foreign_filer THEN 'foreign_filer' END,
+            CASE WHEN cash_like IS NULL THEN 'missing_cash' WHEN cash_period_end < bs_date THEN 'stale_cash' END,
+            CASE WHEN debt IS NULL THEN 'missing_debt' WHEN debt_period_end < bs_date THEN 'stale_debt' END,
+            CASE WHEN datediff('day', bs_date, $as_of) > {STALE_DAYS} THEN 'stale_balance_sheet' END,
+            CASE WHEN ebit_ttm IS NULL THEN 'missing_ebit' WHEN NOT ebit_same_tag THEN 'mixed_ebit_tags' END,
+            CASE WHEN fcf_ttm IS NULL THEN 'missing_fcf'
+                 WHEN cfo_period_end <> capex_period_end THEN 'fcf_period_mismatch' END,
+            CASE WHEN datediff('day', least(ebit_period_end, cfo_period_end), $as_of) > {STALE_DAYS}
+                 THEN 'stale_financials' END
+        ], lambda x: x IS NOT NULL) AS issues
     FROM base
     """
-    return con.sql(sql, params={"as_of": as_of})
+
+
+def valuation(con: duckdb.DuckDBPyConnection, as_of: date, policy: Policy = "as_last_known"):
+    """Market cap, EV, EV/EBIT, net cash / mcap, FCF, goodwill/equity, as of a date.
+
+    One row per priced company. Missing inputs stay NULL and are named in `issues`
+    (missing_debt, stale_cash, ...), so a filer that simply didn't tag debt cannot pass
+    as debt-free and a stale number cannot pass as current. `sources` lists the tag,
+    period and accession numbers behind each input. All concepts come from one scan.
+    """
+    return con.sql(valuation_sql(policy), params={"as_of": as_of})
 
 
 def cluster_buys(con: duckdb.DuckDBPyConnection, as_of: date, window_days: int = 30,
                  include_unknown_10b5_1: bool = False):
+    """Discretionary open-market buys known by as_of; see cluster_buys_sql."""
+    return con.sql(cluster_buys_sql(window_days, include_unknown_10b5_1), params={"as_of": as_of})
+
+
+def cluster_buys_sql(window_days: int = 30, include_unknown_10b5_1: bool = False) -> str:
     """Discretionary open-market buys known by as_of (filed <= as_of, not txn_date).
 
     Reads form4_effective(as_of), where amendments filed by as_of replace the filings
@@ -133,7 +239,7 @@ def cluster_buys(con: duckdb.DuckDBPyConnection, as_of: date, window_days: int =
                    "(t.is_10b5_1 = FALSE OR (t.is_10b5_1 IS NULL AND t.filed < DATE '2023-04-01'))")
     sql = f"""
     WITH buys AS (
-        SELECT t.issuer_cik, t.owner_cik, t.owner_name, t.is_officer, t.officer_title, t.txn_date, t.filed,
+        SELECT t.accn, t.issuer_cik, t.owner_cik, t.owner_name, t.is_officer, t.officer_title, t.txn_date, t.filed,
                t.shares, t.price, t.shares * t.price AS usd, t.is_10b5_1
         FROM form4_effective($as_of) t
         LEFT JOIN prices p ON p.cik = t.issuer_cik AND p.price_date = t.txn_date
@@ -154,12 +260,13 @@ def cluster_buys(con: duckdb.DuckDBPyConnection, as_of: date, window_days: int =
            count(DISTINCT owner_cik) FILTER (WHERE regexp_matches(coalesce(officer_title, ''), '(?i)chief|ceo|cfo|president')) AS n_c_suite,
            sum(usd) AS usd_bought,
            max(usd) AS max_single_usd,
-           list(DISTINCT owner_name) AS buyers,
-           bool_or(is_10b5_1 IS NULL) AS has_unknown_plan_status
+           list_sort(list(DISTINCT owner_name)) AS buyers,
+           bool_or(is_10b5_1 IS NULL) AS has_unknown_plan_status,
+           list_sort(list(DISTINCT accn)) AS accns
     FROM buys GROUP BY issuer_cik
     HAVING count(DISTINCT owner_cik) >= 2 OR max(usd) >= 100000
     """
-    return con.sql(sql, params={"as_of": as_of})
+    return sql
 
 
 def insider_holdings(con: duckdb.DuckDBPyConnection, as_of: date):
