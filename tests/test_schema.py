@@ -5,7 +5,8 @@ import pytest
 
 from src.db.schema import BASELINE_DDL, CONCEPT_SEED, MIGRATIONS, connect, migrate, sync_concept_map
 
-ADD_COUNTRY = (2, "ALTER TABLE companies ADD COLUMN country VARCHAR")
+NEXT = max(v for v, _ in MIGRATIONS) + 1
+ADD_COUNTRY = (NEXT, "ALTER TABLE companies ADD COLUMN country VARCHAR")
 
 
 def versions(con) -> list[int]:
@@ -32,7 +33,7 @@ def test_pre_migration_database_is_adopted_without_data_loss(tmp_path):
     legacy.close()
 
     con = connect(db)
-    assert versions(con) == [1]
+    assert versions(con) == [v for v, _ in MIGRATIONS]
     assert con.execute("SELECT name FROM companies WHERE cik = 7").fetchall() == [("Acme",)]
     assert "person" in {r[0] for r in con.execute("SHOW TABLES").fetchall()}
 
@@ -41,7 +42,7 @@ def test_new_migration_runs_once_on_existing_data(tmp_path):
     db = str(tmp_path / "e.duckdb")
     con = connect(db)
     con.execute("INSERT INTO companies VALUES (7, 'Acme', 3571, NULL, '1231', NULL, NULL, [], ['ACM'], FALSE, FALSE)")
-    assert migrate(con, MIGRATIONS + [ADD_COUNTRY]) == [2]
+    assert migrate(con, MIGRATIONS + [ADD_COUNTRY]) == [NEXT]
     assert migrate(con, MIGRATIONS + [ADD_COUNTRY]) == []
     assert "country" in columns(con, "companies")
     assert con.execute("SELECT name, country FROM companies").fetchall() == [("Acme", None)]
@@ -49,12 +50,12 @@ def test_new_migration_runs_once_on_existing_data(tmp_path):
 
 def test_failing_migration_rolls_back_and_is_not_recorded():
     con = connect(":memory:")
-    bad = (2, "ALTER TABLE companies ADD COLUMN half_done INTEGER; SELECT * FROM no_such_table")
+    bad = (NEXT, "ALTER TABLE companies ADD COLUMN half_done INTEGER; SELECT * FROM no_such_table")
     with pytest.raises(duckdb.Error):
         migrate(con, MIGRATIONS + [bad])
-    assert versions(con) == [1]
+    assert versions(con) == [v for v, _ in MIGRATIONS]
     assert "half_done" not in columns(con, "companies")
-    assert migrate(con, MIGRATIONS + [ADD_COUNTRY]) == [2]   # fixed migration still applies
+    assert migrate(con, MIGRATIONS + [ADD_COUNTRY]) == [NEXT]   # fixed migration still applies
 
 
 def test_database_newer_than_code_is_refused(tmp_path):

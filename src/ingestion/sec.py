@@ -44,15 +44,16 @@ class SecClient:
     def get(self, url: str) -> bytes:
         return self._send(url).content
 
-    def download(self, url: str, dest: Path) -> dict:
+    def download(self, url: str, dest: Path, force: bool = False) -> dict:
         """Stream `url` to `dest` with a conditional GET. Returns the file's metadata.
 
         Metadata (ETag, Last-Modified, sha256) lives in `<dest>.meta.json` and outlives
         the file, so raw zips can be deleted after loading and still be skipped next
         run. `changed` is False when the server answered 304 Not Modified.
+        `force` skips the conditional headers, for when the local copy is gone.
         """
         meta_path = dest.with_name(dest.name + ".meta.json")
-        old = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+        old = {} if force else json.loads(meta_path.read_text()) if meta_path.exists() else {}
         headers = {}
         if old.get("etag"):
             headers["If-None-Match"] = old["etag"]

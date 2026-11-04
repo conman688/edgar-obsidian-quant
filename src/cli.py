@@ -11,6 +11,7 @@ import argparse
 import sys
 from datetime import date
 from pathlib import Path
+from typing import Callable
 
 from src import config
 from src.db.pit import concept_sql
@@ -23,15 +24,27 @@ def _client() -> SecClient:
     return SecClient(config.sec_user_agent())
 
 
-def _fetch_zip(url: str, name: str, local: str | None) -> tuple[Path | None, str | None, bool]:
-    """Return (path, sha256, delete_after). path is None when SEC reports no change."""
+def _fetch_zip(url: str, name: str, local: str | None,
+               is_loaded: Callable[[str | None], bool]) -> tuple[Path | None, str | None, bool]:
+    """Return (path, sha256, delete_after). path is None only when this version is fully loaded.
+
+    A 304 says the file is unchanged, not that it was loaded: a crashed or filtered
+    run also leaves the validators behind. So a 304 skips only when the ledger agrees.
+    """
     if local:
         p = Path(local)
         return p, sha256_file(p), False
-    meta = _client().download(url, config.RAW_DIR / name)
+    client, dest = _client(), config.RAW_DIR / name
+    meta = client.download(url, dest)
     if not meta["changed"]:
-        print(f"{name}: not modified since last run")
-        return None, meta.get("sha256"), False
+        if is_loaded(meta.get("sha256")):
+            print(f"{name}: not modified since last run")
+            return None, meta.get("sha256"), False
+        if dest.exists() and sha256_file(dest) == meta.get("sha256"):
+            print(f"{name}: not modified; finishing load from local copy")
+            return dest, meta["sha256"], True
+        print(f"{name}: not modified but never fully loaded; downloading again")
+        meta = client.download(url, dest, force=True)
     print(f"{name}: downloaded {meta['bytes'] / 1e6:,.0f} MB")
     return Path(meta["path"]), meta["sha256"], True
 
@@ -43,7 +56,8 @@ def _finish(path: Path, delete: bool, keep_raw: bool) -> None:
 
 
 def ingest_facts(con, args) -> None:
-    path, sha, delete = _fetch_zip(config.COMPANYFACTS_ZIP_URL, "companyfacts.zip", args.zip)
+    path, sha, delete = _fetch_zip(config.COMPANYFACTS_ZIP_URL, "companyfacts.zip", args.zip,
+                                   lambda sha: companyfacts.is_loaded(con, sha))
     if path is None:
         return
     ciks = set(args.cik) if args.cik else None
@@ -56,12 +70,15 @@ def ingest_facts(con, args) -> None:
         print("companyfacts: this version is already loaded")
     else:
         print(f"companyfacts: {stats.files:,} companies, {stats.facts_seen:,} facts read, "
-              f"{stats.facts_inserted:,} inserted in {stats.seconds:,.0f}s")
-    _finish(path, delete, args.keep_raw)
+              f"{stats.facts_inserted:,} inserted in {stats.seconds:,.0f}s"
+              f"{f'; {stats.filings_grown:,} known filings gained facts' if stats.filings_grown else ''}")
+    # A --cik load is partial: keep the zip so the full load needs no second download.
+    _finish(path, delete and not ciks, args.keep_raw)
 
 
 def ingest_companies(con, args) -> None:
-    path, sha, delete = _fetch_zip(config.SUBMISSIONS_ZIP_URL, "submissions.zip", args.zip)
+    path, sha, delete = _fetch_zip(config.SUBMISSIONS_ZIP_URL, "submissions.zip", args.zip,
+                                   lambda sha: reference.is_loaded(con, sha))
     if path is None:
         return
     n = reference.load_companies_zip(con, path, sha)
