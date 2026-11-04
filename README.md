@@ -30,6 +30,14 @@ has not changed. Raw zips are deleted after loading unless `--keep-raw` is passe
 history for later splits; the loader stores raw values as printed on the day, so they
 line up with as-filed share counts. Re-running fetches only the last week onward.
 
+`ingest form4` loads insider trades (Form 4 and 4/A, stock rows only). Quarters SEC has
+published as Insider Transactions Data Sets load from one zip each, for every issuer.
+SEC publishes them a quarter or more late, so the rest come from the quarterly form index:
+each filing's XML is fetched, for priced companies only. A per-filing ledger keeps the two
+paths from loading a filing twice, and both produce identical rows for the same filing.
+Default range is two years back (`--since 2024q4` to change; older quarters are cheap).
+Amendments (4/A) replace the filing they amend only from the day they were filed.
+
 First full load (2026-11-02, 8 GB MacBook):
 
 | Step | Download | Load | Result |
@@ -60,6 +68,7 @@ Uncapped, a heavy query on an 8 GB machine with little free disk can crash the c
 | `src/ingestion/reference.py` | Ticker map and company profiles (SIC, fiscal year end) |
 | `src/ingestion/prices.py` | Yahoo daily prices, splits, dividends; raw-price rebuild, coverage tracking |
 | `src/ingestion/form4_insider.py` | Form 4 XML parser |
+| `src/ingestion/form4_sources.py` | Form 4 bulk data sets, form index, per-filing XML fetch, shared ledger |
 | `src/llm/schemas.py` | Optional quote-anchored extraction guard (only if an LLM is added) |
 | `src/obsidian/writer.py` | Atomic note writer, AUTO-block merge, CIK-keyed person registry |
 | `tests/test_failure_modes.py` | One test per audited failure mode |
@@ -68,6 +77,8 @@ Uncapped, a heavy query on an 8 GB machine with little free disk can crash the c
 | `tests/test_schema.py` | Migrations: fresh, legacy adoption, new, failing, newer-than-code |
 | `tests/test_prices.py` | Split undo, refresh idempotency, primary-ticker choice, failed batches |
 | `tests/test_review_fixes.py` | Price split direction, filing order before tag priority |
+| `tests/test_m2_review.py` | Price refresh windows, corporate actions, failure status, filing replacement |
+| `tests/test_form4_sources.py` | Data set vs XML parity on a real filing, ledger, amendments, identical lots |
 
 ## Invariants
 
@@ -87,8 +98,8 @@ SEC requires a `User-Agent` with a real contact email and caps traffic at 10 req
 
 ## Status
 
-Done: schema with migrations, PIT layer, screens, Form 4 parser, Obsidian writer, M1 ingestion
-(live SEC data), M2 prices/splits/dividends, CLI.
-Not done: Form 4 ingestion, screener CLI, backtest, vault sync, YoY footnote redline, Jinja templates.
+Done: schema with migrations, PIT layer, screens, Obsidian writer, M1 ingestion (live SEC data),
+M2 prices/splits/dividends, M3 insider trades, CLI.
+Not done: screener CLI, backtest, vault sync, YoY footnote redline, Jinja templates.
 
 See [ROADMAP.md](ROADMAP.md) for goals, milestones and acceptance checks.

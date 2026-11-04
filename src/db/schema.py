@@ -260,13 +260,62 @@ MIGRATIONS: list[tuple[int, Migration]] = [
     (2, FILING_COUNTS_DDL),
     (3, PRICES_DDL),
     (4, _filing_fingerprints),
+    (5, """
+-- M3: Form 4 rows carry their form type and period so amendments can supersede
+-- originals; form4_filings is the per-accession ledger shared by the bulk data
+-- sets and per-filing XML; form4_index lists filings SEC has not bulk-published yet.
+ALTER TABLE form4_transactions ADD COLUMN form_type VARCHAR;          -- '4' | '4/A'
+ALTER TABLE form4_transactions ADD COLUMN period_of_report DATE;
+
+CREATE TABLE IF NOT EXISTS form4_filings (
+    accn        VARCHAR PRIMARY KEY,
+    issuer_cik  INTEGER,
+    form_type   VARCHAR,
+    filed       DATE,
+    source      VARCHAR NOT NULL,      -- 'dataset:2025q2' | 'xml'
+    status      VARCHAR NOT NULL,      -- 'done' | 'skipped' (no XML) | 'failed'
+    message     VARCHAR,
+    loaded_at   TIMESTAMP NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS form4_index (
+    quarter     VARCHAR NOT NULL,      -- '2026q3'
+    accn        VARCHAR NOT NULL,
+    filer_cik   INTEGER NOT NULL,      -- issuer or a reporting owner: SEC lists both
+    form_type   VARCHAR NOT NULL,
+    filed       DATE    NOT NULL,
+    path        VARCHAR NOT NULL,
+    PRIMARY KEY (accn, filer_cik)
+);
+"""),
 ]
 
-# Macros are code, not data: recreated on every connect so edits always take effect.
+# Macros and views are code, not data: recreated on every connect so edits take effect.
 MACROS = """
 CREATE OR REPLACE MACRO split_factor(p_cik, p_date) AS (
     SELECT coalesce(product(ratio), 1.0) FROM splits WHERE cik = p_cik AND ex_date > p_date
 );
+
+-- Form 4 rows known on p_as_of, after amendments: a 4/A filed by then replaces
+-- earlier filings (original or earlier amendments) by the same owner for the same
+-- issuer and period of report. An amendment filed later cannot reach back: that
+-- would be look-ahead. Originals never replace each other: two separate Form 4s
+-- for one period are both real.
+CREATE OR REPLACE MACRO form4_effective(p_as_of) AS TABLE
+WITH known AS (
+    SELECT * FROM form4_transactions WHERE filed <= p_as_of
+),
+f AS (
+    SELECT DISTINCT accn, issuer_cik, owner_cik, period_of_report, filed, form_type FROM known
+),
+superseded AS (
+    SELECT DISTINCT f.accn FROM f
+    JOIN f a ON a.form_type = '4/A' AND a.accn <> f.accn
+            AND a.issuer_cik = f.issuer_cik AND a.owner_cik = f.owner_cik
+            AND a.period_of_report = f.period_of_report
+            AND (a.filed > f.filed OR (a.filed = f.filed AND a.accn > f.accn))
+)
+SELECT k.* FROM known k ANTI JOIN superseded s ON s.accn = k.accn;
 """
 
 CONCEPT_SEED: list[tuple[str, str, str, str, int]] = [

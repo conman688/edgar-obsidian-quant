@@ -7,6 +7,7 @@ from pathlib import Path
 DATA_DIR = Path(os.environ.get("EOQ_DATA_DIR", "data"))
 RAW_DIR = DATA_DIR / "raw"
 DB_PATH = DATA_DIR / "edgar.duckdb"
+VAULT_DIR = Path(os.environ["EOQ_VAULT_DIR"]) if os.environ.get("EOQ_VAULT_DIR") else None
 
 # DuckDB defaults to 80% of RAM and may spill until the disk is nearly full. On an
 # 8 GB laptop with little free disk that can exhaust swap and crash the machine.

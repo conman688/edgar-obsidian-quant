@@ -118,26 +118,36 @@ def cluster_buys(con: duckdb.DuckDBPyConnection, as_of: date, window_days: int =
                  include_unknown_10b5_1: bool = False):
     """Discretionary open-market buys known by as_of (filed <= as_of, not txn_date).
 
-    Excludes derivative rows, 10b5-1 plan trades, zero-price rows (gifts, transfers)
-    and amendment duplicates (same owner/date/shares/price across accessions).
+    Reads form4_effective(as_of), where amendments filed by as_of replace the filings
+    they amend. Identical lots in one filing are separate purchases and all count.
+
+    Code 'P' means open-market *or private* purchase, so it also covers IPO
+    allocations, private placements and funds buying into deals. Kept: officers and
+    directors buying common stock, outside 10b5-1 plans, with no offering named in
+    the footnotes, at a price within 0.5-2x that day's close when one is stored
+    (catches totals typed into the price field).
     """
     # Before 2023-04-01 no checkbox existed: NULL means "no plan footnote", accept it.
     # After that date the box is mandatory, so NULL means a parse gap: reject by default.
-    plan_filter = ("is_10b5_1 IS DISTINCT FROM TRUE" if include_unknown_10b5_1 else
-                   "(is_10b5_1 = FALSE OR (is_10b5_1 IS NULL AND filed < DATE '2023-04-01'))")
+    plan_filter = ("t.is_10b5_1 IS DISTINCT FROM TRUE" if include_unknown_10b5_1 else
+                   "(t.is_10b5_1 = FALSE OR (t.is_10b5_1 IS NULL AND t.filed < DATE '2023-04-01'))")
     sql = f"""
     WITH buys AS (
-        SELECT DISTINCT ON (issuer_cik, owner_cik, txn_date, shares, price)
-               issuer_cik, owner_cik, owner_name, is_officer, officer_title, txn_date, filed,
-               shares, price, shares * price AS usd, is_10b5_1
-        FROM form4_transactions
-        WHERE NOT is_derivative AND NOT is_holding
-          AND txn_code = 'P' AND acq_disp = 'A'
-          AND price > 0 AND shares > 0
-          AND filed <= $as_of
-          AND txn_date > $as_of - INTERVAL {int(window_days)} DAY
+        SELECT t.issuer_cik, t.owner_cik, t.owner_name, t.is_officer, t.officer_title, t.txn_date, t.filed,
+               t.shares, t.price, t.shares * t.price AS usd, t.is_10b5_1
+        FROM form4_effective($as_of) t
+        LEFT JOIN prices p ON p.cik = t.issuer_cik AND p.price_date = t.txn_date
+        WHERE NOT t.is_derivative AND NOT t.is_holding
+          AND t.txn_code = 'P' AND t.acq_disp = 'A'
+          AND t.price > 0 AND t.shares > 0
+          AND t.txn_date > $as_of - INTERVAL {int(window_days)} DAY
           AND {plan_filter}
-        ORDER BY issuer_cik, owner_cik, txn_date, shares, price, filed ASC
+          AND (t.is_officer OR t.is_director)
+          AND NOT regexp_matches(coalesce(t.security_title, ''),
+                                 '(?i)preferred|warrant|note|debenture|unit|right|option')
+          AND NOT regexp_matches(coalesce(t.footnotes, ''),
+                                 '(?i)initial public offering|\\bIPO\\b|private placement|underwritten|registered direct|public offering|subscription agreement|securities purchase agreement')
+          AND (p.close_raw IS NULL OR t.price BETWEEN 0.5 * p.close_raw AND 2 * p.close_raw)
     )
     SELECT issuer_cik,
            count(DISTINCT owner_cik) AS n_insiders,
@@ -162,8 +172,8 @@ def insider_holdings(con: duckdb.DuckDBPyConnection, as_of: date):
     WITH last_per_account AS (
         SELECT issuer_cik, owner_cik, owner_name, ownership_form, nature_of_ownership,
                shares_owned_following
-        FROM form4_transactions
-        WHERE NOT is_derivative AND filed <= $as_of AND shares_owned_following IS NOT NULL
+        FROM form4_effective($as_of)
+        WHERE NOT is_derivative AND shares_owned_following IS NOT NULL
         QUALIFY row_number() OVER (
             PARTITION BY issuer_cik, owner_cik, ownership_form, nature_of_ownership
             ORDER BY coalesce(txn_date, filed) DESC, filed DESC, line_no DESC
