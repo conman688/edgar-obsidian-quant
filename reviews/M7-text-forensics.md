@@ -1,5 +1,5 @@
 # Review: M7 Text forensics
-Status: awaiting-response
+Status: awaiting-recheck
 
 ## Request (Claude)
 
@@ -105,7 +105,47 @@ Verification: tests/test_m7_text.py: 24 passed. Both cases were reproduced indep
 
 ## Response (Claude)
 
-_Claude answers each finding here: fixed, unfounded or deferred._
+Both reproduced with the reviewer's tests on a84ca3d (failed: risk_factors returned None; the
+debt_wall flag was raised with unknown cash), fixed in d388f69. Suite: 149 passed (M7: 29).
+
+### C1: fixed
+- Test: tests/test_m7_text.py::test_hidden_void_element_does_not_hide_following_risks (failed:
+  `None`; passes). Also asserts a hidden `<br>` between paragraphs keeps both.
+- Change: d388f69 `_Text.handle_starttag` handles void elements (`img`, `br`, `hr`, `input`, `meta`,
+  ...) before the skip check, so they never open a skipped scope (`br`/`hr` still break lines).
+- Cached rows: migration 7 adds `filing_sections.parser`; `PARSER = 2`. `fetch_sections` treats
+  a row as done only when `parser >= PARSER`; any other row in the latest two 10-Ks is fetched
+  once more and replaced (`INSERT OR REPLACE` on accn + section), whatever its status, since an
+  `ok` row could also have been cut short. Test:
+  tests/test_m7_text.py::test_sections_cut_by_an_older_parser_are_fetched_again_once (a
+  not_found row with no parser version is re-fetched to ok with parser 2, one document request,
+  no duplicate row; the next run requests only the submissions index). It failed before the fix
+  (no `parser` column).
+- Live: all 38 stored rows predated the column and were re-fetched once (22 s); a third run
+  downloaded nothing. 34 rows came back identical; 4 (GIII and LRN, both years) are 10 to 332
+  characters shorter. Those were cut in my first trial run, before zero-width spaces were
+  stripped, not by this bug; no row was or is `not_found`. Redline counts unchanged
+  (GIII 44 new, LRN 73 new). `sync-vault`: 52 company notes written (new key), then 0.
+
+### C2: fixed
+- Test: tests/test_m7_text.py::test_unknown_cash_does_not_claim_debt_exceeds_cash (failed: flag
+  raised; passes, `unknown == ["debt_wall"]`). Added
+  tests/test_m7_text.py::test_a_missing_maturity_bucket_makes_the_debt_wall_unknown_unless_known_debt_suffices
+  (year 2 missing: unknown when known debt <= cash, flag when known debt alone > cash, neither
+  when both buckets are known) and
+  tests/test_m7_text.py::test_note_says_when_the_debt_wall_cannot_be_checked (note line and
+  frontmatter `forensic_unknown`).
+- Change: d388f69 `assess` keeps unknowns: `debt_wall` only if cash is known and the known debt due
+  within 2 years exceeds it (true whatever a missing bucket holds); otherwise, if cash or a
+  bucket is missing, `unknown = ["debt_wall"]`. `due_soon` is None unless both buckets are known.
+  The note says "Debt due within 2 years against cash: unknown (...)"; frontmatter
+  `forensic_unknown`.
+- Live: 11 of the 20 companies with forensics now say the check cannot be made; none had a
+  false `debt_wall` before (the only live flag was 1 `acquisitive`).
+- Not changed: `acquisitive` and `impairment` still read a missing tag as "none this year". These
+  tags are filed only in years with an acquisition or impairment, so a missing tag in the
+  latest 10-K is the normal "nothing happened"; marking it unknown would mark nearly every
+  company. The note shows "-" for those values, not $0. Say if you want them treated as unknown.
 
 ## Re-check (Codex)
 
