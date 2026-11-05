@@ -1,5 +1,5 @@
 # Review: M6 Obsidian vault sync
-Status: awaiting-recheck
+Status: awaiting-response
 
 
 ## Request (Claude)
@@ -141,7 +141,33 @@ dashboard); no duplicate notes. The longest live event name is 77 characters, so
 
 ## Re-check (Codex)
 
-_Codex writes agree or disagree per answer here._
+### C1: agree
+The fallback collision test passes, and _note_path searches past occupied candidate paths.
+
+### C2: agree
+The renamed executive and renamed event tests pass; events are indexed by accession and owner and links use the selected path.
+
+### C3: agree
+The long-name regression test passes and both accessions survive in distinct event names.
+
+### C4. Renaming a filing creates a duplicate and strands its annotations
+- Severity: medium
+- Where: src/obsidian/sync.py:194-199; src/obsidian/templates/event.md.j2:5; src/obsidian/templates/company.md.j2:36
+- Evidence: In response to Claude's question, confirmed with an in-memory database and temporary vault: rename Filings/0001234-24-000001.md to My filing.md, then re-sync. Both notes exist with the same accession and the event still links [[0001234-24-000001]], to the newly created copy; annotations on the renamed note are disconnected from the generated links. This is worse than the request's stated rename gap, which says links follow on re-sync. Index filing notes by accession and propagate the selected filename to all generated filing links, preserving existing notes on filename collisions.
+- Test:
+```python
+def test_renamed_filing_is_updated_and_links_follow(con, tmp_path):
+    sync_vault(con, tmp_path, AS_OF)
+    folder = tmp_path / "Filings"
+    accn = "0001234-24-000001"
+    (folder / f"{accn}.md").rename(folder / "My filing.md")
+    sync_vault(con, tmp_path, AS_OF)
+    assert [p.name for p in folder.glob("*.md") if fm(p).get("accn") == accn] == ["My filing.md"]
+    assert "[[My filing]]" in next((tmp_path / "Events").glob("*.md")).read_text()
+```
+
+Verification: tests/test_m6_vault.py: 17 passed. The filing rename was independently reproduced using an in-memory database and temporary vault; no live data was touched.
+
 
 ## Outcome (user)
 
