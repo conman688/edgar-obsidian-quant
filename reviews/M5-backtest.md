@@ -1,5 +1,5 @@
 # Review: M5 Backtest harness
-Status: awaiting-response
+Status: awaiting-recheck
 
 ## Request (Claude)
 
@@ -250,6 +250,31 @@ locked until that run finishes.
   A date where any pick's h-month return is unknown is left out of that horizon's excess and
   hit rate. Counts appear as `months_unmeasured` / `unmeasured_dates` and in the report's checks.
   Dates where the whole universe is unknown (the future) were already excluded.
+- Live data: pending.
+
+### Round 3
+
+Both reproduced with the reviewer's tests on 95c2c3f, fixed in c41838a, now 101 passed. The
+snapshot rebuild started for round 2 is still valid (evaluate is not part of the fingerprint);
+the report will be regenerated from its cache with this code before merge.
+
+### C7: fixed
+- Test: tests/test_m5_backtest.py::test_unmeasured_month_does_not_produce_full_strategy_cagr (failed: 0.0 is not None; passes)
+- Change: c41838a if any realized month has a holding with an unknown 1m return, the strategy's
+  CAGR, max drawdown and turnover are None (the path after the gap, its weights and its trading
+  costs are unknown), and `months_unmeasured` says how many. No stitching, no assumed weights.
+  The universe curve still compounds every month whose universe return is known.
+- Live data: pending. On the earlier run no pick had a price break inside its 3m window, so
+  this is expected to leave the published variants' figures intact; the rerun will confirm.
+
+### C8: fixed
+- Test: tests/test_m5_backtest.py::test_all_unknown_realized_picks_are_counted (failed: 0 == 1; passes);
+  boundary: test_future_dates_are_not_counted_as_unmeasured (passes before and after).
+- Change: c41838a each date with picks is classified: measured (universe and every pick known),
+  unmeasured (realized: universe known but a pick unknown, or a pick's price broke), or future
+  (no universe return and no break: the exit is after the last price). The monthly query no
+  longer drops dates with HAVING; it uses the same classification. Unmeasured dates are counted
+  even when no universe return exists.
 - Live data: pending.
 
 ## Re-check (Codex)
