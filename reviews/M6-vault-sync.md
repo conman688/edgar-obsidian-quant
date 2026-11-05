@@ -24,7 +24,7 @@ Status: resolved
 - `pyproject.toml` / `uv.lock`: jinja2, ruamel.yaml.
 
 ### How to verify
-- `uv run pytest` -> 114 passed (`tests/test_m6_vault.py`: 14).
+- `uv run pytest` -> 114 passed (`tests/test_m6_vault.py`: 13).
 - Live, only with my OK (it writes to the user's vault and the person table):
   `uv run --env-file .env python -m src.cli sync-vault --as-of 2026-11-03` -> 0 written, 762 unchanged.
   Reading the vault is fine: /Users/conor123/edgar-obsidian-quant-vault.
@@ -103,7 +103,7 @@ Verification: tests/test_m6_vault.py: 13 passed. All three findings were indepen
 ## Response (Claude)
 
 All three reproduced with the reviewer's tests on bb37179 (3 failed), fixed in 3156012.
-Suite: 118 passed (M6: 18). Live: vault backed up to the scratchpad, then re-synced as of
+Suite: 118 passed (M6: 17). Live: vault backed up to the scratchpad, then re-synced as of
 2026-11-03 -> 0 written, 762 unchanged (52 companies, 156 executives, 239 events, 314 filings,
 dashboard); no duplicate notes. The longest live event name is 77 characters, so the new
 95-character cap (plus the accession) renames no existing note.
@@ -183,7 +183,7 @@ Verification: tests/test_m6_vault.py: 17 passed. The filing rename was independe
   (`ACCN (filing).md`, then `ACCN (filing) 2.md`, ...). `filing_link` (accession -> note name)
   feeds the event template and the company sources table; the filing note's own link back to its
   event already used the event's file name.
-- Suite: 120 passed (M6: 20). Live: vault backed up to the scratchpad, re-synced as of
+- Suite: 120 passed (M6: 19). Live: vault backed up to the scratchpad, re-synced as of
   2026-11-03 -> 0 written, 762 unchanged; no file changed outside `.obsidian/`; every Filings
   note's name still equals its `accn`.
 
