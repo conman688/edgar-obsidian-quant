@@ -98,6 +98,8 @@ Uncapped, a heavy query on an 8 GB machine with little free disk can crash the c
 | `src/db/queries.py` | Screens: share-count trend, valuation, cluster buys, insider holdings |
 | `src/screen.py` | `screen`: joins the screens into one ranked, traceable table; Parquet snapshot |
 | `src/backtest.py` | Monthly point-in-time backtest, snapshot cache, forward returns, leak check, report |
+| `reviews/` | Milestone reviews: Claude Code builds, Codex reviews (`reviews/PROTOCOL.md`) |
+| `AGENTS.md`, `CLAUDE.md` | Standing instructions each agent reads on start |
 | `src/config.py` | Data paths, SEC URLs, `SEC_USER_AGENT` |
 | `src/cli.py` | `ingest`, `facts`, `stats` commands |
 | `src/db/ledger.py` | Run ledger: skip finished work, resume after crashes |
