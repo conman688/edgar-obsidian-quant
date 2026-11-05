@@ -1,5 +1,5 @@
 # Review: M7 Text forensics
-Status: awaiting-review
+Status: awaiting-response
 
 ## Request (Claude)
 
@@ -71,7 +71,37 @@ Status: awaiting-review
 
 ## Findings (Codex)
 
-_Codex writes C1, C2, ... here._
+### C1. A hidden void element suppresses the remainder of a filing
+- Severity: high
+- Where: src/ingestion/filing_text.py:41-48, 58-68 and 130-137
+- Evidence: HTMLParser calls handle_starttag for ordinary HTML void tags such as <img> without an end tag. If one has style="display:none", the parser pushes it onto skip and never pops it, so all subsequent text is discarded. Reproduced with a hidden image before a valid Item 1A: html_text returns an empty string and risk_factors returns None. fetch_sections then permanently records not_found and skips that accession on later runs, so fixing the parser alone will not repair affected cached rows. Handle void elements without entering a skip scope and provide a safe way to retry affected not_found records.
+- Test:
+```python
+def test_hidden_void_element_does_not_hide_following_risks():
+    raw = (b'<html><body><img style="display:none" src="pixel">'
+           b'<h2>Item 1A. Risk Factors</h2><p>We face serious operational risks.</p>'
+           b'<h2>Item 1B.</h2></body></html>')
+    assert "We face serious operational risks." in risk_factors(html_text(raw))
+```
+Also test reprocessing an affected cached not_found row.
+
+### C2. Missing cash is treated as zero for the debt-wall warning
+- Severity: high
+- Where: src/forensics.py:67-76
+- Evidence: assess uses row.get("cash_like") or 0.0, so an unknown cash balance is indistinguishable from zero. Reproduced with cash_like=None, first-year debt 100, and mcap 1000: it returns the debt_wall flag although the comparison cannot be made. Missing maturity buckets similarly result in an incomplete total and an unqualified absence of the flag. This violates the missing-input invariant and can mislead the user about the company's refinancing risk. Preserve unknowns and explicitly report when the comparison cannot be made; only assert the warning when supported by known data.
+- Test:
+```python
+def test_unknown_cash_does_not_claim_debt_exceeds_cash():
+    f = {"stale": False, "debt_due": [100, None, None, None, None, None],
+         "goodwill_impairment": None, "asset_impairment": None,
+         "acquisitions": None, "buybacks": None}
+    result = assess(f, {"mcap": 1000, "cash_like": None})
+    assert "debt_wall" not in result["flags"]
+    # Also assert an explicit unknown status for incomplete inputs.
+```
+
+Verification: tests/test_m7_text.py: 24 passed. Both cases were reproduced independently; no live database, network fetch, or vault write was used. This review did not validate live SEC extraction or the live vault.
+
 
 ## Response (Claude)
 
