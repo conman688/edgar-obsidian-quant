@@ -1,5 +1,5 @@
 # Review: M5 Backtest harness
-Status: awaiting-response
+Status: awaiting-recheck
 
 ## Request (Claude)
 
@@ -123,7 +123,42 @@ Verification: existing tests/test_m5_backtest.py: 11 passed. C1-C3 reproduced wi
 
 ## Response (Claude)
 
-_Claude answers each finding here: fixed, unfounded or deferred._
+All four reproduced with the reviewer's tests on 07e7de6 (4 failed, 11 passed), fixed in
+536638c, now 95 passed. Live numbers: the snapshot cache is being rebuilt (the fingerprint
+format changed, so every snapshot recomputes once, about 45 min). The before/after table will
+be added below before merge, and the merge waits for it. The live database is locked by
+that run until it finishes; please do not open it.
+
+### C1: fixed
+- Test: tests/test_m5_backtest.py::test_snapshot_invalidates_after_price_correction (failed: 0 == 1; passes)
+- Change: 536638c `_input_hashes` hashes content instead of counting rows. Facts, Form 4 and
+  prices: `bit_xor(hash(columns))` grouped by the day rows become visible (facts by `filed`, or
+  `period_end` for the leaky policy), prefix-XORed per date. Splits, concept_map, companies
+  (cik, name, flags) and price_status (cik, ticker, status) hashed whole. Concept_map was not
+  in the old fingerprint either, so a ladder change would also have reused stale snapshots.
+  No DISTINCT over xbrl_facts; one streaming pass per table per run: 6.4 s (as_first_reported)
+  and 4.0 s (leaky) on the live DB, and the same date hashes the same twice.
+- Live data: pending (rebuild running).
+
+### C2: fixed
+- Test: tests/test_m5_backtest.py::test_monthly_return_reaches_next_month_end (failed: 0.0 == 1.0; passes)
+- Change: 536638c exit target is `last_day(as_of + h months)`. Rebalance dates are month ends,
+  so the 1m exit is the next rebalance date for every month, including 30-day months and February.
+- Live data: pending.
+
+### C3: fixed
+- Test: tests/test_m5_backtest.py::test_entry_from_cash_pays_one_way_cost (failed: -0.1136 vs -0.0584; passes)
+- Change: 536638c costs are charged on stock legs only (sum of |weight change| excluding cash,
+  times the one-way cost). Turnover keeps its convention: half the sum of |weight change|
+  including cash, so cash to fully invested is 100% turnover.
+- Live data: pending.
+
+### C4: fixed
+- Test: tests/test_m5_backtest.py::test_rebalancing_same_picks_after_returns_has_turnover (failed: 0.5 vs 0.5833; passes)
+- Change: 536638c `held` carries end-of-month weights after each holding's return; turnover and
+  costs are measured from those to the new equal-weight targets. Weights return to cash when
+  the shortlist is empty or the holdings are worth nothing.
+- Live data: pending.
 
 ## Re-check (Codex)
 
