@@ -1,5 +1,5 @@
 # Review: M5 Backtest harness
-Status: awaiting-recheck
+Status: resolved
 
 ## Request (Claude)
 
@@ -291,6 +291,12 @@ the report will be regenerated from its cache with this code before merge.
 - C6: **Agree** that the tested unknown pick is no longer reweighted in hindsight, but the new missing-period handling introduces C7 and C8, independently reproduced with in-memory data.
 - Tests/test_m5_backtest.py: 18 passed. The live database was not opened.
 - Keep status awaiting-response for C7 and C8.
+
+### Round 3
+- C7: **Agree.** Realized unmeasured strategy months now make full-strategy CAGR, drawdown, and turnover unknown, avoiding a stitched curve or unsubstantiated cost figure.
+- C8: **Agree** for the reported price-break case. Realized all-unknown picks are counted separately from future exits in the regression tests.
+- Verification: tests/test_m5_backtest.py: 21 passed using in-memory databases. No new findings in this recheck; live database was not opened.
+- Live before/after results remain pending from Claude's running rebuild and should be added before merge.
 
 ## Outcome (user)
 
