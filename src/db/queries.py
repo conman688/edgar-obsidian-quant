@@ -263,8 +263,9 @@ def cluster_buys(con: duckdb.DuckDBPyConnection, as_of: date, window_days: int =
     return con.sql(cluster_buys_sql(window_days, include_unknown_10b5_1), params={"as_of": as_of})
 
 
-def cluster_buys_sql(window_days: int = 30, include_unknown_10b5_1: bool = False) -> str:
-    """Discretionary open-market buys known by as_of (filed <= as_of, not txn_date).
+def conviction_buys_sql(window_days: int = 30, include_unknown_10b5_1: bool = False) -> str:
+    """One row per discretionary open-market purchase known by as_of (filed <= as_of,
+    not txn_date) with a trade date in the window. Binds $as_of.
 
     Reads form4_effective(as_of), where amendments filed by as_of replace the filings
     they amend. Identical lots in one filing are separate purchases and all count.
@@ -279,10 +280,9 @@ def cluster_buys_sql(window_days: int = 30, include_unknown_10b5_1: bool = False
     # After that date the box is mandatory, so NULL means a parse gap: reject by default.
     plan_filter = ("t.is_10b5_1 IS DISTINCT FROM TRUE" if include_unknown_10b5_1 else
                    "(t.is_10b5_1 = FALSE OR (t.is_10b5_1 IS NULL AND t.filed < DATE '2023-04-01'))")
-    sql = f"""
-    WITH buys AS (
-        SELECT t.accn, t.issuer_cik, t.owner_cik, t.owner_name, t.is_officer, t.officer_title, t.txn_date, t.filed,
-               t.shares, t.price, t.shares * t.price AS usd, t.is_10b5_1
+    return f"""
+        SELECT t.accn, t.line_no, t.issuer_cik, t.owner_cik, t.owner_name, t.is_officer, t.is_director,
+               t.officer_title, t.txn_date, t.filed, t.shares, t.price, t.shares * t.price AS usd, t.is_10b5_1
         FROM form4_effective($as_of, p_since := $as_of - INTERVAL {int(window_days)} DAY) t
         LEFT JOIN prices p ON p.cik = t.issuer_cik AND p.price_date = t.txn_date
         WHERE NOT t.is_derivative AND NOT t.is_holding
@@ -297,7 +297,14 @@ def cluster_buys_sql(window_days: int = 30, include_unknown_10b5_1: bool = False
           AND NOT regexp_matches(coalesce(t.footnotes, ''),
                                  '(?i)initial public offering|\\bIPO\\b|private placement|underwritten|registered direct|public offering|subscription agreement|securities purchase agreement')
           AND (p.close_raw IS NULL OR t.price BETWEEN 0.5 * p.close_raw AND 2 * p.close_raw)
-    )
+    """
+
+
+def cluster_buys_sql(window_days: int = 30, include_unknown_10b5_1: bool = False) -> str:
+    """Issuers with a cluster of conviction buys (see conviction_buys_sql) in the window:
+    two or more insiders, or one purchase of $100k or more."""
+    return f"""
+    WITH buys AS ({conviction_buys_sql(window_days, include_unknown_10b5_1)})
     SELECT issuer_cik,
            count(DISTINCT owner_cik) AS n_insiders,
            count(DISTINCT owner_cik) FILTER (WHERE regexp_matches(coalesce(officer_title, ''), '(?i)chief|ceo|cfo|president')) AS n_c_suite,
@@ -309,7 +316,6 @@ def cluster_buys_sql(window_days: int = 30, include_unknown_10b5_1: bool = False
     FROM buys GROUP BY issuer_cik
     HAVING count(DISTINCT owner_cik) >= 2 OR max(usd) >= 100000
     """
-    return sql
 
 
 def insider_holdings(con: duckdb.DuckDBPyConnection, as_of: date):

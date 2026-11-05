@@ -142,7 +142,7 @@ Open:
 - Survivorship gap 57%; delisted names are missing from both picks and universe.
 - Insider data before 2023 has no 10b5-1 checkbox; only plan footnotes exclude plan trades.
 
-### M6 Obsidian vault sync (size: M)
+### M6 Obsidian vault sync (size: M, done)
 
 - Jinja templates: `company.md.j2`, `executive.md.j2`, `filing.md.j2`, `event.md.j2`.
 - Folders: `Companies/`, `Executives/`, `Filings/`, `Events/`, `Journal/`.
@@ -154,6 +154,14 @@ Checks:
 - Second sync reports 0 files written.
 - Edit a note by hand, re-sync, edit survives.
 - 3 name variants of one Form 4 filer produce one Executive note.
+
+Result (2026-11-04): first sync as of 2026-11-03 wrote 762 notes (52 companies, 156 insiders,
+239 purchases, 314 filings, dashboard) in 10 s; the second wrote 0. A hand edit to a live note
+(frontmatter key with a comment, text below the block) survived a re-sync. 156 insider notes for
+156 owner CIKs, including CIKs filed under several spellings ("Perdue George Ervin III" and
+"Perdue Sonny": one note, both as aliases). Also fixed: YAML comments in frontmatter were lost
+on re-sync (now round-tripped with ruamel.yaml), and Form 4 names in the bulk data sets are
+mixed case, so "Oliver George" was not turned into "George Oliver".
 
 ### M7 Text forensics (size: M)
 

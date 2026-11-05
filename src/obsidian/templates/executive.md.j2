@@ -1,0 +1,10 @@
+# {{ p.name }}
+
+SEC owner CIK {{ p.cik }}. Insider at {% for c in p.companies %}[[{{ c }}]]{% if not loop.last %}, {% endif %}{% endfor %}.
+
+## Purchases, last 12 months
+
+| Date | Company | Title | Shares | Price | Value | Filing |
+|---|---|---|---|---|---|---|
+{% for b in p.buys %}| {{ b.txn_date }} | [[{{ b.company }}]] | {{ b.title or "" }} | {{ b.shares | num(0) }} | {{ b.price | num(2) }} | {{ b.usd | usd }} | [[{{ b.event }}]] |
+{% endfor %}

@@ -3,26 +3,43 @@
 - Atomic: render to a temp file in the same directory, fsync, os.replace. A crash
   leaves either the old file or the new one, never a truncated frontmatter.
 - Merge: auto keys in frontmatter are overwritten, user keys are kept, `aliases`
-  and `tags` are unioned. Only the AUTO block in the body is replaced.
+  and `tags` are unioned. Only the AUTO block in the body is replaced. Frontmatter is
+  round-tripped (ruamel), so the user's comments, key order and formatting survive.
 - Identity: people are keyed by SEC owner CIK (from Form 4). One note per CIK;
   name variants become Obsidian `aliases`, which Obsidian resolves natively, so
   [[J. Smith]] and [[John A. Smith]] both open the same note.
 """
 from __future__ import annotations
 
+import io
 import os
 import re
 import tempfile
 import unicodedata
 from pathlib import Path
 
-import yaml
+from ruamel.yaml import YAML
+from ruamel.yaml.comments import CommentedMap
 
 AUTO_START = "<!-- AUTO-GENERATED:START -->"
 AUTO_END = "<!-- AUTO-GENERATED:END -->"
 _FM = re.compile(r"\A---\n(.*?)\n---\n?", re.DOTALL)
 _UNION_KEYS = ("aliases", "tags")
 _BAD = re.compile(r'[\\/:*?"<>|#^\[\]]')
+_SUFFIXES = {"JR", "SR", "II", "III", "IV", "V"}
+_KEEP_UPPER = {"II", "III", "IV", "V", "LP", "LLC", "LLP"}
+_ENTITY = re.compile(r"\b(INC|CORP|CORPORATION|LLC|LLP|LP|L\.P\.|LTD|TRUST|FUND|PARTNERS|CAPITAL|HOLDINGS"
+                     r"|GROUP|MANAGEMENT|ADVISORS|COMPANY|FOUNDATION)\b", re.I)
+
+
+def _case(word: str) -> str:
+    if not word.isupper():
+        return word                      # keep the filer's own mixed case (McDonald, de la Cruz)
+    return word if word.strip(".") in _KEEP_UPPER else word.capitalize()
+
+
+_YAML = YAML()                  # round-trip mode: keeps comments, order and quoting
+_YAML.width = 4096              # never wrap long values across lines
 
 
 def slug(name: str) -> str:
@@ -32,25 +49,38 @@ def slug(name: str) -> str:
     return re.sub(r"\s+", " ", s)[:120] or "unnamed"
 
 
-def split_note(text: str) -> tuple[dict, str]:
+def split_note(text: str) -> tuple[CommentedMap, str]:
     m = _FM.match(text)
     if not m:
-        return {}, text
-    fm = yaml.safe_load(m.group(1)) or {}
+        return CommentedMap(), text
+    fm = _YAML.load(m.group(1))
+    if fm is None:
+        return CommentedMap(), text[m.end():]
     if not isinstance(fm, dict):
         raise ValueError("frontmatter is not a mapping; refusing to overwrite")
     return fm, text[m.end():]
 
 
-def merge_frontmatter(old: dict, auto: dict) -> dict:
-    out = dict(old)
+def merge_frontmatter(old: CommentedMap, auto: dict) -> CommentedMap:
+    """Update `old` in place: assigning an existing key keeps its position and comments."""
     for k, v in auto.items():
         if k in _UNION_KEYS:
-            seen = list(old.get(k) or [])
-            out[k] = seen + [x for x in (v or []) if x not in seen]
-        else:
-            out[k] = v
-    return out
+            seen = old.get(k) or []
+            new = [x for x in (v or []) if x not in seen]
+            if k not in old or new:
+                old[k] = list(seen) + new
+        elif old.get(k, _MISSING) != v:
+            old[k] = v
+    return old
+
+
+_MISSING = object()
+
+
+def _dump(fm: CommentedMap) -> str:
+    buf = io.StringIO()
+    _YAML.dump(fm, buf)
+    return buf.getvalue() if fm else ""
 
 
 def replace_auto_block(body: str, auto_body: str) -> str:
@@ -84,7 +114,7 @@ def upsert_note(path: Path, auto_frontmatter: dict, auto_body: str) -> bool:
     old_fm, old_body = split_note(old_text)
     fm = merge_frontmatter(old_fm, auto_frontmatter)
     body = replace_auto_block(old_body, auto_body)
-    new_text = "---\n" + yaml.safe_dump(fm, sort_keys=False, allow_unicode=True) + "---\n" + body
+    new_text = "---\n" + _dump(fm) + "---\n" + body
     if new_text == old_text:
         return False
     atomic_write(path, new_text)
@@ -105,15 +135,27 @@ class PersonRegistry:
 
     @staticmethod
     def display_name(sec_name: str) -> str:
-        """Form 4 names are 'LAST FIRST MIDDLE'. Turn into 'First Middle Last'."""
+        """Form 4 owner names are 'Last First Middle [Suffix]' in any case ('SMITH JOHN A' in
+        XML, 'Oliver George' in the bulk data sets). Turn into 'First Middle Last Suffix'.
+        Entities (funds, trusts, LPs) keep their order."""
         parts = sec_name.replace(",", " ").split()
-        if len(parts) >= 2 and sec_name.isupper():
-            parts = parts[1:] + parts[:1]
-        return " ".join(p.capitalize() if p.isupper() else p for p in parts)
+        if not _ENTITY.search(sec_name):
+            suffix = []
+            while len(parts) > 2 and parts[-1].strip(".").upper() in _SUFFIXES:
+                suffix.insert(0, parts.pop())
+            if len(parts) >= 2:
+                parts = parts[1:] + parts[:1]
+            parts += suffix
+        return " ".join(_case(p) for p in parts)
 
     def register(self, cik: int, sec_name: str, issuer_cik: int) -> str:
-        name = slug(self.display_name(sec_name))
+        name = slug(self.display_name(sec_name)) if sec_name.strip() else ""
         row = next(iter(self.con.execute("SELECT canonical, aliases FROM person WHERE cik = ?", [cik]).fetchall()), None)
+        if not name:                     # some filings leave the owner name blank
+            if row is None:
+                self.con.execute("INSERT INTO person VALUES (?, ?, ?)", [cik, f"Owner {cik}", []])
+            self.con.execute("INSERT INTO person_issuer VALUES (?, ?) ON CONFLICT DO NOTHING", [cik, issuer_cik])
+            return row[0] if row else f"Owner {cik}"
         if row is None:
             canonical = name
             if self.con.execute("SELECT 1 FROM person WHERE canonical = ?", [canonical]).fetchall():
@@ -138,8 +180,9 @@ class PersonRegistry:
                WHERE pi.issuer_cik = ?""", [issuer_cik]).fetchall()
         hits = set()
         for canonical, aliases in rows:
-            for a in aliases + [canonical]:
-                at = [t.strip(".").lower() for t in self.display_name(a).split()]
+            # Stored names are already first-name-first; raw SEC aliases are not.
+            for a in [canonical] + [n for x in aliases for n in (x, self.display_name(x))]:
+                at = [t.strip(".").lower() for t in a.split()]
                 if at and at[-1] == last and at[0][0] == first_init:
                     hits.add(canonical)
         return hits.pop() if len(hits) == 1 else None

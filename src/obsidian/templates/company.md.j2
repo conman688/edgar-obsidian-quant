@@ -1,0 +1,37 @@
+# {{ c.name }} ({{ c.ticker }})
+
+Status on {{ c.as_of }}: **{{ c.status }}**{% if c.rank %}, rank {{ c.rank }}{% endif %}.
+{% if c.issues %}Issues (why it is not ranked): {{ c.issues | join(", ") }}.
+{% endif %}{% if c.flags %}Check by hand: {{ c.flags | join(", ") }}.
+{% endif %}{% if c.failed_filters %}Failed filters: {{ c.failed_filters | join(", ") }}.
+{% endif %}
+
+| | |
+|---|---|
+| EV/EBIT | {{ c.ev_ebit | num(1) }} |
+| Net cash / market cap | {{ c.net_cash_to_mcap | pct }} |
+| FCF yield | {{ c.fcf_yield | pct }} |
+| Below 52-week high | {{ c.drawdown_52w | pct }} |
+| Diluted shares, 3-year change a year | {{ c.share_cagr_3y | pct }} |
+| Market cap | {{ c.mcap | usd }} |
+| EV | {{ c.ev | usd }} |
+| EBIT (TTM) | {{ c.ebit_ttm | usd }} |
+| FCF (TTM) | {{ c.fcf_ttm | usd }} |
+| Cash and short-term investments | {{ c.cash_like | usd }} |
+| Debt | {{ c.debt | usd }} |
+| Close on {{ c.price_date }} | {{ c.close_raw | num(2) }} |
+
+## Insider buys, last 12 months
+
+{% if buys %}| Date | Insider | Shares | Price | Value | Filing |
+|---|---|---|---|---|---|
+{% for b in buys %}| {{ b.txn_date }} | [[{{ b.person }}]] | {{ b.shares | num(0) }} | {{ b.price | num(2) }} | {{ b.usd | usd }} | [[{{ b.event }}]] |
+{% endfor %}{% else %}None found.
+{% endif %}
+
+## Where the numbers come from
+
+| Item | Tag | Period end | Filings |
+|---|---|---|---|
+{% for s in c.sources %}| {{ s.item }} | {{ s.tag }} | {{ s.period_end }} | {% for a in s.accns | unique %}[[{{ a }}]]{% if not loop.last %} {% endif %}{% endfor %} |
+{% endfor %}
