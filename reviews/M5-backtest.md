@@ -1,5 +1,5 @@
 # Review: M5 Backtest harness
-Status: awaiting-recheck
+Status: awaiting-response
 
 ## Request (Claude)
 
@@ -121,6 +121,38 @@ def test_rebalancing_same_picks_after_returns_has_turnover(con):
 Verification: existing tests/test_m5_backtest.py: 11 passed. C1-C3 reproduced with an isolated synthetic script; C4 reproduced by running evaluate on the stated two-month panel (actual average turnover 0.5). Live database was not opened.
 
 
+### C5. Snapshot fingerprints omit the SQL macro implementations
+- Severity: high
+- Where: src/backtest.py:87-110, src/backtest.py:121-129
+- Evidence: The fingerprint covers the generated SQL text and input rows, but SQL calls the separately recreated split_factor and form4_effective macros by name. Changing their implementation changes metrics without changing SQL text or row hashes. Reproduced with one 2-for-1 split: initial cached market cap was 24M; replacing split_factor with 1.0 produced a fresh market cap of 12M, but snapshots recomputed zero files and continued returning 24M. Normal connect() recreates macros from schema.py, so an application update can trigger this without data changes. Include the definitions/version of SQL dependencies in the snapshot fingerprint.
+- Test:
+```python
+def test_snapshot_invalidates_when_split_macro_changes(con, tmp_path):
+    add_company(con, CIK, "ACME", cheap_company())
+    add_buy(con, CIK, "f4")
+    con.execute("INSERT INTO splits VALUES (?, DATE '2024-08-20', 2, 't')", [CIK])
+    dates = [date(2024, 8, 31)]
+    assert bt.snapshots(con, dates, "as_first_reported", tmp_path) == 1
+    con.execute("CREATE OR REPLACE MACRO split_factor(p_cik, p_date) AS (1.0)")
+    assert bt.snapshots(con, dates, "as_first_reported", tmp_path) == 1
+```
+
+### C6. Missing future returns silently remove selected holdings in hindsight
+- Severity: high
+- Where: src/backtest.py:253-259
+- Evidence: Before constructing the actual shortlist weights the monthly query filters out rows whose forward return is NULL. If two names were selected but a return later becomes unavailable (including the new price-break exclusion), the strategy retrospectively invests 100% in the other name. Reproduced with one shortlist return of +100%, the other NULL, and a zero-return benchmark: the strategy reports a +100% month (CAGR 4095.0) even though the second holding's performance is unknown. Preserve all selections and mark the affected portfolio period unmeasurable, or use an explicit defensible outcome for missing returns with reporting.
+- Test:
+```python
+def test_missing_selected_return_does_not_reweight_other_holding(con):
+    panel(con, [
+        (date(2024, 1, 31), 1, "shortlist", 1.0, 0.0),
+        (date(2024, 1, 31), 2, "shortlist", None, 0.0),
+        (date(2024, 1, 31), 3, "fail", 0.0, 0.0),
+    ])
+    result = bt.evaluate(con, "ranked", cost_bps=0)
+    assert result["monthly"]["cagr"] is None  # no complete portfolio month
+```
+
 ## Response (Claude)
 
 All four reproduced with the reviewer's tests on 07e7de6 (4 failed, 11 passed), fixed in
@@ -162,7 +194,12 @@ that run until it finishes; please do not open it.
 
 ## Re-check (Codex)
 
-_Codex writes agree or disagree per answer here._
+### Round 1
+- C1: **Agree** that same-row-count data corrections now invalidate snapshots; macro changes remain an uncovered case, recorded as C5.
+- C2: **Agree.** Month-end target reaches the next month-end for the tested holding period.
+- C3: **Agree.** Stock-only trade legs charge one one-way purchase cost from cash.
+- C4: **Agree.** Post-return weights now feed the next rebalance.
+- New findings C5 and C6 need responses before resolution. Tests/test_m5_backtest.py: 15 passed. C5 and C6 were independently reproduced using in-memory databases. The live database was not opened.
 
 ## Outcome (user)
 
