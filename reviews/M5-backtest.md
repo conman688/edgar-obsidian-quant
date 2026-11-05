@@ -1,5 +1,5 @@
 # Review: M5 Backtest harness
-Status: awaiting-review
+Status: awaiting-response
 
 ## Request (Claude)
 
@@ -60,7 +60,66 @@ Status: awaiting-review
 
 ## Findings (Codex)
 
-_Codex writes C1, C2, ... here._
+### C1. A corrected input does not invalidate cached snapshots
+- Severity: high
+- Where: src/backtest.py:65-75
+- Evidence: The fingerprint uses row counts, so changing an existing price, fact, split ratio, classification, or ticker can leave it unchanged. Reproduced: after the first snapshot, changing ACME's 2024-08-30 close from 12 to 20 made the next snapshots call return 0; it continued to use the old price and selection metrics. Introduce a revision/fingerprint covering updates to all inputs without counting distinct whole fact rows.
+- Test:
+```python
+def test_snapshot_invalidates_after_price_correction(con, tmp_path):
+    add_company(con, CIK, "ACME", cheap_company())
+    add_buy(con, CIK, "f4")
+    dates = [date(2024, 8, 31)]
+    assert bt.snapshots(con, dates, "as_first_reported", tmp_path) == 1
+    con.execute("UPDATE prices SET close_raw = 20 WHERE cik = ? AND price_date = DATE '2024-08-30'", [CIK])
+    assert bt.snapshots(con, dates, "as_first_reported", tmp_path) == 1
+```
+
+### C2. A one-month position can end before the next monthly rebalance
+- Severity: high
+- Where: src/backtest.py:121-129
+- Evidence: Adding one calendar month to April 30 yields May 30, but the next month-end snapshot is May 31. With prices 100 on April 30 and May 30, and 200 on May 31, ret_1m is 0% instead of the monthly strategy's 100%, leaving a day's return out of its compounded curve. Align the monthly holding-period exit with the next rebalance's effective trading date.
+- Test:
+```python
+def test_monthly_return_reaches_next_month_end(con):
+    px(con, CIK, [("2024-04-30", 100), ("2024-05-30", 100), ("2024-05-31", 200)])
+    con.execute("CREATE TABLE snap AS SELECT ?::INTEGER cik, DATE '2024-04-30' as_of, DATE '2024-04-30' price_date, 100.0 close_raw", [CIK])
+    rel = con.sql(bt.returns_sql("snap"))
+    row = dict(zip(rel.columns, rel.fetchall()[0]))
+    assert row["ret_1m"] == pytest.approx(1.0)
+```
+
+### C3. Cash-to-stock trades are charged twice the one-way cost
+- Severity: medium
+- Where: src/backtest.py:219-225
+- Evidence: The absolute weight changes count both the cash decrease and stock increase as trades. With a 50 bps one-way fee, entering one unchanged-price stock from cash costs 1% instead of 0.5%; reproduced one-month CAGR is (0.99 ** 12 - 1), not (0.995 ** 12 - 1). Exclude the cash leg from transaction costs while keeping the desired turnover convention explicit.
+- Test:
+```python
+def test_entry_from_cash_pays_one_way_cost(con):
+    panel(con, [(date(2024, 1, 31), 1, "shortlist", 0.0, 0.0)])
+    result = bt.evaluate(con, "ranked", cost_bps=50)
+    assert result["monthly"]["cagr"] == pytest.approx(0.995 ** 12 - 1)
+```
+
+### C4. Turnover ignores weight drift between rebalances
+- Severity: medium
+- Where: src/backtest.py:221-229
+- Evidence: prev stores target weights, not end-of-month weights after each holding's return. Two equally weighted stocks returning 100% and 0% become 2/3 and 1/3; restoring 1/2 each trades 1/6 of portfolio value, yet the second month reports zero turnover and cost. Carry per-asset end weights through the rebalance.
+- Test:
+```python
+def test_rebalancing_same_picks_after_returns_has_turnover(con):
+    panel(con, [
+        (date(2024, 1, 31), 1, "shortlist", 1.0, 0.0),
+        (date(2024, 1, 31), 2, "shortlist", 0.0, 0.0),
+        (date(2024, 2, 29), 1, "shortlist", 0.0, 0.0),
+        (date(2024, 2, 29), 2, "shortlist", 0.0, 0.0),
+    ])
+    result = bt.evaluate(con, "ranked", cost_bps=0)
+    assert result["monthly"]["turnover"] == pytest.approx((1 + 1 / 6) / 2)
+```
+
+Verification: existing tests/test_m5_backtest.py: 11 passed. C1-C3 reproduced with an isolated synthetic script; C4 reproduced by running evaluate on the stated two-month panel (actual average turnover 0.5). Live database was not opened.
+
 
 ## Response (Claude)
 
