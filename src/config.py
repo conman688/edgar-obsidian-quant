@@ -7,6 +7,8 @@ from pathlib import Path
 DATA_DIR = Path(os.environ.get("EOQ_DATA_DIR", "data"))
 RAW_DIR = DATA_DIR / "raw"
 DB_PATH = DATA_DIR / "edgar.duckdb"
+# Loughran-McDonald Master Dictionary (licensed by its authors, not in the repo): src/tone.py.
+LM_DICT = Path(os.environ.get("EOQ_LM_DICT", DATA_DIR / "lm" / "Loughran-McDonald_MasterDictionary_1993-2025.csv"))
 VAULT_DIR = Path(os.environ["EOQ_VAULT_DIR"]) if os.environ.get("EOQ_VAULT_DIR") else None
 
 # DuckDB defaults to 80% of RAM and may spill until the disk is nearly full. On an

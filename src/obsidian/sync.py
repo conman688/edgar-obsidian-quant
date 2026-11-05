@@ -26,11 +26,14 @@ from src.db.queries import conviction_buys_sql
 from src.forensics import assess, forensics
 from src.obsidian.writer import PersonRegistry, slug, split_note, upsert_note
 from src.redline import risk_factor_redline
+from src.tone import load_lists
+from src import config
 from src.screen import Filters, screen
 
 FOLDERS = ("Companies", "Executives", "Filings", "Events", "Journal")
 SYNCED = ("shortlist", "quarantine")     # statuses that get a note; existing notes are always updated
 HISTORY_DAYS = 365                       # insider purchases shown per company and person
+TONE_KEYS = ("negative", "litigious", "uncertainty")
 NEW_SHOWN, REMOVED_SHOWN = 25, 10        # risk-factor sentences listed per company note
 
 
@@ -51,6 +54,16 @@ def _pct(v) -> str:
     return "-" if v is None else f"{v * 100:.1f}%"
 
 
+def _pct2(v) -> str:
+    return "-" if v is None else f"{v * 100:.2f}%"
+
+
+def _pp(pair) -> str:
+    """Change in percentage points between (this year, prior year) shares."""
+    now, before = pair
+    return "-" if now is None or before is None else f"{(now - before) * 100:+.2f}"
+
+
 def _usd(v) -> str:
     if v is None:
         return "-"
@@ -62,7 +75,7 @@ def _usd(v) -> str:
 def _env() -> Environment:
     env = Environment(loader=FileSystemLoader(Path(__file__).parent / "templates"), undefined=StrictUndefined,
                       trim_blocks=True, lstrip_blocks=True, keep_trailing_newline=True, autoescape=False)
-    env.filters.update(num=_num, pct=_pct, usd=_usd)
+    env.filters.update(num=_num, pct=_pct, pct2=_pct2, pp=_pp, usd=_usd)
     return env
 
 
@@ -152,7 +165,8 @@ def sync_vault(con: duckdb.DuckDBPyConnection, vault: Path, as_of: date, filters
     # Filings are found by accession too; generated links use each note's actual file name.
     filings_idx = _index(vault / "Filings", "accn")
     # M7: Risk Factors redline (10-K text from `fetch-text`) and forensics from facts.
-    redlines = risk_factor_redline(con, sorted(by_cik), as_of)
+    lists = load_lists(config.LM_DICT)
+    redlines = risk_factor_redline(con, sorted(by_cik), as_of, lists)
     tenks = {a: cik for cik, rl in redlines.items() for a in (rl["accn"], rl["prior_accn"]) if a}
     forensic = forensics(con, sorted(by_cik), as_of, policy)
     accns = ({a for r in by_cik.values() for s in r["sources"] or [] for a in s["accns"]} | {a for a, _ in lots}
@@ -252,9 +266,12 @@ def sync_vault(con: duckdb.DuckDBPyConnection, vault: Path, as_of: date, filters
             "mcap": _r(r["mcap"], 0), "as_of": as_of, "issues": list(r["issues"]), "flags": list(r["flags"]),
             "rf_new_sentences": len(rl["new"]) if rl and rl["status"] == "ok" else None,
             "forensic_flags": fa["flags"] if fa else [],
+            **{f"tone_{k}_change": _r(rl["tone"][k][0] - rl["tone"][k][1], 4)
+               if rl and "tone" in rl and None not in rl["tone"][k] else None for k in TONE_KEYS},
             "aliases": [r["name"]] if r["name"] else [], "tags": ["company"]},
             env.get_template("company.md.j2").render(c={**r, "as_of": as_of}, buys=mine, filing_link=filing_link,
-                                                       rl=rl, fx=fx, fa=fa, new_shown=NEW_SHOWN,
+                                                       rl=rl, fx=fx, fa=fa, tone_installed=lists is not None,
+                                                       new_shown=NEW_SHOWN,
                                                        removed_shown=REMOVED_SHOWN))
         stats.record("Companies", changed)
 

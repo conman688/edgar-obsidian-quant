@@ -187,8 +187,12 @@ licences ending). Forensics (latest fiscal year from facts): 20 companies; flags
 across lines and page breaks (page numbers, "Table of Contents") are rejoined; a risk summary
 repeating a sentence lists it once.
 
+Tone (2026-11-05, user approved the licence: free for academic research): the 2026 Master
+Dictionary (1993-2025, 86,553 words; 2,345 negative, 903 litigious, 297 uncertainty currently
+listed). Risk Factors negative share 3.0-5.1% across the 18 companies with text; largest rise
+HRL +0.32 points (4.73% to 5.05%).
+
 Deferred:
-- Loughran-McDonald tone: its licence must be checked by the user first.
 - Executive pay: the `ecd:` tags are not in companyfacts.zip; needs each DEF 14A's XBRL.
 - Footnote text blocks: companyfacts.zip has numbers only; needs each filing's XBRL instance.
 

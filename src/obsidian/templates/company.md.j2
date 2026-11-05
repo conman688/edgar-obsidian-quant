@@ -41,7 +41,14 @@ Status on {{ c.as_of }}: **{{ c.status }}**{% if c.rank %}, rank {{ c.rank }}{% 
 {% if rl is none %}No 10-K text: not fetched yet (`fetch-text`), or the company files 20-F/40-F instead.
 {% elif rl.status == "ok" and not rl.total %}Item 1A of the latest 10-K ([[{{ filing_link[rl.accn] }}]]) lists no risk factors (smaller reporting companies may omit them).
 {% elif rl.status == "ok" %}10-K for {{ rl.report_date }} ([[{{ filing_link[rl.accn] }}]]) against {{ rl.prior_report_date }} ([[{{ filing_link[rl.prior_accn] }}]]): **{{ rl.new | length }} new** of {{ rl.total }} sentences, {{ rl.removed | length }} removed. Numbers and dates are ignored when comparing.
-{% if rl.new %}
+
+{% if rl.get("tone") %}Tone (Loughran-McDonald, share of words):
+
+| List | This 10-K | Prior | Change (points) |
+|---|---|---|---|
+{% for k, v in rl.tone.items() %}| {{ k | capitalize }} | {{ v[0] | pct2 }} | {{ v[1] | pct2 }} | {{ v | pp }} |
+{% endfor %}{% elif not tone_installed %}Tone: word lists not installed (README, "Tone").
+{% endif %}{% if rl.new %}
 
 ### New
 {% for s in rl.new[:new_shown] %}- {{ s }}

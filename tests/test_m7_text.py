@@ -267,3 +267,68 @@ def test_a_new_sentence_repeated_in_the_summary_is_listed_once():
     new = "Our chief executive officer has taken a leave of absence from the company."
     r = redline(RISKS_2023, f"•{new}\n{RISKS_2023}\n{new}")
     assert r.new == [f"•{new}"] and r.total == 6
+
+
+# --- tone (Loughran-McDonald word lists) ----------------------------------------------
+
+LM_HEADER = ("Word,Seq_num,Word Count,Word Proportion,Average Proportion,Std Dev,Doc Count,Negative,Positive,"
+             "Uncertainty,Litigious,Strong_Modal,Weak_Modal,Constraining,Complexity,Syllables,Source")
+
+
+@pytest.fixture
+def lm(tmp_path):
+    rows = [("LOSS", 2009, 0, 0, 0), ("ADVERSE", 2009, 0, 0, 0), ("LITIGATION", 0, 0, 2009, 0),
+            ("MAY", 0, 2009, 0, 0), ("OLDWORD", -2020, 0, 0, 0), ("GAIN", 0, 0, 0, 2009)]
+    lines = [LM_HEADER] + [f"{w},1,1,0,0,0,1,{neg},{pos},{unc},{lit},0,0,0,0,1,12of12inf"
+                           for w, neg, unc, lit, pos in rows]
+    p = tmp_path / "lm.csv"
+    p.write_text("\n".join(lines) + "\n")
+    return p
+
+
+def test_word_lists_keep_current_words_only(lm):
+    from src.tone import load_lists
+    lists = load_lists(lm)
+    assert lists == {"negative": {"LOSS", "ADVERSE"}, "litigious": {"LITIGATION"}, "uncertainty": {"MAY"}}
+    assert load_lists(lm.with_name("missing.csv")) is None
+
+
+def test_tone_is_the_share_of_words_on_each_list(lm):
+    from src.tone import load_lists, tone
+    t = tone("We may face litigation and a loss.", load_lists(lm))
+    assert t == {"negative": pytest.approx(1 / 7), "litigious": pytest.approx(1 / 7),
+                 "uncertainty": pytest.approx(1 / 7)}
+    assert tone("", load_lists(lm)) == {"negative": None, "litigious": None, "uncertainty": None}
+
+
+def test_redline_carries_tone_of_both_years(lm):
+    from src.tone import load_lists
+    con = connect(":memory:")
+    for accn, filed, text in [("a1", date(2023, 3, 1), "Our results may suffer a loss next year."),
+                              ("a2", date(2024, 3, 1), "Our results may suffer an adverse loss and litigation.")]:
+        con.execute("INSERT INTO filing_sections VALUES (?, ?, '10-K', ?, NULL, 'risk_factors', 'ok', ?, 'u', now())",
+                    [CIK, accn, filed, text])
+    r = risk_factor_redline(con, [CIK], AS_OF, load_lists(lm))[CIK]
+    assert r["tone"]["negative"] == (pytest.approx(2 / 9), pytest.approx(1 / 8))
+    assert r["tone"]["litigious"] == (pytest.approx(1 / 9), 0.0)
+    assert "tone" not in risk_factor_redline(con, [CIK], AS_OF)[CIK]
+
+
+def test_note_shows_tone_or_says_the_lists_are_missing(fcon, tmp_path, lm, monkeypatch):
+    from src import config
+    from src.obsidian.sync import sync_vault
+    from tests.test_m4_screen import add_buy
+    from tests.test_m6_vault import fm
+    add_buy(fcon, CIK, "0001234-24-000001")
+    for accn, filed, text in [("0001234-23-000010", date(2023, 3, 1), RISKS_2023),
+                              ("0001234-24-000010", date(2024, 3, 1), RISKS_2023 + "\nWe may face a loss.")]:
+        fcon.execute("INSERT INTO filing_sections VALUES (?, ?, '10-K', ?, NULL, 'risk_factors', 'ok', ?, 'u', now())",
+                     [CIK, accn, filed, text])
+    monkeypatch.setattr(config, "LM_DICT", lm.with_name("missing.csv"))
+    sync_vault(fcon, tmp_path / "v1", AS_OF)
+    assert "Tone: word lists not installed" in (tmp_path / "v1" / "Companies" / "ACME.md").read_text()
+    monkeypatch.setattr(config, "LM_DICT", lm)
+    sync_vault(fcon, tmp_path / "v2", AS_OF)
+    note = tmp_path / "v2" / "Companies" / "ACME.md"
+    assert "| Negative | 3.28% | 1.79% | +1.49 |" in note.read_text()
+    assert fm(note)["tone_negative_change"] == pytest.approx(2 / 61 - 1 / 56, abs=1e-4)

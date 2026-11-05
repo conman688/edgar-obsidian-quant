@@ -16,6 +16,7 @@ from difflib import SequenceMatcher
 import duckdb
 
 from src.ingestion.filing_text import SECTION
+from src.tone import tone
 
 SIMILAR = 0.8
 MIN_WORDS = 4            # shorter lines are headings' page numbers, "Table of Contents", etc.
@@ -108,11 +109,13 @@ def redline(prior: str, current: str) -> Redline:
     return Redline(new=_unmatched(new, old), removed=_unmatched(old, new), total=len(new), prior_total=len(old))
 
 
-def risk_factor_redline(con: duckdb.DuckDBPyConnection, ciks: list[int], as_of: date) -> dict[int, dict]:
+def risk_factor_redline(con: duckdb.DuckDBPyConnection, ciks: list[int], as_of: date,
+                        lists: dict[str, set[str]] | None = None) -> dict[int, dict]:
     """Per company: the latest 10-K known on as_of against the one before it.
 
     status: ok | no_prior (one 10-K known) | no_section (latest has no Item 1A found) |
-    no_prior_section. Companies with no 10-K in the table are left out."""
+    no_prior_section. Companies with no 10-K in the table are left out. With word `lists`
+    (src/tone.py), an ok redline also carries `tone`: {list: (this year, prior year)}."""
     rows = con.execute("""
         SELECT cik, accn, filed, report_date, status, text FROM filing_sections
         WHERE section = $section AND filed <= $as_of AND list_contains($ciks, cik)
@@ -136,5 +139,8 @@ def risk_factor_redline(con: duckdb.DuckDBPyConnection, ciks: list[int], as_of: 
         else:
             d = redline(prior[5], cur[5])
             r.update(status="ok", new=d.new, removed=d.removed, total=d.total, prior_total=d.prior_total)
+            if lists is not None:
+                now, before = tone(cur[5], lists), tone(prior[5], lists)
+                r["tone"] = {k: (now[k], before[k]) for k in lists}
         out[cik] = r
     return out

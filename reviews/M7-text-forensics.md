@@ -32,6 +32,12 @@ Status: awaiting-review
   forensics, 10-K and forensics filings added to `filing_link`/Filings notes; company frontmatter
   `rf_new_sentences`, `forensic_flags`. Template: two new sections.
 - `src/cli.py`: `fetch-text --as-of DATE [--vault PATH] [--cik N ...]`.
+- Tone (commit after the request, user approved the licence): `src/tone.py` (`load_lists`: words
+  whose Negative/Litigious/Uncertainty column is a positive year, i.e. currently listed;
+  `tone`: share of words per list), `risk_factor_redline(..., lists)` adds
+  `tone = {list: (this year, prior)}` for ok redlines; `config.LM_DICT`
+  (`data/lm/Loughran-McDonald_MasterDictionary_1993-2025.csv`, not in git); note table and
+  frontmatter `tone_<list>_change`. Missing file: the note says so, nothing fails.
 - Docs: README (vault section, layout, invariant), AGENTS.md (invariant, ledger), ROADMAP (result).
 
 ### How to verify
@@ -56,7 +62,8 @@ Status: awaiting-review
 - Idempotence and determinism of the new note sections and Filings notes.
 
 ### Known gaps (not findings unless they are worse than stated)
-- Loughran-McDonald tone, executive pay and footnote text blocks are deferred (ROADMAP M7).
+- Executive pay and footnote text blocks are deferred (ROADMAP M7). Tone counts words only:
+  no negation handling, and numbers do not count as words.
 - 20-F/40-F filers get no redline; IFRS filers get no forensics (the `cfo` ladder is US-GAAP).
 - `fetch-text` is a separate command; `sync-vault` never makes network requests.
 - `fetch-text` stores only the latest two 10-Ks per run date; a backtest over text is out of scope.

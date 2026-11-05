@@ -127,6 +127,16 @@ acquisitions and impairments of the latest fiscal year, the debt maturity schedu
 `debt_wall` (due within 2 years above cash), `acquisitive` (10% of market cap),
 `impairment` (5% of market cap). Flags are for checking by hand; they do not change the screen.
 
+### Tone
+
+The note also shows the share of Risk Factors words on the Loughran-McDonald negative,
+litigious and uncertainty lists, this 10-K against the prior one (frontmatter
+`tone_negative_change` etc., in share points). The word lists are free for academic research;
+commercial use needs a licence from the authors. They are not in the repository: download
+`Loughran-McDonald_MasterDictionary_1993-2025.csv` from
+https://sraf.nd.edu/loughranmcdonald-master-dictionary/ into `data/lm/` (or set `EOQ_LM_DICT`).
+Without the file, notes say the lists are not installed.
+
 ## First full load
 
 First full load (2026-11-02, 8 GB MacBook):
@@ -168,6 +178,7 @@ Uncapped, a heavy query on an 8 GB machine with little free disk can crash the c
 | `src/obsidian/writer.py` | Atomic note writer, AUTO-block merge (comments kept), CIK-keyed person registry |
 | `src/ingestion/filing_text.py` | `fetch-text`: 10-K primary document to text, Item 1A cut, `filing_sections` ledger |
 | `src/redline.py` | Risk Factors redline: sentences, number/date masking, new and removed sentences |
+| `src/tone.py` | Loughran-McDonald word lists (current words only) and word-share tone |
 | `src/forensics.py` | Buybacks, acquisitions, impairments, debt maturities of the latest fiscal year; flags |
 | `src/obsidian/sync.py`, `src/obsidian/templates/` | `sync-vault`: companies, insiders, purchases, filings, dashboard (Jinja) |
 | `tests/test_failure_modes.py` | One test per audited failure mode |
@@ -207,6 +218,6 @@ SEC requires a `User-Agent` with a real contact email and caps traffic at 10 req
 Done: schema with migrations, PIT layer, screens, Obsidian writer, M1 ingestion (live SEC data),
 M2 prices/splits/dividends, M3 insider trades, M4 screener, M5 backtest, M6 vault sync,
 M7 Risk Factors redline and forensics, CLI.
-Not done: M7 tone, executive pay and footnote text (deferred), decision journal (M8), scheduling (M9).
+Not done: M7 executive pay and footnote text (deferred), decision journal (M8), scheduling (M9).
 
 See [ROADMAP.md](ROADMAP.md) for goals, milestones and acceptance checks.
