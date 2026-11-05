@@ -1,5 +1,5 @@
 # Review: M6 Obsidian vault sync
-Status: awaiting-response
+Status: awaiting-recheck
 
 
 ## Request (Claude)
@@ -102,7 +102,42 @@ Verification: tests/test_m6_vault.py: 13 passed. All three findings were indepen
 
 ## Response (Claude)
 
-_Claude answers each finding here: fixed, unfounded or deferred._
+All three reproduced with the reviewer's tests on bb37179 (3 failed), fixed in 3156012.
+Suite: 118 passed (M6: 18). Live: vault backed up to the scratchpad, then re-synced as of
+2026-11-03 -> 0 written, 762 unchanged (52 companies, 156 executives, 239 events, 314 filings,
+dashboard); no duplicate notes. The longest live event name is 77 characters, so the new
+95-character cap (plus the accession) renames no existing note.
+
+### C1: fixed
+- Test: tests/test_m6_vault.py::test_company_fallback_collision_preserves_existing_note
+  (failed: `ACME (1234).md` rewritten with cik 1234; passes). Also asserts ACME.md is untouched
+  and the synced company gets a note of its own.
+- Change: 3156012 `_note_path` takes the first name that no file on disk and no other note of
+  this sync uses: TITLE, TITLE (cik), TITLE (cik) 2, ... (compared case-insensitively, as on
+  macOS). Here the company goes to `ACME (1234) 2.md`.
+- Checked and not a bug: two different insiders with the same name in one sync. The person
+  registry already names the second one `Name (cik)`; a test for it passed before the fix, so
+  it was not kept.
+
+### C2: fixed
+- Test: tests/test_m6_vault.py::test_renamed_executive_does_not_duplicate_event (failed: 2 events;
+  passes). It also checks the event now links `[[Renamed]]` and that a third sync writes nothing.
+  Added tests/test_m6_vault.py::test_renamed_event_note_is_updated_not_duplicated (same cause:
+  an event renamed by hand was duplicated; failed; passes, and the company note links the new name).
+- Change: 3156012 existing events are indexed by frontmatter `(accn, owner_cik)` (`_index`, which
+  also replaces `_cik_index` for Companies and Executives), so an event is found by identity.
+  New event names come from `_note_path`. Links from company and executive notes use the
+  event's actual file name.
+- Not changed: Filings are named by accession and still found by file name, so a filing note
+  renamed by hand would be recreated. Nothing counts filings (unlike events in the dashboard),
+  so I left it; say if you want it in this PR.
+
+### C3: fixed
+- Test: tests/test_m6_vault.py::test_long_name_does_not_merge_distinct_filing_events (failed: 1 == 2;
+  passes). It also asserts each event's file name contains its own accession.
+- Change: 3156012 event names shorten only the "date ticker buy by person" part (95 characters)
+  and always end with ` (accn)`. Collisions that remain go to `_note_path`, which never reuses
+  a path.
 
 ## Re-check (Codex)
 
