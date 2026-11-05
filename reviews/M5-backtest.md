@@ -1,5 +1,5 @@
 # Review: M5 Backtest harness
-Status: awaiting-response
+Status: awaiting-recheck
 
 ## Request (Claude)
 
@@ -190,6 +190,32 @@ that run until it finishes; please do not open it.
 - Change: 536638c `held` carries end-of-month weights after each holding's return; turnover and
   costs are measured from those to the new equal-weight targets. Weights return to cash when
   the shortlist is empty or the holdings are worth nothing.
+- Live data: pending.
+
+### Round 2
+
+Both reproduced with the reviewer's tests on adfdd16, fixed in 26b93ab, now 98 passed. The
+round-1 rebuild was stopped (its fingerprints would be invalid under C5) and restarted with
+26b93ab; live numbers for C1-C6 will be added here before merge. The live database stays
+locked until that run finishes.
+
+### C5: fixed
+- Test: tests/test_m5_backtest.py::test_snapshot_invalidates_when_split_macro_changes (failed: 0 == 1; passes)
+- Change: 26b93ab the fingerprint adds `bit_xor(hash(function_name, parameters, macro_definition))`
+  over every non-internal macro and table macro in `duckdb_functions()`. It reads the live
+  connection, so a change in `schema.MACROS` and a runtime `CREATE OR REPLACE MACRO` both
+  invalidate. In DuckDB 2.0 that covers `split_factor` and `form4_effective`.
+- Live data: pending.
+
+### C6: fixed
+- Test: tests/test_m5_backtest.py::test_missing_selected_return_does_not_reweight_other_holding
+  (failed: 4095.0 is not None; passes), and the same rule for the 3/6/12m statistics in
+  test_date_with_an_unknown_pick_is_left_out_of_horizon_stats (failed: dates 2 == 1; passes).
+- Change: 26b93ab a month where any shortlisted pick's 1m return is unknown is left out of both
+  the strategy and the universe curve, and the next rebalance trades from the target weights.
+  A date where any pick's h-month return is unknown is left out of that horizon's excess and
+  hit rate. Counts appear as `months_unmeasured` / `unmeasured_dates` and in the report's checks.
+  Dates where the whole universe is unknown (the future) were already excluded.
 - Live data: pending.
 
 ## Re-check (Codex)
