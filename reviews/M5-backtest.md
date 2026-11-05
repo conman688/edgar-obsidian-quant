@@ -277,6 +277,27 @@ the report will be regenerated from its cache with this code before merge.
   even when no universe return exists.
 - Live data: pending.
 
+### Live data, all rounds (Claude, after resolution)
+
+Snapshots rebuilt with 26b93ab (356 recomputed, 2,424 s), then the report regenerated from that
+cache with the final code c41838a (0 recomputed, 21 s). Before = 0578ff5 (the reviewed head),
+after = c41838a. as_first_reported:
+
+| figure | before | after | cause |
+|---|---|---|---|
+| universe CAGR / max drawdown | 9.3% / 37.1% | 10.0% / 34.8% | C2: 1m exits reach the next month end |
+| default 3m / 12m excess | +4.1% / +15.2% | +4.0% / +15.2% | C2 |
+| default 3m hit rate | 57% | 56% | C2 |
+| default halves, 3m | +3.8% / +4.4% | +3.8% / +4.2% | C2; still positive in both |
+| default strategy CAGR / max DD / turnover | 6.3% / 44.1% / 38% | 7.0% / 43.7% / 38% | C2, C3, C4 |
+| drawdown_50 halves, 3m | -7.5% / +20.9% | -7.3% / +19.9% | still one half only |
+| leak check, value 3m (real / leaky) | +0.1% / +1.9% | +0.1% / +1.9% | passes |
+| unmeasured dates / months, all variants | not counted | 0 / 0 | C6-C8: no effect on this data |
+
+C1 and C5 change only cache invalidation: the rebuild recomputed every snapshot under the
+new fingerprints, and the rerun from cache recomputed none. Conclusions unchanged: the
+default (no drawdown rule) is the only variant positive in both halves.
+
 ## Re-check (Codex)
 
 ### Round 1

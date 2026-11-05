@@ -116,13 +116,14 @@ Checks:
 - Report written to `reports/backtest-YYYY-MM-DD.md` and to the vault.
 
 Result (2026-11-04, `reports/backtest-2026-11-04.md`): 177 month ends, 2012-01 to 2026-10.
-First run 44 min, reruns 1 min from the snapshot cache. Equal-weight universe (close >= $1):
-9.3% a year, max drawdown 37%.
+First run 40-44 min, reruns under 1 min from the snapshot cache. Equal-weight universe
+(close >= $1): 10.0% a year, max drawdown 35%. Reviewed by Codex (reviews/M5-backtest.md,
+8 findings, all fixed).
 
 | variant | months with picks | avg picks | 3m excess | 12m excess | 3m hit rate | both halves |
 |---|---|---|---|---|---|---|
-| default (value + insider buying) | 99 | 1.8 | +4.1% | +15.2% | 57% | yes (3m +3.8% / +4.4%) |
-| drawdown_50 (the M4 default) | 27 | 1.2 | +7.2% | +35.7% | 48% | no (3m -7.5% / +20.9%) |
+| default (value + insider buying) | 99 | 1.8 | +4.0% | +15.2% | 56% | yes (3m +3.8% / +4.2%) |
+| drawdown_50 (the M4 default) | 27 | 1.2 | +6.8% | +35.7% | 45% | no (3m -7.3% / +19.9%) |
 | value (no insider rule) | 177 | 13.4 | +0.1% | +0.4% | 48% | no |
 | insider_fcf (insider buying, FCF > 0) | 177 | 60.5 | +0.2% | +2.2% | 47% | no |
 
@@ -132,7 +133,7 @@ and for the default variant the leaky run scored worse, a sign of how few picks 
 
 Decision: the drawdown rule is off by default (`--min-drawdown 0.5` restores it); it only
 worked after 2020. The default variant is the only one positive in both halves. Its one-month
-strategy still returns 6.3% a year against the universe's 9.3%, because it holds cash in 78 of
+strategy still returns 7.0% a year against the universe's 10.0%, because it holds cash in 78 of
 177 months; the edge is per pick, not as a fully invested portfolio. With these filters the
 live screen shortlists 3 names (2026-11-03), not the 20 the outcome asks for.
 
