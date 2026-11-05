@@ -8,7 +8,7 @@ Both agents read and write it; the user starts each step and decides merges.
 | Who | Does | Never |
 |---|---|---|
 | Claude Code | Builds the milestone, opens the PR, writes the request, answers each finding | Merges without the user; drops a finding silently; fixes without a failing test |
-| Codex | Reviews the PR diff against the request, writes findings, re-checks answers | Edits code, tests, data or other review files; commits; merges |
+| Codex | Reviews the PR diff against the request, writes findings, re-checks answers; commits and pushes the review file only | Edits code, tests, data or other files; force-pushes; merges |
 | User | Starts each step, settles disagreements, approves the merge | |
 
 ## File
@@ -26,6 +26,20 @@ resolved            Codex agrees, or the user settled it  -> user merges
 ```
 
 Find work with `grep -l "^Status: awaiting-review" reviews/*.md` (or `awaiting-recheck` / `awaiting-response`).
+`reviews/TEMPLATE.md` has `Status: template`, which never matches.
+
+## Handoff
+
+The agents may work in different checkouts or worktrees, so uncommitted edits are invisible to
+the other side. The PR branch on GitHub is the only shared copy:
+
+1. Before reading a review file: `git fetch origin && git switch <branch> && git pull --ff-only`.
+2. After writing your turn: commit and push. Codex commits **only** its review file, with the
+   message `review(<milestone>): findings round <n>` or `review(<milestone>): re-check round <n>`.
+   Claude's commits carry its fixes plus the review file.
+3. Never force-push. If a push is rejected, `git pull --rebase` and push again; the status line
+   means only one agent should be writing at a time, so a conflict is a sign to stop and ask the user.
+4. Tell the user your turn is pushed; they start the other agent.
 
 ## Steps
 
@@ -33,9 +47,10 @@ Find work with `grep -l "^Status: awaiting-review" reviews/*.md` (or `awaiting-r
    *Request* (branch, base and head commits, PR link, what changed, how to verify, where bugs are
    most likely, known gaps), set `Status: awaiting-review`, commit the file to the PR branch.
    Tell the user to start Codex.
-2. **Review (Codex).** Review `git diff <base>..<head>`. Write findings in *Findings* using the
-   format below, then set `Status: awaiting-response`. Only this file changes.
-3. **Response (Claude).** For each finding, in order:
+2. **Review (Codex).** Pull the PR branch. Review `git diff <base>..<head>`. Write findings in
+   *Findings* using the format below, set `Status: awaiting-response`, then commit and push the
+   review file (see Handoff). Only this file changes.
+3. **Response (Claude).** Pull the PR branch. For each finding, in order:
    - write the failing test the finding implies and run it against the head commit;
    - test fails as claimed: fix, keep the test, answer **fixed** with the commit and test name;
    - test passes or the claim does not hold: answer **unfounded** with the evidence
@@ -43,9 +58,10 @@ Find work with `grep -l "^Status: awaiting-review" reviews/*.md` (or `awaiting-r
    - real but out of scope: answer **deferred**, add it to ROADMAP.md, and say why. Needs the user's OK.
    Check every fix against live data where it matters and report the numbers. Commit, push,
    set `Status: awaiting-recheck`.
-4. **Re-check (Codex).** For each answer write **agree** or **disagree** with a reason in
-   *Re-check*. New problems found in the fixes become new findings (next free ID). All agreed and
-   no new findings: `Status: resolved`. Otherwise `Status: awaiting-response` for another round.
+4. **Re-check (Codex).** Pull the PR branch. For each answer write **agree** or **disagree** with
+   a reason in *Re-check*. New problems found in the fixes become new findings (next free ID). All
+   agreed and no new findings: `Status: resolved`. Otherwise `Status: awaiting-response` for
+   another round. Commit and push the review file.
 5. **Close (user).** After two rounds, any finding still disputed goes to the user, who decides
    and writes the outcome under it. Then the user merges.
 

@@ -1,5 +1,8 @@
 # Review: <milestone> <title>
-Status: awaiting-review
+Status: template
+
+<!-- Copy to reviews/<milestone>-<slug>.md and set the status above to awaiting-review.
+     "template" never matches the discovery search, so this file is never picked up. -->
 
 ## Request (Claude)
 
