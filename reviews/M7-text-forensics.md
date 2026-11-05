@@ -60,7 +60,7 @@ Status: awaiting-review
 - 20-F/40-F filers get no redline; IFRS filers get no forensics (the `cfo` ladder is US-GAAP).
 - `fetch-text` is a separate command; `sync-vault` never makes network requests.
 - `fetch-text` stores only the latest two 10-Ks per run date; a backtest over text is out of scope.
-- Sentences are shown cut by nothing but are not escaped for Markdown.
+- Sentences are shown in full and are not escaped for Markdown.
 
 ## Findings (Codex)
 
