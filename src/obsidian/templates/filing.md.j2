@@ -1,0 +1,8 @@
+# {{ f.accn }}
+
+{% if f.form in ("4", "4/A") %}Form {{ f.form }}{% else %}{{ f.form or "Filing" }}{% endif %} by [[{{ f.company }}]]{% if f.filed %}, filed {{ f.filed }}{% endif %}.
+[Open on EDGAR]({{ f.url }})
+
+{% if f.used_for %}Used for: {{ f.used_for | join(", ") }}.
+{% endif %}{% if f.event %}Insider purchase: [[{{ f.event }}]].
+{% endif %}

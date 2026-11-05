@@ -6,6 +6,7 @@
     uv run python -m src.cli stats
     uv run python -m src.cli screen --as-of 2026-10-30
     uv run python -m src.cli backtest --start 2012-01-31
+    uv run --env-file .env python -m src.cli sync-vault --as-of 2026-11-03
 """
 from __future__ import annotations
 
@@ -21,6 +22,7 @@ from src.db.pit import concept_sql
 from src.db.schema import connect
 from src.ingestion import companyfacts, form4_sources, prices, reference
 from src.ingestion.sec import SecClient, sha256_file
+from src.obsidian.sync import sync_vault
 from src.screen import Filters, screen, write_parquet
 
 
@@ -272,6 +274,20 @@ def cmd_backtest(args) -> None:
     print(f"total {time.perf_counter() - t0:,.0f}s")
 
 
+def cmd_sync_vault(args) -> None:
+    vault = Path(args.vault) if args.vault else config.VAULT_DIR
+    if vault is None:
+        sys.exit("set EOQ_VAULT_DIR in .env or pass --vault")
+    con = connect(str(config.DB_PATH))
+    t0 = time.perf_counter()
+    s = sync_vault(con, vault, args.as_of)
+    folders = sorted(set(s.written) | set(s.unchanged))
+    print(f"vault {vault} as of {args.as_of}: {sum(s.written.values()):,} files written, "
+          f"{sum(s.unchanged.values()):,} unchanged in {time.perf_counter() - t0:.1f}s")
+    for f in folders:
+        print(f"  {f:<12} {s.written[f]:>5} written {s.unchanged[f]:>6} unchanged")
+
+
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(prog="edgar-obsidian-quant")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -316,6 +332,11 @@ def main(argv: list[str] | None = None) -> None:
     b.add_argument("--reports", default="reports")
     b.add_argument("--no-leak-check", action="store_true", help="skip the look-ahead control run")
     b.set_defaults(func=cmd_backtest)
+
+    v = sub.add_parser("sync-vault", help="write the screen into the Obsidian vault")
+    v.add_argument("--as-of", type=date.fromisoformat, default=date.today())
+    v.add_argument("--vault", help="vault folder (default: EOQ_VAULT_DIR)")
+    v.set_defaults(func=cmd_sync_vault)
 
     st = sub.add_parser("stats", help="row counts and health checks")
     st.set_defaults(func=cmd_stats)

@@ -98,6 +98,23 @@ Safeguards and limits:
   active non-financial filers have no price (mostly later delisted), so results are an upper bound.
 - SIC codes (the financial exclusion) and tickers are today's, not as of each date.
 
+## Obsidian vault
+
+```bash
+uv run --env-file .env python -m src.cli sync-vault --as-of 2026-11-03   # vault: EOQ_VAULT_DIR
+```
+
+Writes the screen into the vault: `Companies/` (shortlisted and quarantined names, plus any
+company that already has a note), `Executives/` (one note per insider, by SEC owner CIK, other
+spellings as aliases), `Events/` (one note per Form 4 purchase), `Filings/` (every filing a
+number came from, with an EDGAR link), an empty `Journal/` for M8, and `Dashboard.md` with
+Dataview tables (shortlist, quarantine, new insider buys, reviews due; needs the Dataview plugin).
+
+Notes are found by the `cik` in their frontmatter, so renaming one is safe. Only the
+`AUTO-GENERATED` block and the auto frontmatter keys change; your own keys, comments and text
+outside the block are kept. A file is written only if its content changes: syncing the same
+date twice writes nothing. First sync on 2026-11-03: 762 notes in 10 s.
+
 ## First full load
 
 First full load (2026-11-02, 8 GB MacBook):
@@ -136,7 +153,8 @@ Uncapped, a heavy query on an 8 GB machine with little free disk can crash the c
 | `src/ingestion/form4_insider.py` | Form 4 XML parser |
 | `src/ingestion/form4_sources.py` | Form 4 bulk data sets, form index, per-filing XML fetch, shared ledger |
 | `src/llm/schemas.py` | Optional quote-anchored extraction guard (only if an LLM is added) |
-| `src/obsidian/writer.py` | Atomic note writer, AUTO-block merge, CIK-keyed person registry |
+| `src/obsidian/writer.py` | Atomic note writer, AUTO-block merge (comments kept), CIK-keyed person registry |
+| `src/obsidian/sync.py`, `src/obsidian/templates/` | `sync-vault`: companies, insiders, purchases, filings, dashboard (Jinja) |
 | `tests/test_failure_modes.py` | One test per audited failure mode |
 | `tests/test_ingest.py` | Bulk load idempotency, crash resume, reference data, conditional download |
 | `tests/test_ingest_recovery.py` | 304 after failed or filtered loads, M0 upgrade, facts added to known filings |
@@ -146,6 +164,7 @@ Uncapped, a heavy query on an 8 GB machine with little free disk can crash the c
 | `tests/test_m2_review.py` | Price refresh windows, corporate actions, failure status, filing replacement |
 | `tests/test_form4_sources.py` | Data set vs XML parity on a real filing, ledger, amendments, identical lots |
 | `tests/test_m4_screen.py` | Debt source by date, stale items, EBIT/capex ladders, typo dates, screen status and trace |
+| `tests/test_m6_vault.py` | Frontmatter comments survive, idempotent sync, hand edits, renamed notes, one note per insider, name order |
 | `tests/test_m5_backtest.py` | Split/dividend returns, delisted exits, statistics, costs, halves, leaky policy, cache, report |
 
 ## Invariants
@@ -169,7 +188,7 @@ SEC requires a `User-Agent` with a real contact email and caps traffic at 10 req
 ## Status
 
 Done: schema with migrations, PIT layer, screens, Obsidian writer, M1 ingestion (live SEC data),
-M2 prices/splits/dividends, M3 insider trades, M4 screener, M5 backtest, CLI.
-Not done: vault sync, YoY footnote redline, Jinja templates.
+M2 prices/splits/dividends, M3 insider trades, M4 screener, M5 backtest, M6 vault sync, CLI.
+Not done: YoY footnote redline (M7), decision journal (M8), scheduling (M9).
 
 See [ROADMAP.md](ROADMAP.md) for goals, milestones and acceptance checks.

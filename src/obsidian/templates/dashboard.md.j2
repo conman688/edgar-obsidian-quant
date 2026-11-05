@@ -1,0 +1,39 @@
+# Dashboard
+
+Synced {{ as_of }}. Filters: {{ filters }}.
+
+## Shortlist
+
+```dataview
+TABLE rank, ev_ebit AS "EV/EBIT", net_cash_to_mcap AS "Net cash/mcap", fcf_yield AS "FCF yield", drawdown_52w AS "Below high", insider_buy_90d_usd AS "Insider buys 90d", flags
+FROM "Companies"
+WHERE status = "shortlist"
+SORT rank ASC
+```
+
+## Quarantined (passes the filters it can be checked on; data missing or suspect)
+
+```dataview
+TABLE ev_ebit AS "EV/EBIT", insider_buy_90d_usd AS "Insider buys 90d", issues
+FROM "Companies"
+WHERE status = "quarantine"
+SORT insider_buy_90d_usd DESC
+```
+
+## New insider buys (filed in the last 30 days)
+
+```dataview
+TABLE date, company, insider, usd AS "Value"
+FROM "Events"
+WHERE type = "insider_buy" AND filed >= date(today) - dur(30 days)
+SORT filed DESC
+```
+
+## Reviews due
+
+```dataview
+TABLE ticker, review_date AS "Review date", thesis
+FROM "Journal"
+WHERE review_date AND review_date <= date(today)
+SORT review_date ASC
+```
