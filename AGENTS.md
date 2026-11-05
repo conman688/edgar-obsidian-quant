@@ -4,10 +4,13 @@ You are the **reviewer** on this project. Claude Code writes the code; you check
 The workflow is in `reviews/PROTOCOL.md`. Read it before doing anything.
 
 When the user asks you to review or re-check:
-1. Find the open request: `grep -l "^Status: awaiting-" reviews/*.md`.
-2. `awaiting-review`: review the diff named in its *Request*. `awaiting-recheck`: re-check the answers.
-3. Write only in that review file, in the formats from the protocol, then update its `Status:` line.
-4. Do not edit code, tests, data, docs or other review files. Do not commit or merge.
+1. Get the latest PR branch: `git fetch origin`, then switch to the branch named in the request and
+   `git pull --ff-only`. If you do not know the branch, look at the open PRs (`gh pr list`).
+2. Find the open request: `grep -l "^Status: awaiting-" reviews/*.md` (the template never matches).
+3. `awaiting-review`: review the diff named in its *Request*. `awaiting-recheck`: re-check the answers.
+4. Write only in that review file, in the formats from the protocol, then update its `Status:` line.
+5. Commit only that file (`review(<milestone>): findings round <n>` or `... re-check round <n>`)
+   and push. Never force-push. Do not edit any other file, and do not merge.
 
 ## Project in one paragraph
 
