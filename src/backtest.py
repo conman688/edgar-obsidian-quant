@@ -233,19 +233,26 @@ def evaluate(con: duckdb.DuckDBPyConnection, ranked: str, cost_bps: float = 50) 
         ret = f"ret_{h}m"
         gap = f"count(*) FILTER (WHERE exit_gap_{h}m)" if f"exit_gap_{h}m" in cols else "0"
         brk = f"count(*) FILTER (WHERE price_break_{h}m)" if f"price_break_{h}m" in cols else "0"
+        broke = f"coalesce(price_break_{h}m, FALSE)" if f"price_break_{h}m" in cols else "FALSE"
+        # Each date with picks is measured (universe and every pick known), unmeasured (realized
+        # but a pick's return is unknown, e.g. a price break) or future (exit after the last
+        # price). Unmeasured dates are counted and left out: averaging the known picks would
+        # reweight the shortlist in hindsight (review C6), and they must not vanish (C8).
         rows = con.execute(f"""
             WITH u AS (SELECT as_of, avg({ret}) AS u FROM {ranked} WHERE {ret} IS NOT NULL GROUP BY as_of),
-            p AS (SELECT r.as_of, r.{ret} - {2 * one_way} AS ret, u.u
-                  FROM {ranked} r JOIN u USING (as_of) WHERE r.status = 'shortlist'),
-            -- A date where any pick's return is unknown (price break) is not measured at all:
-            -- averaging the known picks would reweight the shortlist in hindsight (review C6).
+            p AS (SELECT r.as_of, r.{ret} - {2 * one_way} AS ret, u.u, {broke} AS broke
+                  FROM {ranked} r LEFT JOIN u USING (as_of) WHERE r.status = 'shortlist'),
             d AS (SELECT as_of, avg(ret) AS pr, any_value(u) AS u, count(*) AS n,
-                         count(*) FILTER (WHERE ret > u) AS hits, bool_or(ret IS NULL) AS unknown
+                         count(*) FILTER (WHERE ret > u) AS hits, bool_or(ret IS NULL) AS has_null,
+                         bool_or(broke) AS broke
                   FROM p GROUP BY as_of)
-            SELECT as_of, pr, u, n, hits, unknown FROM d ORDER BY as_of
+            SELECT as_of, pr, u, n, hits,
+                   CASE WHEN u IS NOT NULL AND NOT has_null THEN 'measured'
+                        WHEN u IS NOT NULL OR broke THEN 'unmeasured' ELSE 'future' END
+            FROM d ORDER BY as_of
         """).fetchall()
-        unmeasured = sum(1 for r in rows if r[5])
-        rows = [r for r in rows if not r[5]]
+        unmeasured = sum(1 for r in rows if r[5] == "unmeasured")
+        rows = [r for r in rows if r[5] == "measured"]
         n_gaps, n_breaks = con.execute(f"SELECT {gap}, {brk} FROM {ranked} WHERE status = 'shortlist'").fetchall()[0]
         picks = sum(r[3] for r in rows)
         horizons[h] = {
@@ -263,43 +270,48 @@ def evaluate(con: duckdb.DuckDBPyConnection, ranked: str, cost_bps: float = 50) 
                      "one_half_only": None if first is None or second is None else (first > 0) != (second > 0)}
 
     # Monthly strategy: hold the shortlist one month, equal weight, cash when it is empty.
+    # A realized month in which any holding's return is unknown makes the strategy's path
+    # unknown from there: its CAGR, drawdown and turnover are reported as unknown rather than
+    # stitched across the gap (review C7). The universe curve keeps every month it can measure.
+    broke = "coalesce(price_break_1m, FALSE)" if "price_break_1m" in cols else "FALSE"
     months = con.execute(f"""
         SELECT as_of, avg(ret_1m) AS u,
-               list({{'cik': cik, 'r': ret_1m}} ORDER BY cik) FILTER (WHERE status = 'shortlist') AS picks
-        FROM {ranked} GROUP BY as_of HAVING count(ret_1m) > 0 ORDER BY as_of
+               list({{'cik': cik, 'r': ret_1m}} ORDER BY cik) FILTER (WHERE status = 'shortlist') AS picks,
+               coalesce(bool_or({broke}) FILTER (WHERE status = 'shortlist'), FALSE) AS broke
+        FROM {ranked} GROUP BY as_of ORDER BY as_of
     """).fetchall()
-    skipped = 0
+    unmeasured = with_picks = 0
     curve, ucurve, turns = [], [], []
     held: dict = {"cash": 1.0}      # weights at the end of the last month, after each holding's return
     v = uv = 1.0
-    for _, u, picks in months:
+    for _, u, picks, broke_m in months:
         picks = picks or []         # no shortlist this month: the FILTER list is NULL
-        target = {p["cik"]: 1 / len(picks) for p in picks} if picks else {"cash": 1.0}
-        if any(p["r"] is None for p in picks):
-            # A holding's month is unknown (price break): the month is left out of both curves
-            # rather than credited to the other holdings (review C6). Without drift
-            # information the next rebalance trades from the target weights.
-            skipped += 1
-            held = target
+        if u is None and not broke_m:
+            continue                # the future: nothing realized yet
+        if u is not None:
+            uv *= 1 + u
+            ucurve.append(uv)
+        with_picks += bool(picks)
+        if u is None or any(p["r"] is None for p in picks):
+            unmeasured += 1
             continue
+        target = {p["cik"]: 1 / len(picks) for p in picks} if picks else {"cash": 1.0}
         delta = {k: abs(target.get(k, 0) - held.get(k, 0)) for k in set(target) | set(held)}
         turns.append(sum(delta.values()) / 2)
         # Only stock legs pay: moving from cash into one stock is one purchase (review C3).
         cost = sum(dw for k, dw in delta.items() if k != "cash") * one_way
         pr = sum(p["r"] for p in picks) / len(picks) if picks else 0.0
         v *= 1 + pr - cost
-        uv *= 1 + u
         curve.append(v)
-        ucurve.append(uv)
         # Weights drift with returns; the next rebalance trades back from there (review C4).
         grown = {p["cik"]: target[p["cik"]] * (1 + p["r"]) for p in picks}
         total = sum(grown.values())
         held = {k: g / total for k, g in grown.items()} if picks and total > 0 else {"cash": 1.0}
-    monthly = {"months": len(curve), "months_with_picks": sum(1 for m in months if m[2]) - skipped,
-               "months_unmeasured": skipped,
-               "cagr": _cagr(curve), "universe_cagr": _cagr(ucurve),
-               "turnover": sum(turns) / len(turns) if turns else None,
-               "max_drawdown": _max_drawdown(curve) if curve else None,
+    complete = unmeasured == 0 and bool(curve)
+    monthly = {"months": len(ucurve), "months_with_picks": with_picks, "months_unmeasured": unmeasured,
+               "cagr": _cagr(curve) if complete else None, "universe_cagr": _cagr(ucurve),
+               "turnover": sum(turns) / len(turns) if complete and turns else None,
+               "max_drawdown": _max_drawdown(curve) if complete else None,
                "universe_max_drawdown": _max_drawdown(ucurve) if ucurve else None}
     return {"horizons": horizons, "monthly": monthly, "halves": halves}
 

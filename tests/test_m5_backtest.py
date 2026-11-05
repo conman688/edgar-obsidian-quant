@@ -213,3 +213,35 @@ def test_date_with_an_unknown_pick_is_left_out_of_horizon_stats(con):           
     ])
     h3 = bt.evaluate(con, "ranked", cost_bps=0)["horizons"][3]
     assert h3["dates"] == 1 and h3["excess"] == pytest.approx(0.1 - 0.05) and h3["unmeasured_dates"] == 1
+
+
+# --- Codex review round 3 ---------------------------------------------------------
+
+def test_unmeasured_month_does_not_produce_full_strategy_cagr(con):              # C7
+    panel(con, [
+        (date(2024, 1, 31), 1, "shortlist", None, 0.0),
+        (date(2024, 1, 31), 2, "fail", 0.0, 0.0),
+        (date(2024, 2, 29), 1, "shortlist", 0.0, 0.0),
+        (date(2024, 2, 29), 2, "fail", 0.0, 0.0),
+    ])
+    monthly = bt.evaluate(con, "ranked", cost_bps=50)["monthly"]
+    assert monthly["months_unmeasured"] == 1
+    assert monthly["cagr"] is None
+
+
+def test_all_unknown_realized_picks_are_counted(con):                             # C8
+    panel(con, [(date(2024, 1, 31), 1, "shortlist", None, None)])
+    con.execute("ALTER TABLE ranked ADD COLUMN price_break_1m BOOLEAN")
+    con.execute("ALTER TABLE ranked ADD COLUMN price_break_3m BOOLEAN")
+    con.execute("UPDATE ranked SET price_break_1m = TRUE, price_break_3m = TRUE")
+    result = bt.evaluate(con, "ranked")
+    assert result["monthly"]["months_unmeasured"] == 1
+    assert result["horizons"][3]["unmeasured_dates"] == 1
+
+
+def test_future_dates_are_not_counted_as_unmeasured(con):                         # C8 boundary
+    panel(con, [(date(2024, 1, 31), 1, "shortlist", 0.1, 0.1), (date(2024, 1, 31), 2, "fail", 0.0, 0.0),
+                (date(2024, 2, 29), 1, "shortlist", None, None), (date(2024, 2, 29), 2, "fail", None, None)])
+    result = bt.evaluate(con, "ranked", cost_bps=0)
+    assert result["monthly"]["months_unmeasured"] == 0 and result["monthly"]["months"] == 1
+    assert result["horizons"][3]["unmeasured_dates"] == 0 and result["horizons"][3]["dates"] == 1
