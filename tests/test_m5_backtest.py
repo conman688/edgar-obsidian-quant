@@ -181,3 +181,35 @@ def test_rebalancing_same_picks_after_returns_has_turnover(con):                
     ])
     result = bt.evaluate(con, "ranked", cost_bps=0)
     assert result["monthly"]["turnover"] == pytest.approx((1 + 1 / 6) / 2)
+
+
+# --- Codex review round 2 ---------------------------------------------------------
+
+def test_snapshot_invalidates_when_split_macro_changes(con, tmp_path):            # C5
+    add_company(con, CIK, "ACME", cheap_company())
+    add_buy(con, CIK, "f4")
+    con.execute("INSERT INTO splits VALUES (?, DATE '2024-08-20', 2, 't')", [CIK])
+    dates = [date(2024, 8, 31)]
+    assert bt.snapshots(con, dates, "as_first_reported", tmp_path) == 1
+    con.execute("CREATE OR REPLACE MACRO split_factor(p_cik, p_date) AS (1.0)")
+    assert bt.snapshots(con, dates, "as_first_reported", tmp_path) == 1
+
+
+def test_missing_selected_return_does_not_reweight_other_holding(con):          # C6
+    panel(con, [
+        (date(2024, 1, 31), 1, "shortlist", 1.0, 0.0),
+        (date(2024, 1, 31), 2, "shortlist", None, 0.0),
+        (date(2024, 1, 31), 3, "fail", 0.0, 0.0),
+    ])
+    result = bt.evaluate(con, "ranked", cost_bps=0)
+    assert result["monthly"]["cagr"] is None  # no complete portfolio month
+
+
+def test_date_with_an_unknown_pick_is_left_out_of_horizon_stats(con):            # C6, same rule at 3m
+    d1, d2 = date(2024, 1, 31), date(2024, 2, 29)
+    panel(con, [
+        (d1, 1, "shortlist", 0.0, 1.0), (d1, 2, "shortlist", 0.0, None), (d1, 3, "fail", 0.0, 0.0),
+        (d2, 1, "shortlist", 0.0, 0.1), (d2, 3, "fail", 0.0, 0.0),
+    ])
+    h3 = bt.evaluate(con, "ranked", cost_bps=0)["horizons"][3]
+    assert h3["dates"] == 1 and h3["excess"] == pytest.approx(0.1 - 0.05) and h3["unmeasured_dates"] == 1

@@ -100,6 +100,12 @@ def _input_hashes(con: duckdb.DuckDBPyConnection, policy: Policy) -> Callable[[d
         prefix[name] = (days, acc)
     static = [int(con.execute(f"SELECT coalesce(bit_xor(hash({cols})), 0) FROM {table}").fetchall()[0][0])
               for table, cols in _STATIC_INPUTS.values()]
+    # The SQL calls macros by name (split_factor, form4_effective); their bodies are inputs too
+    # (review C5). Read from the connection, so a redefinition by any path is seen.
+    macros = con.execute("""SELECT coalesce(bit_xor(hash(function_name, parameters::VARCHAR, macro_definition)), 0)
+                            FROM duckdb_functions()
+                            WHERE function_type IN ('macro', 'table_macro') AND NOT internal""").fetchall()
+    static.append(int(macros[0][0]))
 
     def at(d: date) -> list[int]:
         out = []
@@ -230,10 +236,16 @@ def evaluate(con: duckdb.DuckDBPyConnection, ranked: str, cost_bps: float = 50) 
         rows = con.execute(f"""
             WITH u AS (SELECT as_of, avg({ret}) AS u FROM {ranked} WHERE {ret} IS NOT NULL GROUP BY as_of),
             p AS (SELECT r.as_of, r.{ret} - {2 * one_way} AS ret, u.u
-                  FROM {ranked} r JOIN u USING (as_of) WHERE r.status = 'shortlist' AND r.{ret} IS NOT NULL)
-            SELECT as_of, avg(ret) AS pr, any_value(u) AS u, count(*) AS n, count(*) FILTER (WHERE ret > u) AS hits
-            FROM p GROUP BY as_of ORDER BY as_of
+                  FROM {ranked} r JOIN u USING (as_of) WHERE r.status = 'shortlist'),
+            -- A date where any pick's return is unknown (price break) is not measured at all:
+            -- averaging the known picks would reweight the shortlist in hindsight (review C6).
+            d AS (SELECT as_of, avg(ret) AS pr, any_value(u) AS u, count(*) AS n,
+                         count(*) FILTER (WHERE ret > u) AS hits, bool_or(ret IS NULL) AS unknown
+                  FROM p GROUP BY as_of)
+            SELECT as_of, pr, u, n, hits, unknown FROM d ORDER BY as_of
         """).fetchall()
+        unmeasured = sum(1 for r in rows if r[5])
+        rows = [r for r in rows if not r[5]]
         n_gaps, n_breaks = con.execute(f"SELECT {gap}, {brk} FROM {ranked} WHERE status = 'shortlist'").fetchall()[0]
         picks = sum(r[3] for r in rows)
         horizons[h] = {
@@ -242,7 +254,7 @@ def evaluate(con: duckdb.DuckDBPyConnection, ranked: str, cost_bps: float = 50) 
             "universe_return": sum(r[2] for r in rows) / len(rows) if rows else None,
             "excess": sum(r[1] - r[2] for r in rows) / len(rows) if rows else None,
             "hit_rate": sum(r[4] for r in rows) / picks if picks else None,
-            "exit_gaps": n_gaps, "price_breaks": n_breaks,
+            "exit_gaps": n_gaps, "price_breaks": n_breaks, "unmeasured_dates": unmeasured,
         }
         ex = [r[1] - r[2] for r in rows]
         mid = len(ex) // 2
@@ -253,16 +265,23 @@ def evaluate(con: duckdb.DuckDBPyConnection, ranked: str, cost_bps: float = 50) 
     # Monthly strategy: hold the shortlist one month, equal weight, cash when it is empty.
     months = con.execute(f"""
         SELECT as_of, avg(ret_1m) AS u,
-               list({{'cik': cik, 'r': ret_1m}} ORDER BY cik)
-                   FILTER (WHERE status = 'shortlist' AND ret_1m IS NOT NULL) AS picks
-        FROM {ranked} WHERE ret_1m IS NOT NULL GROUP BY as_of ORDER BY as_of
+               list({{'cik': cik, 'r': ret_1m}} ORDER BY cik) FILTER (WHERE status = 'shortlist') AS picks
+        FROM {ranked} GROUP BY as_of HAVING count(ret_1m) > 0 ORDER BY as_of
     """).fetchall()
+    skipped = 0
     curve, ucurve, turns = [], [], []
     held: dict = {"cash": 1.0}      # weights at the end of the last month, after each holding's return
     v = uv = 1.0
     for _, u, picks in months:
         picks = picks or []         # no shortlist this month: the FILTER list is NULL
         target = {p["cik"]: 1 / len(picks) for p in picks} if picks else {"cash": 1.0}
+        if any(p["r"] is None for p in picks):
+            # A holding's month is unknown (price break): the month is left out of both curves
+            # rather than credited to the other holdings (review C6). Without drift
+            # information the next rebalance trades from the target weights.
+            skipped += 1
+            held = target
+            continue
         delta = {k: abs(target.get(k, 0) - held.get(k, 0)) for k in set(target) | set(held)}
         turns.append(sum(delta.values()) / 2)
         # Only stock legs pay: moving from cash into one stock is one purchase (review C3).
@@ -276,10 +295,12 @@ def evaluate(con: duckdb.DuckDBPyConnection, ranked: str, cost_bps: float = 50) 
         grown = {p["cik"]: target[p["cik"]] * (1 + p["r"]) for p in picks}
         total = sum(grown.values())
         held = {k: g / total for k, g in grown.items()} if picks and total > 0 else {"cash": 1.0}
-    monthly = {"months": len(months), "months_with_picks": sum(1 for m in months if m[2]),
+    monthly = {"months": len(curve), "months_with_picks": sum(1 for m in months if m[2]) - skipped,
+               "months_unmeasured": skipped,
                "cagr": _cagr(curve), "universe_cagr": _cagr(ucurve),
-               "max_drawdown": _max_drawdown(curve), "universe_max_drawdown": _max_drawdown(ucurve),
-               "turnover": sum(turns) / len(turns) if turns else None}
+               "turnover": sum(turns) / len(turns) if turns else None,
+               "max_drawdown": _max_drawdown(curve) if curve else None,
+               "universe_max_drawdown": _max_drawdown(ucurve) if ucurve else None}
     return {"horizons": horizons, "monthly": monthly, "halves": halves}
 
 
@@ -360,6 +381,9 @@ def render_report(results: dict[str, dict[str, dict]], meta: dict) -> str:
               if p == "as_first_reported"}
     lines.append(f"- Picks left out of the 3m figures because the price series broke (10x in a day): {breaks}.")
     lines.append(f"- Universe and picks: names with a close of at least ${MIN_PRICE:g} on the rebalance date.")
+    unmeasured = {n: (s["horizons"][3]["unmeasured_dates"], s["monthly"]["months_unmeasured"])
+                  for n, by in results.items() for p, s in by.items() if p == "as_first_reported"}
+    lines.append(f"- Dates left out because a pick's return was unknown (3m dates, 1m strategy months): {unmeasured}.")
     lines += ["", "## Variants", ""]
     for name, f in meta.get("variants", {}).items():
         lines.append(f"- `{name}`: {json.dumps(asdict(f), sort_keys=True)}")
