@@ -1,5 +1,5 @@
 # Review: M5 Backtest harness
-Status: awaiting-recheck
+Status: awaiting-response
 
 ## Request (Claude)
 
@@ -153,6 +153,40 @@ def test_missing_selected_return_does_not_reweight_other_holding(con):
     assert result["monthly"]["cagr"] is None  # no complete portfolio month
 ```
 
+### C7. Skipping an unknown month fabricates a continuous strategy CAGR and loses trading costs
+- Severity: high
+- Where: src/backtest.py:274-285
+- Evidence: Skipping the entire period and assigning held = target silently stitches together nonconsecutive returns, assumes post-period holdings equal target, and never charges that month's trades. Reproduced: January selected stock 1 with unknown return and a known non-pick; February selected the same stock with a 0% return; 50 bps one-way fee. Output: months_unmeasured=1, CAGR=0%, turnover=0, even though the January purchase cost at least 0.5% and its return and ending wealth are unknown. Reporting a definite full-strategy CAGR, drawdown and cost under this condition is not supported. Keep the return/weights/costs as unknown, and report period statistics without representing them as one continuous strategy.
+- Test:
+```python
+def test_unmeasured_month_does_not_produce_full_strategy_cagr(con):
+    panel(con, [
+        (date(2024, 1, 31), 1, "shortlist", None, 0.0),
+        (date(2024, 1, 31), 2, "fail", 0.0, 0.0),
+        (date(2024, 2, 29), 1, "shortlist", 0.0, 0.0),
+        (date(2024, 2, 29), 2, "fail", 0.0, 0.0),
+    ])
+    monthly = bt.evaluate(con, "ranked", cost_bps=50)["monthly"]
+    assert monthly["months_unmeasured"] == 1
+    assert monthly["cagr"] is None
+```
+
+### C8. A fully unknown month disappears from the unmeasured count
+- Severity: medium
+- Where: src/backtest.py:238-247 and src/backtest.py:266-269
+- Evidence: The horizon query joins picks to an average made only from non-NULL returns, and the monthly query has HAVING count(ret_1m) > 0. If every return on a date is unknown due to price breaks, the date vanishes before the new unmeasured counters run. An in-memory panel with one selected stock and NULL 1m and 3m returns reports both counts as zero. Distinguish genuinely future horizons from already-realized but unmeasurable horizons and count the latter even without a known universe return.
+- Test:
+```python
+def test_all_unknown_realized_picks_are_counted(con):
+    panel(con, [(date(2024, 1, 31), 1, "shortlist", None, None)])
+    con.execute("ALTER TABLE ranked ADD COLUMN price_break_1m BOOLEAN")
+    con.execute("ALTER TABLE ranked ADD COLUMN price_break_3m BOOLEAN")
+    con.execute("UPDATE ranked SET price_break_1m = TRUE, price_break_3m = TRUE")
+    result = bt.evaluate(con, "ranked")
+    assert result["monthly"]["months_unmeasured"] == 1
+    assert result["horizons"][3]["unmeasured_dates"] == 1
+```
+
 ## Response (Claude)
 
 All four reproduced with the reviewer's tests on 07e7de6 (4 failed, 11 passed), fixed in
@@ -226,6 +260,12 @@ locked until that run finishes.
 - C3: **Agree.** Stock-only trade legs charge one one-way purchase cost from cash.
 - C4: **Agree.** Post-return weights now feed the next rebalance.
 - New findings C5 and C6 need responses before resolution. Tests/test_m5_backtest.py: 15 passed. C5 and C6 were independently reproduced using in-memory databases. The live database was not opened.
+
+### Round 2
+- C5: **Agree.** The tested runtime split macro redefinition now invalidates snapshots; M5 tests pass.
+- C6: **Agree** that the tested unknown pick is no longer reweighted in hindsight, but the new missing-period handling introduces C7 and C8, independently reproduced with in-memory data.
+- Tests/test_m5_backtest.py: 18 passed. The live database was not opened.
+- Keep status awaiting-response for C7 and C8.
 
 ## Outcome (user)
 
