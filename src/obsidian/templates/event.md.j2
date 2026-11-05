@@ -2,4 +2,4 @@
 
 [[{{ e.person }}]]{% if e.role %} ({{ e.role }}){% endif %} bought {{ e.shares | num(0) }} shares of [[{{ e.company }}]]
 for {{ e.usd | usd }} on {{ e.txn_date }}{% if e.lots > 1 %} in {{ e.lots }} lots{% endif %}, average price {{ e.price | num(2) }}.
-Reported in [[{{ e.accn }}]], filed {{ e.filed }}.
+Reported in [[{{ e.filing }}]], filed {{ e.filed }}.

@@ -134,6 +134,11 @@ def sync_vault(con: duckdb.DuckDBPyConnection, vault: Path, as_of: date, filters
     lots: dict[tuple[str, int], list[dict]] = defaultdict(list)
     for b in buys:
         lots[(b["accn"], b["owner_cik"])].append(b)
+    # Filings are found by accession too; generated links use each note's actual file name.
+    filings_idx = _index(vault / "Filings", "accn")
+    accns = {a for r in by_cik.values() for s in r["sources"] or [] for a in s["accns"]} | {a for a, _ in lots}
+    filing_link = {a: _note_path(filings_idx, vault / "Filings", a, a, "filing").stem for a in sorted(accns)}
+
     events = {}
     events_idx = _index(vault / "Events", "accn", "owner_cik")      # found by identity, not file name
     for (accn, owner), ls in sorted(lots.items()):
@@ -143,7 +148,7 @@ def sync_vault(con: duckdb.DuckDBPyConnection, vault: Path, as_of: date, filters
         e = {"accn": accn, "owner_cik": owner, "cik": first["issuer_cik"], "ticker": ticker,
              "txn_date": min(b["txn_date"] for b in ls), "filed": first["filed"], "shares": shares, "usd": usd,
              "price": usd / shares, "lots": len(ls), "person": person_link[owner],
-             "company": company_link[first["issuer_cik"]],
+             "company": company_link[first["issuer_cik"]], "filing": filing_link[accn],
              "role": first["officer_title"] or ("Director" if first["is_director"] else None)}
         # The accession is the unique part of the name: shorten the rest, never it.
         head = slug(f"{e['txn_date']} {ticker} buy by {e['person']}")[:95].rstrip()
@@ -193,7 +198,7 @@ def sync_vault(con: duckdb.DuckDBPyConnection, vault: Path, as_of: date, filters
             filings[accn].update(form=form, filed=filed)
     for accn, f in sorted(filings.items()):
         f.update(company=company_link[f["cik"]], url=_edgar_url(f["cik"], accn))
-        changed = upsert_note(vault / "Filings" / f"{slug(accn)}.md", {
+        changed = upsert_note(filings_idx[accn], {
             "type": "filing", "accn": accn, "cik": f["cik"], "ticker": by_cik[f["cik"]]["ticker"],
             "form": f["form"], "filed": f["filed"], "url": f["url"], "company": f"[[{f['company']}]]",
             "tags": ["filing"]}, env.get_template("filing.md.j2").render(f=f))
@@ -210,7 +215,8 @@ def sync_vault(con: duckdb.DuckDBPyConnection, vault: Path, as_of: date, filters
             "insider_buy_90d_usd": _r(r["insider_buy_90d_usd"], 0), "drawdown_52w": _r(r["drawdown_52w"]),
             "mcap": _r(r["mcap"], 0), "as_of": as_of, "issues": list(r["issues"]), "flags": list(r["flags"]),
             "aliases": [r["name"]] if r["name"] else [], "tags": ["company"]},
-            env.get_template("company.md.j2").render(c={**r, "as_of": as_of}, buys=mine))
+            env.get_template("company.md.j2").render(c={**r, "as_of": as_of}, buys=mine,
+                                                       filing_link=filing_link))
         stats.record("Companies", changed)
 
     changed = upsert_note(vault / "Dashboard.md", {"type": "dashboard"}, env.get_template("dashboard.md.j2").render(

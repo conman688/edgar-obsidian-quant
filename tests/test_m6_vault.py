@@ -166,3 +166,26 @@ def test_long_name_does_not_merge_distinct_filing_events(con, tmp_path):        
     events = [p for p in (tmp_path / "Events").glob("*.md") if fm(p).get("owner_cik") == 77]
     assert len(events) == 2
     assert all(fm(p)["accn"] in p.stem for p in events)
+
+
+def test_renamed_filing_is_updated_and_links_follow(con, tmp_path):                 # C4
+    sync_vault(con, tmp_path, AS_OF)
+    folder = tmp_path / "Filings"
+    accn = "0001234-24-000001"
+    (folder / f"{accn}.md").rename(folder / "My filing.md")
+    sync_vault(con, tmp_path, AS_OF)
+    assert [p.name for p in folder.glob("*.md") if fm(p).get("accn") == accn] == ["My filing.md"]
+    assert "[[My filing]]" in next((tmp_path / "Events").glob("*.md")).read_text()
+
+
+def test_renamed_source_filing_is_linked_from_the_company(con, tmp_path):           # C4, sources
+    sync_vault(con, tmp_path, AS_OF)
+    folder = tmp_path / "Filings"
+    src = next(p for p in sorted(folder.glob("*.md")) if fm(p)["form"] != "4")
+    accn = fm(src)["accn"]
+    src.rename(folder / "My 10-K.md")
+    sync_vault(con, tmp_path, AS_OF)
+    assert [p.name for p in folder.glob("*.md") if fm(p).get("accn") == accn] == ["My 10-K.md"]
+    company = (tmp_path / "Companies" / "ACME.md").read_text()
+    assert "[[My 10-K]]" in company and f"[[{accn}]]" not in company
+    assert not sum(sync_vault(con, tmp_path, AS_OF).written.values())

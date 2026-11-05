@@ -33,5 +33,5 @@ Status on {{ c.as_of }}: **{{ c.status }}**{% if c.rank %}, rank {{ c.rank }}{% 
 
 | Item | Tag | Period end | Filings |
 |---|---|---|---|
-{% for s in c.sources %}| {{ s.item }} | {{ s.tag }} | {{ s.period_end }} | {% for a in s.accns | unique %}[[{{ a }}]]{% if not loop.last %} {% endif %}{% endfor %} |
+{% for s in c.sources %}| {{ s.item }} | {{ s.tag }} | {{ s.period_end }} | {% for a in s.accns | unique %}[[{{ filing_link[a] }}]]{% if not loop.last %} {% endif %}{% endfor %} |
 {% endfor %}
