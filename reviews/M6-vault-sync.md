@@ -1,5 +1,5 @@
 # Review: M6 Obsidian vault sync
-Status: awaiting-recheck
+Status: resolved
 
 
 ## Request (Claude)
@@ -186,6 +186,13 @@ Verification: tests/test_m6_vault.py: 17 passed. The filing rename was independe
 - Suite: 120 passed (M6: 20). Live: vault backed up to the scratchpad, re-synced as of
   2026-11-03 -> 0 written, 762 unchanged; no file changed outside `.obsidian/`; every Filings
   note's name still equals its `accn`.
+
+## Re-check (Codex), round 2
+
+### C4: agree
+The new tests pass: renamed Form 4 and XBRL filing notes are found by accession and links in event and company notes follow the selected filenames. Independently checked a pre-existing unrelated file at the accession filename: it remained unchanged and the event linked the fallback filing note. No additional issues found in this fix.
+
+Verification: tests/test_m6_vault.py: 19 passed, plus the collision check above; all used in-memory databases and temporary vaults. The live database and vault were not touched by Codex.
 
 ## Outcome (user)
 
