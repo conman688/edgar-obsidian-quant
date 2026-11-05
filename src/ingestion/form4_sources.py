@@ -119,6 +119,11 @@ def load_dataset(con: duckdb.DuckDBPyConnection, zip_path: Path, quarter: str, s
         for name in DATASET_FILES:
             z.extract(name, d)
     before = con.execute("SELECT count(*) FROM form4_transactions").fetchall()[0][0]
+    # The 10b5-1 checkbox column exists only from 2023; older files have no such field.
+    sub_cols = {c[0] for c in con.execute(f"SELECT * FROM {_tsv(d / 'SUBMISSION.tsv')} LIMIT 0").description}
+    aff = ("""CASE WHEN lower(AFF10B5ONE) IN ('1', 'true') THEN TRUE
+                        WHEN lower(AFF10B5ONE) IN ('0', 'false') THEN FALSE END"""
+           if "AFF10B5ONE" in sub_cols else "NULL::BOOLEAN")
     con.begin()
     try:
         con.execute(f"""
@@ -126,8 +131,7 @@ def load_dataset(con: duckdb.DuckDBPyConnection, zip_path: Path, quarter: str, s
             SELECT ACCESSION_NUMBER AS accn, strptime(FILING_DATE, '%d-%b-%Y')::DATE AS filed,
                    try_strptime(PERIOD_OF_REPORT, '%d-%b-%Y')::DATE AS period_of_report,
                    DOCUMENT_TYPE AS form_type, TRY_CAST(ISSUERCIK AS INTEGER) AS issuer_cik,
-                   CASE WHEN lower(AFF10B5ONE) IN ('1', 'true') THEN TRUE
-                        WHEN lower(AFF10B5ONE) IN ('0', 'false') THEN FALSE END AS aff10b5
+                   {aff} AS aff10b5
             FROM {_tsv(d / 'SUBMISSION.tsv')}
             WHERE DOCUMENT_TYPE IN ('4', '4/A')
               AND ACCESSION_NUMBER NOT IN (SELECT accn FROM form4_filings WHERE status IN ('done', 'skipped'))

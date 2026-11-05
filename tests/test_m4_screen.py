@@ -219,7 +219,7 @@ def test_screen_shortlist_quarantine_fail_and_trace(con):
     add_company(con, 5000, "LATE", cheap_company())
     add_buy(con, 5000, "f4-late", filed=date(2024, 9, 4))                   # filed after as_of
 
-    rows = screen_rows(con)
+    rows = screen_rows(con, filters=Filters(min_drawdown=0.5))
     assert "BANK" not in rows                                              # financials excluded
     acme = rows["ACME"]
     assert acme["status"] == "shortlist" and acme["rank"] == 1
@@ -230,7 +230,8 @@ def test_screen_shortlist_quarantine_fail_and_trace(con):
     assert {("shares", "q2"), ("cash", "q2"), ("debt", "q2"), ("ebit", "k"), ("cfo", "k"), ("capex", "k")} <= used
     assert rows["NODEBT"]["status"] == "quarantine" and rows["NODEBT"]["rank"] is None
     assert "missing_debt" in rows["NODEBT"]["issues"]
-    assert rows["PRICEY"]["status"] == "fail"
+    assert rows["PRICEY"]["status"] == "fail" and "drawdown" in rows["PRICEY"]["failed_filters"]
+    assert screen_rows(con)["PRICEY"]["failed_filters"] == ["ev_ebit"]     # no drawdown rule by default
     assert rows["LATE"]["status"] == "fail" and rows["LATE"]["form4_accns"] is None
 
 
@@ -359,3 +360,29 @@ def test_total_with_partial_split_is_compared_only_when_inconsistent(con):
     add_company(con, CIK, "TSLA", tags)
     row = val_row(con)
     assert row["debt"] == 796_000 and row["issues"] == []
+
+
+def test_trade_dated_after_its_filing_is_not_a_buy(con):
+    # Real case: a Form 4 filed 2022-11-18 with transaction date 2033-11-18. As a "future"
+    # trade it fell inside every 90-day window until 2033.
+    add_company(con, CIK, "ACME", cheap_company())
+    xml = form4_xml(10, "TYPO", "Chief Executive Officer",
+                    [("2033-11-18", "P", 10000, 12.0, "A", 50000, "D", "", False)], doc_flag=0)
+    store(con, parse_form4(xml, "f4-typo", date(2024, 8, 16)))
+    assert screen_rows(con)["ACME"]["n_insiders"] is None
+
+
+def test_penny_price_is_an_issue(con):
+    # PPCB at $0.0002 made a +2,500,000% month in the backtest: sub-$1 quotes are not tradeable
+    # in size and move a whole tick at a time.
+    tags = cheap_company()
+    tags[(DEI, "EntityCommonStockSharesOutstanding", "shares")] = [inst("2024-07-25", 20_000_000)]
+    add_company(con, CIK, "PPCB", tags, price_now=0.6)
+    assert "penny_price" in val_row(con)["issues"]
+
+
+def test_ten_fold_jump_in_a_day_is_a_price_break(con):
+    # CHRD 2020: Oasis bankruptcy shares at $0.11, then new shares at $34 under the same ticker.
+    add_company(con, CIK, "CHRD", cheap_company())
+    con.execute("INSERT INTO prices (cik, ticker, price_date, close_raw, source) VALUES (?, 'CHRD', DATE '2024-03-01', 0.9, 't'), (?, 'CHRD', DATE '2024-03-04', 12.0, 't')", [CIK, CIK])
+    assert "price_break" in val_row(con)["issues"]

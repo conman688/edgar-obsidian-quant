@@ -35,7 +35,9 @@ published as Insider Transactions Data Sets load from one zip each, for every is
 SEC publishes them a quarter or more late, so the rest come from the quarterly form index:
 each filing's XML is fetched, for priced companies only. A per-filing ledger keeps the two
 paths from loading a filing twice, and both produce identical rows for the same filing.
-Default range is two years back (`--since 2024q4` to change; older quarters are cheap).
+Default range is two years back (`--since 2024q4` to change). The backtest needs history from
+2011q4: `ingest form4 --since 2011q4` loads 52 more quarters (5.9M rows, +1.2 GB of database,
+about 10 minutes). Data sets before 2023 have no 10b5-1 checkbox; only plan footnotes mark those.
 Amendments (4/A) replace the filing they amend only from the day they were filed.
 
 ## Screen
@@ -45,9 +47,10 @@ uv run python -m src.cli screen --as-of 2026-11-02            # default filters
 uv run python -m src.cli screen --min-drawdown 0.3 --max-ev-ebit 10 --trace
 ```
 
-Ranks priced, non-financial companies on five filters: drawdown from the 52-week high
-> 50%, trailing FCF > 0, EV/EBIT < 6, net debt <= 25% of market cap, and a cluster buy by
-insiders known within 90 days. Every input is point-in-time. Each company gets a status:
+Ranks priced, non-financial companies on four filters: trailing FCF > 0, EV/EBIT < 6, net
+debt <= 25% of market cap, and a cluster buy by insiders known within 90 days. A drawdown rule
+(`--min-drawdown 0.5`: at least 50% below the 52-week high) is available but off by default;
+the backtest found it worked only after 2020. Every input is point-in-time. Each company gets a status:
 
 - `shortlist`: passes every filter on clean data. Ranked by EV/EBIT, cheapest first.
 - `quarantine`: no filter fails, but an input is missing or suspect (`issues`). Never ranked.
@@ -67,6 +70,33 @@ The terminal shows the shortlist and quarantine; `--trace` prints the tag, perio
 accession numbers behind each number. Every company, with all metrics, issues, sources and
 Form 4 accessions, is written to `data/screens/screen-<as_of>.parquet`; the filters used are
 in the file metadata. A full screen takes about 9 s.
+
+## Backtest
+
+```bash
+uv run python -m src.cli backtest --start 2012-01-31          # about 45 min first time, 1 min after
+```
+
+Asks whether the screen picked stocks that beat the market they were picked from. On every
+month end since 2012 it rebuilds the screen's inputs as first reported and known on that date,
+then measures 1, 3, 6 and 12-month total returns (splits adjusted, dividends added) of the
+picks against the equal-weight average of every company the screen looked at. Costs are 50 bps
+each way (`--cost-bps`). It compares filter variants (`VARIANTS` in `src/backtest.py`) and reports
+excess return, hit rate, a one-month-holding strategy's CAGR, drawdown and turnover, and whether
+a variant worked in both halves of the period.
+
+Monthly snapshots are cached in `data/backtest/` with a fingerprint of the data and SQL, so a
+rerun recomputes only what changed. The report goes to `reports/backtest-<date>.md` and to the
+vault's `Reports/` folder.
+
+Safeguards and limits:
+- Leak check: the whole run is repeated with numbers visible from their period end, weeks
+  before filing. That version must score better, or the harness cannot tell look-ahead from skill.
+- Only names closing at $1 or more count; a 10x one-day jump is a broken price series and the
+  return across it is left out.
+- Survivorship: free prices exist only for companies listed today. On an average date 57% of
+  active non-financial filers have no price (mostly later delisted), so results are an upper bound.
+- SIC codes (the financial exclusion) and tickers are today's, not as of each date.
 
 ## First full load
 
@@ -93,6 +123,7 @@ Uncapped, a heavy query on an 8 GB machine with little free disk can crash the c
 | `src/db/pit.py` | Point-in-time resolution (`filed <= as_of`), tag fallback ladder, TTM |
 | `src/db/queries.py` | Screens: share-count trend, valuation, cluster buys, insider holdings |
 | `src/screen.py` | `screen`: joins the screens into one ranked, traceable table; Parquet snapshot |
+| `src/backtest.py` | Monthly point-in-time backtest, snapshot cache, forward returns, leak check, report |
 | `reviews/` | Milestone reviews: Claude Code builds, Codex reviews (`reviews/PROTOCOL.md`) |
 | `AGENTS.md`, `CLAUDE.md` | Standing instructions each agent reads on start |
 | `src/config.py` | Data paths, SEC URLs, `SEC_USER_AGENT` |
@@ -115,6 +146,7 @@ Uncapped, a heavy query on an 8 GB machine with little free disk can crash the c
 | `tests/test_m2_review.py` | Price refresh windows, corporate actions, failure status, filing replacement |
 | `tests/test_form4_sources.py` | Data set vs XML parity on a real filing, ledger, amendments, identical lots |
 | `tests/test_m4_screen.py` | Debt source by date, stale items, EBIT/capex ladders, typo dates, screen status and trace |
+| `tests/test_m5_backtest.py` | Split/dividend returns, delisted exits, statistics, costs, halves, leaky policy, cache, report |
 
 ## Invariants
 
@@ -137,7 +169,7 @@ SEC requires a `User-Agent` with a real contact email and caps traffic at 10 req
 ## Status
 
 Done: schema with migrations, PIT layer, screens, Obsidian writer, M1 ingestion (live SEC data),
-M2 prices/splits/dividends, M3 insider trades, M4 screener, CLI.
-Not done: backtest, vault sync, YoY footnote redline, Jinja templates.
+M2 prices/splits/dividends, M3 insider trades, M4 screener, M5 backtest, CLI.
+Not done: vault sync, YoY footnote redline, Jinja templates.
 
 See [ROADMAP.md](ROADMAP.md) for goals, milestones and acceptance checks.

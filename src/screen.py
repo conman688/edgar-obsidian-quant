@@ -30,37 +30,59 @@ from src.db.queries import cluster_buys_sql, share_trend_sql, valuation_sql
 
 @dataclass(frozen=True)
 class Filters:
-    min_drawdown: float = 0.50           # at least 50% below the 52-week high
-    max_ev_ebit: float = 6.0
-    max_net_debt_to_mcap: float = 0.25   # "net cash or low debt": net debt <= 25% of market cap
-    insider_window_days: int = 90        # cluster buys known within this many days
+    """None (or False) switches a filter off, for comparing variants in the backtest."""
+    # Off by default: in the M5 backtest (2012-2026) the 50%-drawdown rule left picks in 27 of
+    # 177 months and only worked after 2020; without it the screen beat the universe in both
+    # halves (reports/backtest-2026-11-04.md). --min-drawdown 0.5 restores it.
+    min_drawdown: float | None = None           # fraction below the 52-week high, e.g. 0.5
+    max_ev_ebit: float | None = 6.0
+    max_net_debt_to_mcap: float | None = 0.25   # "net cash or low debt": net debt <= 25% of mcap
+    require_fcf: bool = True                    # trailing FCF > 0
+    require_insider: bool = True                # a cluster buy known within the window
+    insider_window_days: int = 90
 
 
-def screen_sql(filters: Filters = Filters(), policy: Policy = "as_last_known") -> str:
-    f = filters
+def metrics_sql(insider_window_days: int = 90, policy: Policy = "as_last_known") -> str:
+    """One row of screen inputs per priced, non-financial company as of $as_of. No filters."""
     return f"""
     WITH v AS ({valuation_sql(policy)}),
     st AS ({share_trend_sql(policy)}),
-    b AS ({cluster_buys_sql(f.insider_window_days)}),
-    j AS (
-        SELECT ps.ticker, c.name,
-               v.* REPLACE (list_concat(v.issues, CASE WHEN st.quarantine THEN ['share_jump'] END) AS issues),
-               v.fcf_ttm / nullif(v.mcap, 0) AS fcf_yield,
-               st.cagr_1y AS share_cagr_1y, st.cagr_3y AS share_cagr_3y,
-               b.n_insiders, b.n_c_suite, b.usd_bought AS insider_buy_90d_usd,
-               b.usd_bought / nullif(v.mcap, 0) AS insider_buy_to_mcap,
-               b.buyers, b.accns AS form4_accns,
-               v.drawdown_52w > {float(f.min_drawdown)} AS pass_drawdown,
-               v.fcf_ttm > 0 AS pass_fcf,
-               CASE WHEN v.ebit_ttm <= 0 THEN FALSE ELSE v.ev_ebit < {float(f.max_ev_ebit)} END AS pass_ev_ebit,
-               -v.net_cash_to_mcap <= {float(f.max_net_debt_to_mcap)} AS pass_debt,
-               b.issuer_cik IS NOT NULL AS pass_insider
-        FROM v
-        JOIN companies c USING (cik)
-        JOIN price_status ps USING (cik)
-        LEFT JOIN st USING (cik)
-        LEFT JOIN b ON b.issuer_cik = v.cik
-        WHERE NOT c.is_financial AND NOT c.is_shell
+    b AS ({cluster_buys_sql(insider_window_days)})
+    SELECT $as_of::DATE AS as_of, ps.ticker, c.name,
+           v.* REPLACE (list_concat(v.issues, CASE WHEN st.quarantine THEN ['share_jump'] END) AS issues),
+           v.fcf_ttm / nullif(v.mcap, 0) AS fcf_yield,
+           st.cagr_1y AS share_cagr_1y, st.cagr_3y AS share_cagr_3y,
+           b.n_insiders, b.n_c_suite, b.usd_bought AS insider_buy_90d_usd,
+           b.usd_bought / nullif(v.mcap, 0) AS insider_buy_to_mcap,
+           b.buyers, b.accns AS form4_accns
+    FROM v
+    JOIN companies c USING (cik)
+    JOIN price_status ps USING (cik)
+    LEFT JOIN st USING (cik)
+    LEFT JOIN b ON b.issuer_cik = v.cik
+    WHERE NOT c.is_financial AND NOT c.is_shell
+    """
+
+
+def rank_sql(filters: Filters, source: str) -> str:
+    """Filters, status and rank over metrics rows in `source` (a table or subquery).
+    Works on many as_of dates at once: ranks are per date."""
+    f = filters
+
+    def on(cond: str, enabled: bool) -> str:
+        return cond if enabled else "TRUE"
+
+    return f"""
+    WITH j AS (
+        SELECT *,
+               {on(f"drawdown_52w > {float(f.min_drawdown or 0)}", f.min_drawdown is not None)} AS pass_drawdown,
+               {on("fcf_ttm > 0", f.require_fcf)} AS pass_fcf,
+               {on(f"CASE WHEN ebit_ttm <= 0 THEN FALSE ELSE ev_ebit < {float(f.max_ev_ebit or 0)} END",
+                   f.max_ev_ebit is not None)} AS pass_ev_ebit,
+               {on(f"-net_cash_to_mcap <= {float(f.max_net_debt_to_mcap or 0)}",
+                   f.max_net_debt_to_mcap is not None)} AS pass_debt,
+               {on("n_insiders IS NOT NULL", f.require_insider)} AS pass_insider
+        FROM {source}
     ),
     s AS (
         SELECT *,
@@ -80,15 +102,19 @@ def screen_sql(filters: Filters = Filters(), policy: Policy = "as_last_known") -
                     ELSE 'shortlist' END AS status
         FROM s
     )
-    SELECT $as_of::DATE AS as_of,
+    SELECT as_of,
            CASE WHEN status = 'shortlist'
-                THEN row_number() OVER (PARTITION BY status ORDER BY ev_ebit, cik) END AS rank,
+                THEN row_number() OVER (PARTITION BY as_of, status ORDER BY ev_ebit, cik) END AS rank,
            status, ticker, name,
-           * EXCLUDE (status, ticker, name)
+           * EXCLUDE (as_of, status, ticker, name)
     FROM r
-    ORDER BY CASE status WHEN 'shortlist' THEN 0 WHEN 'quarantine' THEN 1 ELSE 2 END,
+    ORDER BY as_of, CASE status WHEN 'shortlist' THEN 0 WHEN 'quarantine' THEN 1 ELSE 2 END,
              ev_ebit NULLS LAST, cik
     """
+
+
+def screen_sql(filters: Filters = Filters(), policy: Policy = "as_last_known") -> str:
+    return rank_sql(filters, f"({metrics_sql(filters.insider_window_days, policy)})")
 
 
 def screen(con: duckdb.DuckDBPyConnection, as_of: date, filters: Filters = Filters(),

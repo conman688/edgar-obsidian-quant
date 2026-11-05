@@ -5,6 +5,7 @@
     uv run python -m src.cli facts AAPL revenue --as-of 2024-06-30
     uv run python -m src.cli stats
     uv run python -m src.cli screen --as-of 2026-10-30
+    uv run python -m src.cli backtest --start 2012-01-31
 """
 from __future__ import annotations
 
@@ -15,7 +16,7 @@ from datetime import date
 from pathlib import Path
 from typing import Callable
 
-from src import config
+from src import backtest, config
 from src.db.pit import concept_sql
 from src.db.schema import connect
 from src.ingestion import companyfacts, form4_sources, prices, reference
@@ -221,7 +222,8 @@ def _usd(v) -> str:
 
 def cmd_screen(args) -> None:
     con = connect(str(config.DB_PATH))
-    filters = Filters(args.min_drawdown, args.max_ev_ebit, args.max_net_debt, args.insider_days)
+    filters = Filters(min_drawdown=args.min_drawdown, max_ev_ebit=args.max_ev_ebit,
+                      max_net_debt_to_mcap=args.max_net_debt, insider_window_days=args.insider_days)
     t0 = time.perf_counter()
     table = screen(con, args.as_of, filters, args.policy).to_arrow_table()
     seconds = time.perf_counter() - t0
@@ -232,7 +234,8 @@ def cmd_screen(args) -> None:
     print(f"Screen as of {args.as_of} ({args.policy}): {len(rows):,} companies, "
           f"{len(by['shortlist'])} shortlisted, {len(by['quarantine'])} quarantined, "
           f"{len(by['fail']):,} failed, in {seconds:.1f}s")
-    print(f"Filters: drawdown > {filters.min_drawdown:.0%}, FCF > 0, EV/EBIT < {filters.max_ev_ebit:g}, "
+    dd = f"drawdown > {filters.min_drawdown:.0%}" if filters.min_drawdown is not None else "no drawdown rule"
+    print(f"Filters: {dd}, FCF > 0, EV/EBIT < {filters.max_ev_ebit:g}, "
           f"net debt <= {filters.max_net_debt_to_mcap:.0%} of mcap, insider buying in {filters.insider_window_days} days\n")
     head = f"{'#':>3} {'ticker':<7} {'name':<26} {'EV/EBIT':>7} {'drawdn':>6} {'FCF yld':>7} {'netcash':>7} {'mcap':>7} {'buyers':>6} {'bought':>7}  flags"
     print("SHORTLIST\n" + head)
@@ -251,6 +254,22 @@ def cmd_screen(args) -> None:
         print(f"    {r['ticker']:<7} {(r['name'] or '')[:26]:<26} {_num(r['ev_ebit'], '7.1f')} "
               f"{_num(r['drawdown_52w'], '6.0%')} {_usd(r['insider_buy_90d_usd']):>7}  {','.join(r['issues'] + r['flags'])}")
     print(f"\nwrote {path}")
+
+
+def cmd_backtest(args) -> None:
+    con = connect(str(config.DB_PATH))
+    t0 = time.perf_counter()
+
+    def progress(policy: str, d: date, computed: bool) -> None:
+        if computed:
+            print(f"  {policy} {d}: snapshot ({time.perf_counter() - t0:,.0f}s)", flush=True)
+
+    md, _ = backtest.run(con, args.start, args.end, Path(args.cache), args.cost_bps,
+                         leak_check=not args.no_leak_check, progress=progress)
+    path, note = backtest.write_report(md, date.today(), Path(args.reports), config.VAULT_DIR)
+    print(md)
+    print(f"wrote {path}" + (f" and {note}" if note else " (EOQ_VAULT_DIR not set: no vault note)"))
+    print(f"total {time.perf_counter() - t0:,.0f}s")
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -280,7 +299,7 @@ def main(argv: list[str] | None = None) -> None:
     sc.add_argument("--as-of", type=date.fromisoformat, default=date.today())
     sc.add_argument("--policy", choices=["as_last_known", "as_first_reported"], default="as_last_known")
     d = Filters()
-    sc.add_argument("--min-drawdown", type=float, default=d.min_drawdown, help="fraction below 52-week high")
+    sc.add_argument("--min-drawdown", type=float, default=d.min_drawdown, help="fraction below 52-week high (default: off)")
     sc.add_argument("--max-ev-ebit", type=float, default=d.max_ev_ebit)
     sc.add_argument("--max-net-debt", type=float, default=d.max_net_debt_to_mcap, help="net debt / market cap")
     sc.add_argument("--insider-days", type=int, default=d.insider_window_days)
@@ -288,6 +307,15 @@ def main(argv: list[str] | None = None) -> None:
     sc.add_argument("--trace", action="store_true", help="print the filings behind each shortlisted number")
     sc.add_argument("--limit", type=int, default=30, help="quarantined names to print")
     sc.set_defaults(func=cmd_screen)
+
+    b = sub.add_parser("backtest", help="monthly point-in-time backtest of the screen and its variants")
+    b.add_argument("--start", type=date.fromisoformat, default=date(2012, 1, 31))
+    b.add_argument("--end", type=date.fromisoformat, default=date.today())
+    b.add_argument("--cost-bps", type=float, default=50, help="one-way trading cost")
+    b.add_argument("--cache", default=str(config.DATA_DIR / "backtest"), help="snapshot cache folder")
+    b.add_argument("--reports", default="reports")
+    b.add_argument("--no-leak-check", action="store_true", help="skip the look-ahead control run")
+    b.set_defaults(func=cmd_backtest)
 
     st = sub.add_parser("stats", help="row counts and health checks")
     st.set_defaults(func=cmd_stats)

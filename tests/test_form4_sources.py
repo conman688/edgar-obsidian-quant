@@ -151,3 +151,22 @@ def test_conviction_filter_drops_ipo_preferred_funds_and_bad_prices():
     con.execute("INSERT INTO prices (cik, ticker, price_date, close_raw, source) VALUES (7, 'X', DATE '2026-06-01', 10.5, 't')")
     r = cluster_buys(con, date(2026, 6, 10)).fetchall()
     assert [(row[1], row[3]) for row in r] == [(1, 100_000)]   # one insider, the real director buy
+
+
+def test_data_sets_before_2023_have_no_10b5_1_column(tmp_path):
+    # SEC added AFF10B5ONE to SUBMISSION.tsv with the 2023 checkbox; 2011-2022 files lack it.
+    sub = (FIX / "form345_amd" / "SUBMISSION.tsv").read_text().splitlines()
+    head = sub[0].split("\t")
+    i = head.index("AFF10B5ONE")
+    old = "\n".join("\t".join(c for j, c in enumerate(line.split("\t")) if j != i) for line in sub) + "\n"
+    z = tmp_path / "2012q1_form345.zip"
+    with zipfile.ZipFile(z, "w") as out:
+        for name in fs.DATASET_FILES:
+            if name == "SUBMISSION.tsv":
+                out.writestr(name, old)
+            else:
+                out.write(FIX / "form345_amd" / name, name)
+    con = connect(":memory:")
+    assert fs.load_dataset(con, z, "2012q1", "sha-old", tmp_path / "work") == 3
+    # No checkbox: only a plan footnote can mark the trade; it is never coerced to FALSE.
+    assert {r[0] for r in con.execute("SELECT is_10b5_1 FROM form4_transactions").fetchall()} <= {True, None}

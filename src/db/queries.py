@@ -58,6 +58,10 @@ def share_trend_sql(policy: Policy = "as_last_known") -> str:
 # describes the company: timely filers report every quarter, within ~90 days of it.
 STALE_DAYS = 200
 STALE_PRICE_DAYS = 7          # last close older than this: halted, delisted or a feed gap
+MIN_PRICE = 1.0               # below $1 a quote moves a tick at a time and cannot be traded in size
+# A one-day rise of 10x or more in the split-adjusted close is a broken series (bankruptcy
+# shares replaced under the same ticker, an unadjusted reverse split), not a market move.
+PRICE_BREAK = 10.0
 DEI_SHARES = "EntityCommonStockSharesOutstanding"
 
 _INSTANTS = {"sh": "shares_outstanding", "cash": "cash", "sti": "st_investments", "dt": "debt_total",
@@ -87,6 +91,13 @@ def valuation_sql(policy: Policy = "as_last_known") -> str:
         -- Prices move opposite to share counts: a 10-for-1 split divides old prices by 10.
         SELECT cik, max(close_raw / split_factor(cik, price_date) * split_factor(cik, $as_of)) AS hi_52w
         FROM prices WHERE price_date BETWEEN $as_of - INTERVAL 365 DAY AND $as_of GROUP BY cik
+    ),
+    brk AS (
+        SELECT DISTINCT cik FROM (
+            SELECT cik, close_raw / split_factor(cik, price_date) AS adj,
+                   lag(close_raw / split_factor(cik, price_date)) OVER (PARTITION BY cik ORDER BY price_date) AS prev
+            FROM prices WHERE price_date BETWEEN $as_of - INTERVAL 365 DAY AND $as_of
+        ) WHERE adj >= {PRICE_BREAK} * prev
     ),
     bs AS (
         -- Balance-sheet date: the newest period among the items EV is built from. An item
@@ -161,6 +172,7 @@ def valuation_sql(policy: Policy = "as_last_known") -> str:
     base AS (
         SELECT px.cik, px.price_date, px.close_raw,
                datediff('day', px.price_date, $as_of) AS price_age_days,
+               brk.cik IS NOT NULL AS price_break,
                -- Cover shares are counted before the price date; a split in between
                -- (NVDA: May 24 count, June 10 split) must scale them to the price's basis.
                px.close_raw * sh.value * split_factor(px.cik, sh.period_end)
@@ -201,7 +213,7 @@ def valuation_sql(policy: Policy = "as_last_known") -> str:
         LEFT JOIN cash USING (cik) LEFT JOIN sti USING (cik) LEFT JOIN debt USING (cik)
         LEFT JOIN gw USING (cik) LEFT JOIN eq USING (cik)
         LEFT JOIN ebit USING (cik) LEFT JOIN cfo USING (cik) LEFT JOIN capex USING (cik)
-        LEFT JOIN hi USING (cik)
+        LEFT JOIN hi USING (cik) LEFT JOIN brk USING (cik)
     )
     SELECT *,
         mcap + debt - cash_like AS ev,
@@ -215,6 +227,8 @@ def valuation_sql(policy: Policy = "as_last_known") -> str:
             CASE WHEN mcap IS NULL THEN 'missing_shares'
                  WHEN shares_age_days > {STALE_DAYS} THEN 'stale_shares' END,
             CASE WHEN price_age_days > {STALE_PRICE_DAYS} THEN 'stale_price' END,
+            CASE WHEN close_raw < {MIN_PRICE} THEN 'penny_price' END,
+            CASE WHEN price_break THEN 'price_break' END,
             CASE WHEN foreign_filer THEN 'foreign_filer' END,
             CASE WHEN cash_like IS NULL THEN 'missing_cash' WHEN cash_period_end < bs_date THEN 'stale_cash' END,
             CASE WHEN debt IS NULL THEN 'missing_debt'
@@ -269,12 +283,13 @@ def cluster_buys_sql(window_days: int = 30, include_unknown_10b5_1: bool = False
     WITH buys AS (
         SELECT t.accn, t.issuer_cik, t.owner_cik, t.owner_name, t.is_officer, t.officer_title, t.txn_date, t.filed,
                t.shares, t.price, t.shares * t.price AS usd, t.is_10b5_1
-        FROM form4_effective($as_of) t
+        FROM form4_effective($as_of, p_since := $as_of - INTERVAL {int(window_days)} DAY) t
         LEFT JOIN prices p ON p.cik = t.issuer_cik AND p.price_date = t.txn_date
         WHERE NOT t.is_derivative AND NOT t.is_holding
           AND t.txn_code = 'P' AND t.acq_disp = 'A'
           AND t.price > 0 AND t.shares > 0
           AND t.txn_date > $as_of - INTERVAL {int(window_days)} DAY
+          AND t.txn_date <= t.filed          -- a later date is a typo (2033 in a 2022 filing)
           AND {plan_filter}
           AND (t.is_officer OR t.is_director)
           AND NOT regexp_matches(coalesce(t.security_title, ''),
@@ -286,7 +301,7 @@ def cluster_buys_sql(window_days: int = 30, include_unknown_10b5_1: bool = False
     SELECT issuer_cik,
            count(DISTINCT owner_cik) AS n_insiders,
            count(DISTINCT owner_cik) FILTER (WHERE regexp_matches(coalesce(officer_title, ''), '(?i)chief|ceo|cfo|president')) AS n_c_suite,
-           sum(usd) AS usd_bought,
+           round(sum(usd), 2) AS usd_bought,     -- cents: float sums vary with thread order
            max(usd) AS max_single_usd,
            list_sort(list(DISTINCT owner_name)) AS buyers,
            bool_or(is_10b5_1 IS NULL) AS has_unknown_plan_status,

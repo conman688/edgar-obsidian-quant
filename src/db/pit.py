@@ -12,18 +12,22 @@ from typing import Literal
 
 import duckdb
 
-Policy = Literal["as_first_reported", "as_last_known"]
+# leaky_period_end exists only to prove the backtest can detect look-ahead: it sees each
+# number from its period end, weeks before it was filed. Never use it to screen.
+Policy = Literal["as_first_reported", "as_last_known", "leaky_period_end"]
 
 
 def _resolve_sql(policy: Policy, concept_filter: str) -> str:
-    order = "f.filed ASC" if policy == "as_first_reported" else "f.filed DESC"
+    first = policy != "as_last_known"
+    order = "f.filed ASC" if first else "f.filed DESC"
+    known = "f.period_end <= $as_of" if policy == "leaky_period_end" else "f.filed <= $as_of"
     return f"""
     SELECT f.cik, f.period_start, f.period_end, f.period_days, f.period_kind, f.fy, f.fp,
            f.value, f.taxonomy, f.tag, f.unit, f.accn, f.filed, m.priority, f.form, m.concept
     FROM xbrl_facts f
     JOIN concept_map m
       ON {concept_filter} AND m.taxonomy = f.taxonomy AND m.tag = f.tag AND m.unit = f.unit
-    WHERE f.filed <= $as_of
+    WHERE {known}
       -- No period ends after the filing that reports it. Typos (2034 cover dates) would
       -- otherwise win every "latest period" pick for years; a week covers cover pages
       -- dated a day or two after filing.
@@ -33,7 +37,7 @@ def _resolve_sql(policy: Policy, concept_filter: str) -> str:
         PARTITION BY m.concept, f.cik, f.period_kind, f.period_start, f.period_end
         -- The policy picks the filing; the tag ladder only breaks ties within it. Priority
         -- first would let a later filing's preferred tag override the first-reported value.
-        ORDER BY {order}, m.priority ASC, f.accn {'ASC' if policy == 'as_first_reported' else 'DESC'}
+        ORDER BY {order}, m.priority ASC, f.accn {'ASC' if first else 'DESC'}
     ) = 1
     """
 
