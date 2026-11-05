@@ -288,6 +288,24 @@ CREATE TABLE IF NOT EXISTS form4_index (
     PRIMARY KEY (accn, filer_cik)
 );
 """),
+    (6, """
+-- M7: text sections cut from 10-K primary documents (Item 1A Risk Factors). One row per
+-- filing and section is also the fetch ledger: a section that could not be found is kept
+-- as status 'not_found' with no text, so the document is not downloaded again.
+CREATE TABLE IF NOT EXISTS filing_sections (
+    cik          INTEGER   NOT NULL,
+    accn         VARCHAR   NOT NULL,
+    form         VARCHAR   NOT NULL,
+    filed        DATE      NOT NULL,
+    report_date  DATE,
+    section      VARCHAR   NOT NULL,   -- 'risk_factors'
+    status       VARCHAR   NOT NULL,   -- 'ok' | 'not_found'
+    text         VARCHAR,
+    url          VARCHAR   NOT NULL,
+    fetched_at   TIMESTAMP NOT NULL,
+    PRIMARY KEY (accn, section)
+);
+"""),
 ]
 
 # Macros and views are code, not data: recreated on every connect so edits take effect.

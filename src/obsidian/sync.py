@@ -23,12 +23,15 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 from src.db.pit import Policy
 from src.db.queries import conviction_buys_sql
+from src.forensics import assess, forensics
 from src.obsidian.writer import PersonRegistry, slug, split_note, upsert_note
+from src.redline import risk_factor_redline
 from src.screen import Filters, screen
 
 FOLDERS = ("Companies", "Executives", "Filings", "Events", "Journal")
 SYNCED = ("shortlist", "quarantine")     # statuses that get a note; existing notes are always updated
 HISTORY_DAYS = 365                       # insider purchases shown per company and person
+NEW_SHOWN, REMOVED_SHOWN = 25, 10        # risk-factor sentences listed per company note
 
 
 @dataclass
@@ -102,6 +105,18 @@ def _edgar_url(cik: int, accn: str) -> str:
     return f"https://www.sec.gov/Archives/edgar/data/{cik}/{accn.replace('-', '')}/"
 
 
+def _targets(rows: list[dict], companies_idx: dict) -> list[dict]:
+    return [r for r in rows if r["status"] in SYNCED or r["cik"] in companies_idx]
+
+
+def vault_ciks(con: duckdb.DuckDBPyConnection, vault: Path | None, as_of: date, filters: Filters = Filters(),
+               policy: Policy = "as_last_known") -> list[int]:
+    """The companies a sync on as_of would write: for fetching their 10-K text first."""
+    rows = screen(con, as_of, filters, policy).to_arrow_table().to_pylist()
+    idx = _index(vault / "Companies", "cik") if vault and (vault / "Companies").is_dir() else {}
+    return sorted(r["cik"] for r in _targets(rows, idx))
+
+
 def sync_vault(con: duckdb.DuckDBPyConnection, vault: Path, as_of: date, filters: Filters = Filters(),
                policy: Policy = "as_last_known") -> SyncStats:
     stats = SyncStats()
@@ -110,7 +125,7 @@ def sync_vault(con: duckdb.DuckDBPyConnection, vault: Path, as_of: date, filters
         (vault / f).mkdir(parents=True, exist_ok=True)
     rows = screen(con, as_of, filters, policy).to_arrow_table().to_pylist()
     companies_idx = _index(vault / "Companies", "cik")
-    targets = [r for r in rows if r["status"] in SYNCED or r["cik"] in companies_idx]
+    targets = _targets(rows, companies_idx)
     by_cik = {r["cik"]: r for r in targets}
     company_link = {cik: _note_path(companies_idx, vault / "Companies", cik, r["ticker"], cik).stem
                     for cik, r in sorted(by_cik.items())}
@@ -136,7 +151,12 @@ def sync_vault(con: duckdb.DuckDBPyConnection, vault: Path, as_of: date, filters
         lots[(b["accn"], b["owner_cik"])].append(b)
     # Filings are found by accession too; generated links use each note's actual file name.
     filings_idx = _index(vault / "Filings", "accn")
-    accns = {a for r in by_cik.values() for s in r["sources"] or [] for a in s["accns"]} | {a for a, _ in lots}
+    # M7: Risk Factors redline (10-K text from `fetch-text`) and forensics from facts.
+    redlines = risk_factor_redline(con, sorted(by_cik), as_of)
+    tenks = {a: cik for cik, rl in redlines.items() for a in (rl["accn"], rl["prior_accn"]) if a}
+    forensic = forensics(con, sorted(by_cik), as_of, policy)
+    accns = ({a for r in by_cik.values() for s in r["sources"] or [] for a in s["accns"]} | {a for a, _ in lots}
+             | set(tenks) | {a for f in forensic.values() for a in f["accns"]})
     filing_link = {a: _note_path(filings_idx, vault / "Filings", a, a, "filing").stem for a in sorted(accns)}
 
     events = {}
@@ -186,6 +206,14 @@ def sync_vault(con: duckdb.DuckDBPyConnection, vault: Path, as_of: date, filters
                                            "filed": None})
                 if s["item"] not in f["used_for"]:
                     f["used_for"].append(s["item"])
+    for cik, f in sorted(forensic.items()):
+        for a in f["accns"]:
+            filings.setdefault(a, {"accn": a, "cik": cik, "used_for": [], "event": None, "form": None, "filed": None})
+            if "forensics" not in filings[a]["used_for"]:
+                filings[a]["used_for"].append("forensics")
+    for a, cik in sorted(tenks.items()):
+        filings.setdefault(a, {"accn": a, "cik": cik, "used_for": [], "event": None, "form": None, "filed": None})
+        filings[a]["used_for"].append("risk factors")
     for e in events.values():
         filings.setdefault(e["accn"], {"accn": e["accn"], "cik": e["cik"], "used_for": [], "event": e["title"],
                                        "form": "4", "filed": e["filed"]})
@@ -195,6 +223,12 @@ def sync_vault(con: duckdb.DuckDBPyConnection, vault: Path, as_of: date, filters
                 SELECT accn, min(form), min(filed) FROM xbrl_facts
                 WHERE list_contains($ciks, cik) AND list_contains($accns, accn) GROUP BY accn""",
                 {"ciks": sorted({filings[a]["cik"] for a in xbrl}), "accns": sorted(xbrl)}).fetchall():
+            filings[accn].update(form=form, filed=filed)
+    text_only = [a for a, f in filings.items() if f["form"] is None]   # 10-Ks known from their text
+    if text_only:
+        for accn, form, filed in con.execute(
+                "SELECT DISTINCT accn, form, filed FROM filing_sections WHERE list_contains($accns, accn)",
+                {"accns": sorted(text_only)}).fetchall():
             filings[accn].update(form=form, filed=filed)
     for accn, f in sorted(filings.items()):
         f.update(company=company_link[f["cik"]], url=_edgar_url(f["cik"], accn))
@@ -208,15 +242,20 @@ def sync_vault(con: duckdb.DuckDBPyConnection, vault: Path, as_of: date, filters
     for cik, r in sorted(by_cik.items()):
         mine = [{**b, "person": person_link[b["owner_cik"]], "event": events[(b["accn"], b["owner_cik"])]["title"]}
                 for b in reversed(buys) if b["issuer_cik"] == cik]
+        rl, fx = redlines.get(cik), forensic.get(cik)
+        fa = assess(fx, r) if fx else None
         changed = upsert_note(companies_idx[cik], {
             "type": "company", "ticker": r["ticker"], "cik": cik, "name": r["name"], "status": r["status"],
             "rank": r["rank"], "ev_ebit": _r(r["ev_ebit"]), "net_cash_to_mcap": _r(r["net_cash_to_mcap"]),
             "fcf_yield": _r(r["fcf_yield"]), "share_cagr_3y": _r(r["share_cagr_3y"]),
             "insider_buy_90d_usd": _r(r["insider_buy_90d_usd"], 0), "drawdown_52w": _r(r["drawdown_52w"]),
             "mcap": _r(r["mcap"], 0), "as_of": as_of, "issues": list(r["issues"]), "flags": list(r["flags"]),
+            "rf_new_sentences": len(rl["new"]) if rl and rl["status"] == "ok" else None,
+            "forensic_flags": fa["flags"] if fa else [],
             "aliases": [r["name"]] if r["name"] else [], "tags": ["company"]},
-            env.get_template("company.md.j2").render(c={**r, "as_of": as_of}, buys=mine,
-                                                       filing_link=filing_link))
+            env.get_template("company.md.j2").render(c={**r, "as_of": as_of}, buys=mine, filing_link=filing_link,
+                                                       rl=rl, fx=fx, fa=fa, new_shown=NEW_SHOWN,
+                                                       removed_shown=REMOVED_SHOWN))
         stats.record("Companies", changed)
 
     changed = upsert_note(vault / "Dashboard.md", {"type": "dashboard"}, env.get_template("dashboard.md.j2").render(

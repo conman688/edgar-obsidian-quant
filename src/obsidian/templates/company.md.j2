@@ -35,3 +35,43 @@ Status on {{ c.as_of }}: **{{ c.status }}**{% if c.rank %}, rank {{ c.rank }}{% 
 |---|---|---|---|
 {% for s in c.sources %}| {{ s.item }} | {{ s.tag }} | {{ s.period_end }} | {% for a in s.accns | unique %}[[{{ filing_link[a] }}]]{% if not loop.last %} {% endif %}{% endfor %} |
 {% endfor %}
+
+## Risk factors, against the prior 10-K
+
+{% if rl is none %}No 10-K text: not fetched yet (`fetch-text`), or the company files 20-F/40-F instead.
+{% elif rl.status == "ok" and not rl.total %}Item 1A of the latest 10-K ([[{{ filing_link[rl.accn] }}]]) lists no risk factors (smaller reporting companies may omit them).
+{% elif rl.status == "ok" %}10-K for {{ rl.report_date }} ([[{{ filing_link[rl.accn] }}]]) against {{ rl.prior_report_date }} ([[{{ filing_link[rl.prior_accn] }}]]): **{{ rl.new | length }} new** of {{ rl.total }} sentences, {{ rl.removed | length }} removed. Numbers and dates are ignored when comparing.
+{% if rl.new %}
+
+### New
+{% for s in rl.new[:new_shown] %}- {{ s }}
+{% endfor %}{% if rl.new | length > new_shown %}- … and {{ rl.new | length - new_shown }} more.
+{% endif %}{% endif %}{% if rl.removed %}
+
+### Removed
+{% for s in rl.removed[:removed_shown] %}- {{ s }}
+{% endfor %}{% if rl.removed | length > removed_shown %}- … and {{ rl.removed | length - removed_shown }} more.
+{% endif %}{% endif %}
+{% elif rl.status == "no_prior" %}Only one 10-K known ([[{{ filing_link[rl.accn] }}]]); nothing to compare yet.
+{% elif rl.status == "no_section" %}Item 1A not found in the latest 10-K ([[{{ filing_link[rl.accn] }}]]).
+{% else %}Item 1A not found in the prior 10-K ([[{{ filing_link[rl.prior_accn] }}]]).
+{% endif %}
+
+## Forensics
+
+{% if fx is none %}No annual cash-flow statement found.
+{% elif fx.stale %}Latest fiscal year ends {{ fx.fy_end }}: too old to judge.
+{% else %}Fiscal year ending {{ fx.fy_end }}{% if fa.flags %}. Check by hand: {{ fa.flags | join(", ") }}{% endif %}.
+
+| | |
+|---|---|
+| Buybacks | {{ fx.buybacks | usd }}{% if fa.buyback_yield is not none %} ({{ fa.buyback_yield | pct }} of market cap){% endif %} |
+| Acquisitions | {{ fx.acquisitions | usd }}{% if fa.acquisitions_to_mcap is not none %} ({{ fa.acquisitions_to_mcap | pct }} of market cap){% endif %} |
+| Goodwill impairment | {{ fx.goodwill_impairment | usd }} |
+| Other impairment | {{ fx.asset_impairment | usd }} |
+| Debt due within 1 / 2 / 3 / 4 / 5 years | {% for v in fx.debt_due[:5] %}{{ v | usd }}{% if not loop.last %} / {% endif %}{% endfor %} |
+| Debt due after 5 years | {{ fx.debt_due[5] | usd }} |
+{% if fx.accns %}
+
+Filings: {% for a in fx.accns %}[[{{ filing_link[a] }}]]{% if not loop.last %} {% endif %}{% endfor %}
+{% endif %}{% endif %}

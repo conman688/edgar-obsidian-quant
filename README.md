@@ -115,6 +115,18 @@ Notes are found by the `cik` in their frontmatter, so renaming one is safe. Only
 outside the block are kept. A file is written only if its content changes: syncing the same
 date twice writes nothing. First sync on 2026-11-03: 762 notes in 10 s.
 
+```bash
+uv run --env-file .env python -m src.cli fetch-text --as-of 2026-11-03   # before sync-vault
+```
+
+`fetch-text` downloads the latest two 10-Ks of each company the vault shows and keeps only
+Item 1A (Risk Factors) in `filing_sections`; each filing is downloaded once. The company note
+then lists the sentences that are new or removed against the prior 10-K (numbers and dates are
+masked, below 0.8 similarity counts as new), and forensics from facts already loaded: buybacks,
+acquisitions and impairments of the latest fiscal year, the debt maturity schedule, and flags
+`debt_wall` (due within 2 years above cash), `acquisitive` (10% of market cap),
+`impairment` (5% of market cap). Flags are for checking by hand; they do not change the screen.
+
 ## First full load
 
 First full load (2026-11-02, 8 GB MacBook):
@@ -154,6 +166,9 @@ Uncapped, a heavy query on an 8 GB machine with little free disk can crash the c
 | `src/ingestion/form4_sources.py` | Form 4 bulk data sets, form index, per-filing XML fetch, shared ledger |
 | `src/llm/schemas.py` | Optional quote-anchored extraction guard (only if an LLM is added) |
 | `src/obsidian/writer.py` | Atomic note writer, AUTO-block merge (comments kept), CIK-keyed person registry |
+| `src/ingestion/filing_text.py` | `fetch-text`: 10-K primary document to text, Item 1A cut, `filing_sections` ledger |
+| `src/redline.py` | Risk Factors redline: sentences, number/date masking, new and removed sentences |
+| `src/forensics.py` | Buybacks, acquisitions, impairments, debt maturities of the latest fiscal year; flags |
 | `src/obsidian/sync.py`, `src/obsidian/templates/` | `sync-vault`: companies, insiders, purchases, filings, dashboard (Jinja) |
 | `tests/test_failure_modes.py` | One test per audited failure mode |
 | `tests/test_ingest.py` | Bulk load idempotency, crash resume, reference data, conditional download |
@@ -165,11 +180,13 @@ Uncapped, a heavy query on an 8 GB machine with little free disk can crash the c
 | `tests/test_form4_sources.py` | Data set vs XML parity on a real filing, ledger, amendments, identical lots |
 | `tests/test_m4_screen.py` | Debt source by date, stale items, EBIT/capex ladders, typo dates, screen status and trace |
 | `tests/test_m6_vault.py` | Frontmatter comments survive, idempotent sync, hand edits, renamed notes, one note per insider, name order |
+| `tests/test_m7_text.py` | Self-diff and number-only checks, extraction, fetch ledger, PIT redline, forensics, note |
 | `tests/test_m5_backtest.py` | Split/dividend returns, delisted exits, statistics, costs, halves, leaky policy, cache, report |
 
 ## Invariants
 
 - Every screen sees only data with `filed <= as_of`. No look-ahead.
+- A Risk Factors redline compares the latest two 10-Ks filed on or before `as_of`.
 - A fact whose period ends more than 7 days after its filing date, or after `as_of`, is ignored.
 - Balance-sheet items are compared to the newest one; an older item is stale, never current.
 - Schema changes are append-only migrations in `src/db/schema.py`. `connect()` applies pending ones; it refuses a database newer than the code.
@@ -188,7 +205,8 @@ SEC requires a `User-Agent` with a real contact email and caps traffic at 10 req
 ## Status
 
 Done: schema with migrations, PIT layer, screens, Obsidian writer, M1 ingestion (live SEC data),
-M2 prices/splits/dividends, M3 insider trades, M4 screener, M5 backtest, M6 vault sync, CLI.
-Not done: YoY footnote redline (M7), decision journal (M8), scheduling (M9).
+M2 prices/splits/dividends, M3 insider trades, M4 screener, M5 backtest, M6 vault sync,
+M7 Risk Factors redline and forensics, CLI.
+Not done: M7 tone, executive pay and footnote text (deferred), decision journal (M8), scheduling (M9).
 
 See [ROADMAP.md](ROADMAP.md) for goals, milestones and acceptance checks.

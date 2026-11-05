@@ -35,11 +35,13 @@ takes about 40 minutes and locks the database.
 - Point-in-time: screens read only facts with `filed <= as_of`, `period_end <= filed + 7 days`
   and `period_end <= as_of`. Form 4 amendments apply only from their own filing date
   (`form4_effective`). `leaky_period_end` exists only for the backtest's leak check.
+  10-K text: a redline compares the latest two 10-Ks with `filed <= as_of`.
 - Prices are stored raw. Shares are multiplied by `split_factor`, prices divided.
 - Missing or stale inputs are named in `issues` and quarantined; they never pass as good values.
 - Schema changes are append-only migrations in `src/db/schema.py`; macros and `CONCEPT_SEED` are
   re-synced on every connect.
-- Loads are idempotent (ledgers: `loaded_filings`, `form4_filings`, `ledger`, `price_status`).
+- Loads are idempotent (ledgers: `loaded_filings`, `form4_filings`, `ledger`, `price_status`,
+  `filing_sections`).
 - Same inputs, same outputs, including list order.
 - DuckDB is capped at 2 GB RAM. Never `count(DISTINCT whole-row)` over `xbrl_facts` (123M rows).
   One process at a time may open `data/edgar.duckdb`.
