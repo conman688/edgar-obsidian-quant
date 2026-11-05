@@ -15,6 +15,7 @@ import json
 from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass, field
 from datetime import date
+from itertools import count
 from pathlib import Path
 
 import duckdb
@@ -69,27 +70,32 @@ def _r(v, digits: int = 4):
     return int(round(float(v))) if digits == 0 else round(float(v), digits)
 
 
-def _cik_index(folder: Path) -> dict[int, Path]:
-    """cik -> note, from frontmatter. A note whose frontmatter does not parse is left alone."""
-    out: dict[int, Path] = {}
+def _index(folder: Path, *keys: str) -> dict:
+    """Identity (frontmatter `keys`) -> note. A note whose frontmatter does not parse is left alone."""
+    out: dict = {}
     for p in sorted(folder.glob("*.md")):
         try:
-            cik = split_note(p.read_text(encoding="utf-8"))[0].get("cik")
+            meta = split_note(p.read_text(encoding="utf-8"))[0]
         except Exception:
             continue
-        if isinstance(cik, int):
-            out.setdefault(cik, p)
+        k = tuple(meta.get(x) for x in keys)
+        if all(isinstance(v, (int, str)) for v in k):
+            out.setdefault(k if len(k) > 1 else k[0], p)
     return out
 
 
-def _note_path(index: dict[int, Path], folder: Path, cik: int, title: str) -> Path:
-    if cik in index:
-        return index[cik]
-    p = folder / f"{slug(title)}.md"
-    if p.exists():                       # someone else's note under this name: keep both
-        p = folder / f"{slug(title)} ({cik}).md"
-    index[cik] = p
-    return p
+def _note_path(index: dict, folder: Path, key, title: str, tag) -> Path:
+    """The note for `key`: the one found by identity, else the first name no file and no other
+    note of this sync uses: TITLE, TITLE (tag), TITLE (tag) 2, ..."""
+    if key in index:
+        return index[key]
+    taken = {p.name.casefold() for p in index.values()}
+    base = slug(title)
+    for i in count(1):
+        p = folder / (f"{base}.md" if i == 1 else f"{base} ({tag}).md" if i == 2 else f"{base} ({tag}) {i - 1}.md")
+        if not p.exists() and p.name.casefold() not in taken:
+            index[key] = p
+            return p
 
 
 def _edgar_url(cik: int, accn: str) -> str:
@@ -103,10 +109,10 @@ def sync_vault(con: duckdb.DuckDBPyConnection, vault: Path, as_of: date, filters
     for f in FOLDERS:
         (vault / f).mkdir(parents=True, exist_ok=True)
     rows = screen(con, as_of, filters, policy).to_arrow_table().to_pylist()
-    companies_idx = _cik_index(vault / "Companies")
+    companies_idx = _index(vault / "Companies", "cik")
     targets = [r for r in rows if r["status"] in SYNCED or r["cik"] in companies_idx]
     by_cik = {r["cik"]: r for r in targets}
-    company_link = {cik: _note_path(companies_idx, vault / "Companies", cik, r["ticker"]).stem
+    company_link = {cik: _note_path(companies_idx, vault / "Companies", cik, r["ticker"], cik).stem
                     for cik, r in sorted(by_cik.items())}
 
     # Insider purchases of these companies over the last year, oldest first, so a person's
@@ -117,11 +123,11 @@ def sync_vault(con: duckdb.DuckDBPyConnection, vault: Path, as_of: date, filters
     """, params={"as_of": as_of, "ciks": sorted(by_cik)}).to_arrow_table().to_pylist()
 
     registry = PersonRegistry(con)
-    people_idx = _cik_index(vault / "Executives")
+    people_idx = _index(vault / "Executives", "cik")
     canonical = {}
     for b in buys:
         canonical[b["owner_cik"]] = registry.register(b["owner_cik"], b["owner_name"], b["issuer_cik"])
-    person_link = {cik: _note_path(people_idx, vault / "Executives", cik, name).stem
+    person_link = {cik: _note_path(people_idx, vault / "Executives", cik, name, cik).stem
                    for cik, name in sorted(canonical.items())}
 
     # Events: one per Form 4 filing and insider, all its purchase lots together.
@@ -129,6 +135,7 @@ def sync_vault(con: duckdb.DuckDBPyConnection, vault: Path, as_of: date, filters
     for b in buys:
         lots[(b["accn"], b["owner_cik"])].append(b)
     events = {}
+    events_idx = _index(vault / "Events", "accn", "owner_cik")      # found by identity, not file name
     for (accn, owner), ls in sorted(lots.items()):
         first = ls[0]
         shares, usd = sum(b["shares"] for b in ls), sum(b["usd"] for b in ls)
@@ -138,9 +145,13 @@ def sync_vault(con: duckdb.DuckDBPyConnection, vault: Path, as_of: date, filters
              "price": usd / shares, "lots": len(ls), "person": person_link[owner],
              "company": company_link[first["issuer_cik"]],
              "role": first["officer_title"] or ("Director" if first["is_director"] else None)}
-        e["title"] = slug(f"{e['txn_date']} {ticker} buy by {e['person']} ({accn})")
+        # The accession is the unique part of the name: shorten the rest, never it.
+        head = slug(f"{e['txn_date']} {ticker} buy by {e['person']}")[:95].rstrip()
+        title = f"{head} ({accn})"
+        path = _note_path(events_idx, vault / "Events", (accn, owner), title, owner)
+        e["title"] = path.stem
         events[(accn, owner)] = e
-        changed = upsert_note(vault / "Events" / f"{e['title']}.md", {
+        changed = upsert_note(path, {
             "type": "insider_buy", "date": e["txn_date"], "filed": e["filed"], "ticker": ticker, "cik": e["cik"],
             "company": f"[[{e['company']}]]", "insider": f"[[{e['person']}]]", "owner_cik": owner,
             "shares": _r(shares, 0), "usd": _r(usd, 0), "price": _r(e["price"]), "accn": accn,
