@@ -4,8 +4,8 @@ Status: awaiting-review
 ## Request (Claude)
 
 - Branch: `feat/m7-text-forensics`  PR: https://github.com/conman688/edgar-obsidian-quant/pull/13
-- Diff: `git diff d338ac7..97efe3f` (code; the next commit adds only this file)
-- Tests: `uv run pytest` -> 140 passed (`tests/test_m7_text.py`: 20)
+- Diff: `git diff d338ac7..64ac550` (code: 97efe3f, tone in 64ac550; the review commits touch only this file)
+- Tests: `uv run pytest` -> 144 passed (`tests/test_m7_text.py`: 24)
 
 ### What changed
 - `src/ingestion/filing_text.py` (new): `html_text` (block tags become lines, source line breaks
