@@ -65,19 +65,27 @@ def forensics(con: duckdb.DuckDBPyConnection, ciks: list[int], as_of: date,
 
 
 def assess(f: dict, row: dict) -> dict:
-    """Ratios to market cap and flags, given the company's screen row (mcap, cash_like)."""
-    mcap, cash = row.get("mcap"), row.get("cash_like") or 0.0
+    """Ratios to market cap and flags, given the company's screen row (mcap, cash_like).
+
+    `unknown` names the checks that cannot be made: `debt_wall` when cash is unknown, or a
+    maturity bucket within WALL_YEARS is missing and the known debt alone does not exceed cash.
+    A missing input never counts as zero."""
+    mcap, cash = row.get("mcap"), row.get("cash_like")
     if f["stale"] or not mcap:
-        return {"buyback_yield": None, "acquisitions_to_mcap": None, "due_soon": None, "flags": []}
-    due_soon = sum(v for v in f["debt_due"][:WALL_YEARS] if v)
+        return {"buyback_yield": None, "acquisitions_to_mcap": None, "due_soon": None, "flags": [], "unknown": []}
+    buckets = f["debt_due"][:WALL_YEARS]
+    known = sum(v for v in buckets if v is not None)
+    complete = None not in buckets
+    flags, unknown = [], []
+    if cash is not None and known > cash:
+        flags.append("debt_wall")                    # true whatever the missing buckets hold
+    elif cash is None or not complete:
+        unknown.append("debt_wall")
     impairment = max(f["goodwill_impairment"] or 0.0, f["asset_impairment"] or 0.0)
-    flags = []
-    if due_soon > cash:
-        flags.append("debt_wall")
     if (f["acquisitions"] or 0.0) >= ACQUISITIVE * mcap:
         flags.append("acquisitive")
     if impairment >= IMPAIRMENT * mcap:
         flags.append("impairment")
     return {"buyback_yield": f["buybacks"] / mcap if f["buybacks"] is not None else None,
             "acquisitions_to_mcap": f["acquisitions"] / mcap if f["acquisitions"] is not None else None,
-            "due_soon": due_soon if any(f["debt_due"][:WALL_YEARS]) else None, "flags": flags}
+            "due_soon": known if complete else None, "flags": flags, "unknown": unknown}

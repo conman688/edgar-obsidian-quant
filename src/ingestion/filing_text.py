@@ -19,9 +19,15 @@ import duckdb
 FORMS = ("10-K", "10-KT")       # amendments (10-K/A) usually carry only Part III, not risk factors
 SECTION = "risk_factors"
 PER_COMPANY = 2                 # the latest 10-K and the one before it: enough for a redline
+# Version of html_text + risk_factors. Rows cut by an older version are fetched again once
+# (1: a hidden void tag such as <img style="display:none"> hid all text after it).
+PARSER = 2
 
 _BLOCK = {"p", "div", "br", "tr", "li", "h1", "h2", "h3", "h4", "h5", "h6", "table", "section", "hr"}
 _SKIP = {"script", "style", "head", "title", "ix:header"}
+# Void elements never get an end tag, so they must never open a skipped scope.
+_VOID = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source",
+         "track", "wbr"}
 _HIDDEN = re.compile(r"display\s*:\s*none", re.I)
 
 
@@ -44,7 +50,10 @@ class _Text(HTMLParser):
                 self.skip.append(tag)    # same tag nested inside the skipped one
             return
         style = dict(attrs).get("style") or ""
-        if tag in _SKIP or _HIDDEN.search(style):
+        if tag in _VOID:
+            if tag in _BLOCK:
+                self.out.append("\n")
+        elif tag in _SKIP or _HIDDEN.search(style):
             self.skip.append(tag)
         elif tag in _BLOCK:
             self.out.append("\n")
@@ -121,19 +130,23 @@ def annual_reports(payload: bytes, as_of: date, n: int = PER_COMPANY) -> list[di
 def fetch_sections(con: duckdb.DuckDBPyConnection, sec: Sec, ciks: list[int], as_of: date,
                    n: int = PER_COMPANY) -> Counter:
     """Store Item 1A of each company's latest `n` 10-Ks known on as_of. Returns the
-    statuses of the rows added; filings already in the table are not downloaded again."""
+    statuses of the rows written. A filing already in the table is not downloaded again,
+    unless an older PARSER cut it: then it is fetched once more and its row replaced."""
     got: Counter = Counter()
     for cik in sorted(ciks):
         have = {a for (a,) in con.execute(
-            "SELECT accn FROM filing_sections WHERE cik = ? AND section = ?", [cik, SECTION]).fetchall()}
+            "SELECT accn FROM filing_sections WHERE cik = ? AND section = ? AND parser >= ?",
+            [cik, SECTION, PARSER]).fetchall()}
         for f in annual_reports(sec.get(_submissions_url(cik)), as_of, n):
             if f["accn"] in have:
                 continue
             url = _doc_url(cik, f["accn"], f["doc"])
             body = risk_factors(html_text(sec.get(url)))
             status = "ok" if body else "not_found"
-            con.execute("INSERT INTO filing_sections VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            con.execute("""INSERT OR REPLACE INTO filing_sections
+                               (cik, accn, form, filed, report_date, section, status, text, url, fetched_at, parser)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                         [cik, f["accn"], f["form"], f["filed"], f["report_date"], SECTION, status, body, url,
-                         datetime.now()])
+                         datetime.now(), PARSER])
             got[status] += 1
     return got

@@ -6,7 +6,7 @@ import pytest
 
 from src.db.schema import connect
 from src.forensics import assess, forensics
-from src.ingestion.filing_text import fetch_sections, html_text, risk_factors
+from src.ingestion.filing_text import PARSER, fetch_sections, html_text, risk_factors
 from src.redline import normalize, redline, risk_factor_redline, sentences
 from tests.test_failure_modes import CIK, fact
 from tests.test_m4_screen import AS_OF, GAAP, add_company, cheap_company
@@ -220,7 +220,7 @@ def test_company_note_shows_the_redline_and_forensics_and_resync_writes_nothing(
     new = "A cyberattack on our order systems could stop sales for weeks and expose customer data."
     for accn, filed, text in [("0001234-23-000010", date(2023, 3, 1), RISKS_2023),
                               ("0001234-24-000010", date(2024, 3, 1), RISKS_2023 + "\n" + new)]:
-        fcon.execute("INSERT INTO filing_sections VALUES (?, ?, '10-K', ?, NULL, 'risk_factors', 'ok', ?, 'u', now())",
+        fcon.execute("INSERT INTO filing_sections VALUES (?, ?, '10-K', ?, NULL, 'risk_factors', 'ok', ?, 'u', now(), 2)",
                      [CIK, accn, filed, text])
     sync_vault(fcon, tmp_path, AS_OF)
     note = tmp_path / "Companies" / "ACME.md"
@@ -256,7 +256,7 @@ def test_an_empty_risk_section_says_so(fcon, tmp_path):
     from src.obsidian.sync import sync_vault
     for accn, filed in [("0001234-23-000010", date(2023, 3, 1)), ("0001234-24-000010", date(2024, 3, 1))]:
         fcon.execute("INSERT INTO filing_sections VALUES (?, ?, '10-K', ?, NULL, 'risk_factors', 'ok', "
-                     "'Not applicable.', 'u', now())", [CIK, accn, filed])
+                     "'Not applicable.', 'u', now(), 2)", [CIK, accn, filed])
     from tests.test_m4_screen import add_buy
     add_buy(fcon, CIK, "0001234-24-000001")
     sync_vault(fcon, tmp_path, AS_OF)
@@ -306,7 +306,7 @@ def test_redline_carries_tone_of_both_years(lm):
     con = connect(":memory:")
     for accn, filed, text in [("a1", date(2023, 3, 1), "Our results may suffer a loss next year."),
                               ("a2", date(2024, 3, 1), "Our results may suffer an adverse loss and litigation.")]:
-        con.execute("INSERT INTO filing_sections VALUES (?, ?, '10-K', ?, NULL, 'risk_factors', 'ok', ?, 'u', now())",
+        con.execute("INSERT INTO filing_sections VALUES (?, ?, '10-K', ?, NULL, 'risk_factors', 'ok', ?, 'u', now(), 2)",
                     [CIK, accn, filed, text])
     r = risk_factor_redline(con, [CIK], AS_OF, load_lists(lm))[CIK]
     assert r["tone"]["negative"] == (pytest.approx(2 / 9), pytest.approx(1 / 8))
@@ -322,7 +322,7 @@ def test_note_shows_tone_or_says_the_lists_are_missing(fcon, tmp_path, lm, monke
     add_buy(fcon, CIK, "0001234-24-000001")
     for accn, filed, text in [("0001234-23-000010", date(2023, 3, 1), RISKS_2023),
                               ("0001234-24-000010", date(2024, 3, 1), RISKS_2023 + "\nWe may face a loss.")]:
-        fcon.execute("INSERT INTO filing_sections VALUES (?, ?, '10-K', ?, NULL, 'risk_factors', 'ok', ?, 'u', now())",
+        fcon.execute("INSERT INTO filing_sections VALUES (?, ?, '10-K', ?, NULL, 'risk_factors', 'ok', ?, 'u', now(), 2)",
                      [CIK, accn, filed, text])
     monkeypatch.setattr(config, "LM_DICT", lm.with_name("missing.csv"))
     sync_vault(fcon, tmp_path / "v1", AS_OF)
@@ -332,3 +332,60 @@ def test_note_shows_tone_or_says_the_lists_are_missing(fcon, tmp_path, lm, monke
     note = tmp_path / "v2" / "Companies" / "ACME.md"
     assert "| Negative | 3.28% | 1.79% | +1.49 |" in note.read_text()
     assert fm(note)["tone_negative_change"] == pytest.approx(2 / 61 - 1 / 56, abs=1e-4)
+
+
+# --- review M7 round 1 (Codex C1, C2) --------------------------------------------------
+
+def test_hidden_void_element_does_not_hide_following_risks():                       # C1
+    raw = (b'<html><body><img style="display:none" src="pixel">'
+           b'<h2>Item 1A. Risk Factors</h2><p>We face serious operational risks.</p>'
+           b'<h2>Item 1B.</h2></body></html>')
+    assert "We face serious operational risks." in risk_factors(html_text(raw))
+    assert html_text(b'<p>a b</p><br style="display:none"><p>c d</p>') == "a b\nc d"
+
+
+def test_sections_cut_by_an_older_parser_are_fetched_again_once():                  # C1, cached rows
+    con, sec = connect(":memory:"), fake_sec()
+    fetch_sections(con, sec, [CIK], date(2024, 6, 30))
+    # A row cut by the parser before the fix: not_found, no parser version.
+    con.execute("UPDATE filing_sections SET status = 'not_found', text = NULL, parser = NULL "
+                "WHERE accn = '0000001234-24-000010'")
+    sec.calls.clear()
+    assert fetch_sections(con, sec, [CIK], date(2024, 6, 30)) == {"ok": 1}
+    assert sec.calls == [SUBS, doc_url("0000001234-24-000010", "k2023.htm")]
+    assert con.execute("SELECT status, parser FROM filing_sections WHERE accn = '0000001234-24-000010'"
+                       ).fetchall() == [("ok", PARSER)]
+    assert con.execute("SELECT count(*) FROM filing_sections").fetchall() == [(2,)]
+    sec.calls.clear()
+    assert fetch_sections(con, sec, [CIK], date(2024, 6, 30)) == {} and sec.calls == [SUBS]
+
+
+def test_unknown_cash_does_not_claim_debt_exceeds_cash():                            # C2
+    f = {"stale": False, "debt_due": [100, None, None, None, None, None],
+         "goodwill_impairment": None, "asset_impairment": None, "acquisitions": None, "buybacks": None}
+    r = assess(f, {"mcap": 1000, "cash_like": None})
+    assert "debt_wall" not in r["flags"] and r["unknown"] == ["debt_wall"]
+
+
+def test_a_missing_maturity_bucket_makes_the_debt_wall_unknown_unless_known_debt_suffices():  # C2
+    f = {"stale": False, "debt_due": [100, None, None, None, None, None],
+         "goodwill_impairment": None, "asset_impairment": None, "acquisitions": None, "buybacks": None}
+    assert assess(f, {"mcap": 1000, "cash_like": 150})["unknown"] == ["debt_wall"]      # year 2 could be 60
+    r = assess(f, {"mcap": 1000, "cash_like": 50})                                      # 100 alone exceeds 50
+    assert r["flags"] == ["debt_wall"] and r["unknown"] == []
+    f["debt_due"][1] = 0
+    r = assess(f, {"mcap": 1000, "cash_like": 150})
+    assert r["flags"] == [] and r["unknown"] == [] and r["due_soon"] == 100
+
+
+def test_note_says_when_the_debt_wall_cannot_be_checked(fcon, tmp_path):            # C2, note
+    from src.obsidian.sync import sync_vault
+    from tests.test_m4_screen import add_buy
+    from tests.test_m6_vault import fm
+    add_buy(fcon, CIK, "0001234-24-000001")
+    fcon.execute("DELETE FROM xbrl_facts WHERE tag = 'LongTermDebtMaturitiesRepaymentsOfPrincipalInYearTwo'")
+    sync_vault(fcon, tmp_path, AS_OF)
+    note = tmp_path / "Companies" / "ACME.md"
+    assert "against cash: unknown" in note.read_text()          # 4M due in year 1 < 6M cash; year 2 missing
+    assert fm(note)["forensic_flags"] == ["acquisitive", "impairment"]
+    assert fm(note)["forensic_unknown"] == ["debt_wall"]

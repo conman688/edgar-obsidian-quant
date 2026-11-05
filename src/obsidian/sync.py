@@ -266,6 +266,7 @@ def sync_vault(con: duckdb.DuckDBPyConnection, vault: Path, as_of: date, filters
             "mcap": _r(r["mcap"], 0), "as_of": as_of, "issues": list(r["issues"]), "flags": list(r["flags"]),
             "rf_new_sentences": len(rl["new"]) if rl and rl["status"] == "ok" else None,
             "forensic_flags": fa["flags"] if fa else [],
+            "forensic_unknown": fa["unknown"] if fa else [],
             **{f"tone_{k}_change": _r(rl["tone"][k][0] - rl["tone"][k][1], 4)
                if rl and "tone" in rl and None not in rl["tone"][k] else None for k in TONE_KEYS},
             "aliases": [r["name"]] if r["name"] else [], "tags": ["company"]},

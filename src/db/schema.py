@@ -306,6 +306,11 @@ CREATE TABLE IF NOT EXISTS filing_sections (
     PRIMARY KEY (accn, section)
 );
 """),
+    (7, """
+-- M7 review C1: which version of the text extractor cut each section. NULL (rows from before
+-- this column) and older versions are fetched again once by fetch_sections.
+ALTER TABLE filing_sections ADD COLUMN parser INTEGER;
+"""),
 ]
 
 # Macros and views are code, not data: recreated on every connect so edits take effect.

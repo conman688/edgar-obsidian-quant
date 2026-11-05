@@ -69,7 +69,8 @@ Status on {{ c.as_of }}: **{{ c.status }}**{% if c.rank %}, rank {{ c.rank }}{% 
 {% if fx is none %}No annual cash-flow statement found.
 {% elif fx.stale %}Latest fiscal year ends {{ fx.fy_end }}: too old to judge.
 {% else %}Fiscal year ending {{ fx.fy_end }}{% if fa.flags %}. Check by hand: {{ fa.flags | join(", ") }}{% endif %}.
-
+{% if "debt_wall" in fa.unknown %}Debt due within 2 years against cash: unknown (cash or a maturity bucket is missing).
+{% endif %}
 | | |
 |---|---|
 | Buybacks | {{ fx.buybacks | usd }}{% if fa.buyback_yield is not none %} ({{ fa.buyback_yield | pct }} of market cap){% endif %} |
