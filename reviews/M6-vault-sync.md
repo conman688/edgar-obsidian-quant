@@ -1,4 +1,4 @@
-# Review: <milestone> <title>
+# Review: M6 Obsidian vault sync
 Status: awaiting-review
 
 
