@@ -35,7 +35,9 @@ published as Insider Transactions Data Sets load from one zip each, for every is
 SEC publishes them a quarter or more late, so the rest come from the quarterly form index:
 each filing's XML is fetched, for priced companies only. A per-filing ledger keeps the two
 paths from loading a filing twice, and both produce identical rows for the same filing.
-Default range is two years back (`--since 2024q4` to change; older quarters are cheap).
+Default range is two years back (`--since 2024q4` to change). The backtest needs history from
+2011q4: `ingest form4 --since 2011q4` loads 52 more quarters (5.9M rows, +1.2 GB of database,
+about 10 minutes). Data sets before 2023 have no 10b5-1 checkbox; only plan footnotes mark those.
 Amendments (4/A) replace the filing they amend only from the day they were filed.
 
 ## Screen
@@ -68,6 +70,8 @@ accession numbers behind each number. Every company, with all metrics, issues, s
 Form 4 accessions, is written to `data/screens/screen-<as_of>.parquet`; the filters used are
 in the file metadata. A full screen takes about 9 s.
 
+BACKTEST_SECTION
+
 ## First full load
 
 First full load (2026-11-02, 8 GB MacBook):
@@ -93,6 +97,7 @@ Uncapped, a heavy query on an 8 GB machine with little free disk can crash the c
 | `src/db/pit.py` | Point-in-time resolution (`filed <= as_of`), tag fallback ladder, TTM |
 | `src/db/queries.py` | Screens: share-count trend, valuation, cluster buys, insider holdings |
 | `src/screen.py` | `screen`: joins the screens into one ranked, traceable table; Parquet snapshot |
+| `src/backtest.py` | Monthly point-in-time backtest, snapshot cache, forward returns, leak check, report |
 | `src/config.py` | Data paths, SEC URLs, `SEC_USER_AGENT` |
 | `src/cli.py` | `ingest`, `facts`, `stats` commands |
 | `src/db/ledger.py` | Run ledger: skip finished work, resume after crashes |
@@ -113,6 +118,7 @@ Uncapped, a heavy query on an 8 GB machine with little free disk can crash the c
 | `tests/test_m2_review.py` | Price refresh windows, corporate actions, failure status, filing replacement |
 | `tests/test_form4_sources.py` | Data set vs XML parity on a real filing, ledger, amendments, identical lots |
 | `tests/test_m4_screen.py` | Debt source by date, stale items, EBIT/capex ladders, typo dates, screen status and trace |
+| `tests/test_m5_backtest.py` | Split/dividend returns, delisted exits, statistics, costs, halves, leaky policy, cache, report |
 
 ## Invariants
 
@@ -135,7 +141,7 @@ SEC requires a `User-Agent` with a real contact email and caps traffic at 10 req
 ## Status
 
 Done: schema with migrations, PIT layer, screens, Obsidian writer, M1 ingestion (live SEC data),
-M2 prices/splits/dividends, M3 insider trades, M4 screener, CLI.
-Not done: backtest, vault sync, YoY footnote redline, Jinja templates.
+M2 prices/splits/dividends, M3 insider trades, M4 screener, M5 backtest, CLI.
+Not done: vault sync, YoY footnote redline, Jinja templates.
 
 See [ROADMAP.md](ROADMAP.md) for goals, milestones and acceptance checks.

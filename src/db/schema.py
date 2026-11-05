@@ -301,9 +301,12 @@ CREATE OR REPLACE MACRO split_factor(p_cik, p_date) AS (
 -- issuer and period of report. An amendment filed later cannot reach back: that
 -- would be look-ahead. Originals never replace each other: two separate Form 4s
 -- for one period are both real.
-CREATE OR REPLACE MACRO form4_effective(p_as_of) AS TABLE
+-- p_since (exclusive) bounds the filings read. Exact for any caller that only counts
+-- trades after p_since: a trade is never reported before it happens, and an amendment is
+-- always filed after the filing it replaces.
+CREATE OR REPLACE MACRO form4_effective(p_as_of, p_since := DATE '0001-01-01') AS TABLE
 WITH known AS (
-    SELECT * FROM form4_transactions WHERE filed <= p_as_of
+    SELECT * FROM form4_transactions WHERE filed <= p_as_of AND filed > p_since
 ),
 f AS (
     SELECT DISTINCT accn, issuer_cik, owner_cik, period_of_report, filed, form_type FROM known
