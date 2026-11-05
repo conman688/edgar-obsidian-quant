@@ -18,6 +18,7 @@ tell look-ahead from skill.
 """
 from __future__ import annotations
 
+import bisect
 import hashlib
 import json
 import math
@@ -62,17 +63,55 @@ def month_ends(start: date, end: date) -> list[date]:
 
 # ---- snapshots --------------------------------------------------------------------
 
-def _fingerprint(con: duckdb.DuckDBPyConnection, as_of: date, sql: str) -> str:
-    """Changes when anything the snapshot can read changes: data known by as_of (or with a
-    period ending by then, for the leaky policy), splits, the universe, or the SQL."""
-    counts = con.execute("""
-        SELECT (SELECT count(*) FROM xbrl_facts WHERE filed <= $d OR period_end <= $d),
-               (SELECT count(*) FROM form4_transactions WHERE filed <= $d),
-               (SELECT count(*) FROM prices WHERE price_date <= $d),
-               (SELECT count(*) FROM splits),
-               (SELECT count(*) FROM companies WHERE NOT is_financial AND NOT is_shell)
-    """, {"d": as_of}).fetchall()[0]
-    return hashlib.sha256(json.dumps([sql, list(counts)]).encode()).hexdigest()[:24]
+# Content hashes, not row counts: a corrected price or a replaced filing with the same number
+# of rows must still invalidate (review C1). Each dated table is hashed once per run, grouped
+# by the day its rows become visible; a date's hash is the XOR of every day up to it. XOR of
+# per-row hashes is order-free and streams, so nothing counts distinct rows of the facts table.
+_DATED_INPUTS = {
+    "facts": ("xbrl_facts", "{key}", "cik, taxonomy, tag, unit, period_start, period_end, period_days, "
+              "period_kind, fy, fp, form, accn, filed, value"),
+    "form4": ("form4_transactions", "filed", "accn, line_no, is_derivative, is_holding, issuer_cik, owner_cik, "
+              "owner_name, is_director, is_officer, officer_title, filed, txn_date, security_title, txn_code, "
+              "acq_disp, shares, price, shares_owned_following, ownership_form, nature_of_ownership, "
+              "is_10b5_1, footnotes, form_type, period_of_report"),
+    "prices": ("prices", "price_date", "cik, price_date, close_raw"),
+}
+_STATIC_INPUTS = {
+    "splits": ("splits", "cik, ex_date, ratio"),
+    "concept_map": ("concept_map", "concept, taxonomy, tag, unit, priority"),
+    "companies": ("companies", "cik, name, is_financial, is_shell"),
+    "price_status": ("price_status", "cik, ticker, status"),
+}
+
+
+def _input_hashes(con: duckdb.DuckDBPyConnection, policy: Policy) -> Callable[[date], list[int]]:
+    """Returns a function giving, for a date, the hash of every input visible by then. Facts
+    become visible on their filing date, or their period end for the leaky policy."""
+    key = "period_end" if policy == "leaky_period_end" else "filed"
+    prefix: dict[str, tuple[list[date], list[int]]] = {}
+    for name, (table, day, cols) in _DATED_INPUTS.items():
+        day = day.format(key=key)
+        rows = con.execute(f"SELECT {day} AS d, bit_xor(hash({cols})) FROM {table} GROUP BY 1 ORDER BY 1").fetchall()
+        days, acc, x = [], [], 0
+        for d, h in rows:
+            x ^= int(h)
+            days.append(d)
+            acc.append(x)
+        prefix[name] = (days, acc)
+    static = [int(con.execute(f"SELECT coalesce(bit_xor(hash({cols})), 0) FROM {table}").fetchall()[0][0])
+              for table, cols in _STATIC_INPUTS.values()]
+
+    def at(d: date) -> list[int]:
+        out = []
+        for days, acc in prefix.values():
+            i = bisect.bisect_right(days, d)
+            out.append(acc[i - 1] if i else 0)
+        return out + static
+    return at
+
+
+def _fingerprint(sql: str, hashes: list[int]) -> str:
+    return hashlib.sha256(json.dumps([sql, hashes]).encode()).hexdigest()[:24]
 
 
 def snapshots(con: duckdb.DuckDBPyConnection, dates: list[date], policy: Policy, cache_dir: Path,
@@ -82,10 +121,11 @@ def snapshots(con: duckdb.DuckDBPyConnection, dates: list[date], policy: Policy,
     out = cache_dir / policy
     out.mkdir(parents=True, exist_ok=True)
     sql = metrics_sql(insider_window_days, policy)
+    hashes_at = _input_hashes(con, policy)
     computed = 0
     for d in dates:
         path = out / f"metrics-{d.isoformat()}.parquet"
-        fp = _fingerprint(con, d, sql)
+        fp = _fingerprint(sql, hashes_at(d))
         fresh = path.exists() and (pq.read_schema(path).metadata or {}).get(b"fingerprint") == fp.encode()
         if not fresh:
             table = con.sql(sql, params={"as_of": d}).to_arrow_table()
@@ -120,7 +160,9 @@ def returns_sql(source: str) -> str:
     last AS (SELECT max(price_date) AS d FROM prices),
     legs AS (
         SELECT s.cik, s.as_of, s.price_date AS entry_date, s.close_raw AS entry_raw, h.m,
-               (s.as_of + to_months(h.m))::DATE AS target
+               -- Month end h months on: for month-end rebalances the 1m exit is the next
+               -- rebalance date (April 30 + 1 month is May 31, not May 30; review C2).
+               last_day((s.as_of + to_months(h.m))::DATE) AS target
         FROM s CROSS JOIN (SELECT unnest({list(HORIZONS)}) AS m) h
         WHERE s.close_raw IS NOT NULL
     ),
@@ -211,22 +253,29 @@ def evaluate(con: duckdb.DuckDBPyConnection, ranked: str, cost_bps: float = 50) 
     # Monthly strategy: hold the shortlist one month, equal weight, cash when it is empty.
     months = con.execute(f"""
         SELECT as_of, avg(ret_1m) AS u,
-               list(cik ORDER BY cik) FILTER (WHERE status = 'shortlist' AND ret_1m IS NOT NULL) AS picks,
-               avg(ret_1m) FILTER (WHERE status = 'shortlist') AS pr
+               list({{'cik': cik, 'r': ret_1m}} ORDER BY cik)
+                   FILTER (WHERE status = 'shortlist' AND ret_1m IS NOT NULL) AS picks
         FROM {ranked} WHERE ret_1m IS NOT NULL GROUP BY as_of ORDER BY as_of
     """).fetchall()
     curve, ucurve, turns = [], [], []
-    prev: dict = {"cash": 1.0}          # the strategy starts in cash
+    held: dict = {"cash": 1.0}      # weights at the end of the last month, after each holding's return
     v = uv = 1.0
-    for _, u, picks, pr in months:
-        w = {c: 1 / len(picks) for c in picks} if picks else {"cash": 1.0}
-        traded = sum(abs(w.get(k, 0) - prev.get(k, 0)) for k in set(w) | set(prev))
-        turns.append(traded / 2)
-        v *= 1 + (pr or 0.0) - traded * one_way
+    for _, u, picks in months:
+        picks = picks or []         # no shortlist this month: the FILTER list is NULL
+        target = {p["cik"]: 1 / len(picks) for p in picks} if picks else {"cash": 1.0}
+        delta = {k: abs(target.get(k, 0) - held.get(k, 0)) for k in set(target) | set(held)}
+        turns.append(sum(delta.values()) / 2)
+        # Only stock legs pay: moving from cash into one stock is one purchase (review C3).
+        cost = sum(dw for k, dw in delta.items() if k != "cash") * one_way
+        pr = sum(p["r"] for p in picks) / len(picks) if picks else 0.0
+        v *= 1 + pr - cost
         uv *= 1 + u
         curve.append(v)
         ucurve.append(uv)
-        prev = w
+        # Weights drift with returns; the next rebalance trades back from there (review C4).
+        grown = {p["cik"]: target[p["cik"]] * (1 + p["r"]) for p in picks}
+        total = sum(grown.values())
+        held = {k: g / total for k, g in grown.items()} if picks and total > 0 else {"cash": 1.0}
     monthly = {"months": len(months), "months_with_picks": sum(1 for m in months if m[2]),
                "cagr": _cagr(curve), "universe_cagr": _cagr(ucurve),
                "max_drawdown": _max_drawdown(curve), "universe_max_drawdown": _max_drawdown(ucurve),

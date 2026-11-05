@@ -144,3 +144,40 @@ def test_panel_keeps_only_investable_names(con):
     con.execute("CREATE TABLE snap AS SELECT * FROM (VALUES (?::INTEGER, DATE '2024-01-31', DATE '2024-01-31', 0.5), "
                 "(99, DATE '2024-01-31', DATE '2024-01-31', 5.0)) t(cik, as_of, price_date, close_raw)", [CIK])
     assert [r[0] for r in con.sql(f"SELECT cik FROM ({bt.panel_sql('snap')})").fetchall()] == [99]
+
+
+# --- Codex review round 1 (reviews/M5-backtest.md) ---------------------------------
+
+def test_snapshot_invalidates_after_price_correction(con, tmp_path):            # C1
+    add_company(con, CIK, "ACME", cheap_company())
+    add_buy(con, CIK, "f4")
+    dates = [date(2024, 8, 31)]
+    assert bt.snapshots(con, dates, "as_first_reported", tmp_path) == 1
+    con.execute("UPDATE prices SET close_raw = 20 WHERE cik = ? AND price_date = DATE '2024-08-30'", [CIK])
+    assert bt.snapshots(con, dates, "as_first_reported", tmp_path) == 1
+
+
+def test_monthly_return_reaches_next_month_end(con):                             # C2
+    px(con, CIK, [("2024-04-30", 100), ("2024-05-30", 100), ("2024-05-31", 200)])
+    con.execute("CREATE TABLE snap AS SELECT ?::INTEGER cik, DATE '2024-04-30' as_of, "
+                "DATE '2024-04-30' price_date, 100.0 close_raw", [CIK])
+    rel = con.sql(bt.returns_sql("snap"))
+    row = dict(zip(rel.columns, rel.fetchall()[0]))
+    assert row["ret_1m"] == pytest.approx(1.0)
+
+
+def test_entry_from_cash_pays_one_way_cost(con):                                 # C3
+    panel(con, [(date(2024, 1, 31), 1, "shortlist", 0.0, 0.0)])
+    result = bt.evaluate(con, "ranked", cost_bps=50)
+    assert result["monthly"]["cagr"] == pytest.approx(0.995 ** 12 - 1)
+
+
+def test_rebalancing_same_picks_after_returns_has_turnover(con):                 # C4
+    panel(con, [
+        (date(2024, 1, 31), 1, "shortlist", 1.0, 0.0),
+        (date(2024, 1, 31), 2, "shortlist", 0.0, 0.0),
+        (date(2024, 2, 29), 1, "shortlist", 0.0, 0.0),
+        (date(2024, 2, 29), 2, "shortlist", 0.0, 0.0),
+    ])
+    result = bt.evaluate(con, "ranked", cost_bps=0)
+    assert result["monthly"]["turnover"] == pytest.approx((1 + 1 / 6) / 2)
