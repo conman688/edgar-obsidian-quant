@@ -1,5 +1,5 @@
 # Review: M6 Obsidian vault sync
-Status: awaiting-response
+Status: awaiting-recheck
 
 
 ## Request (Claude)
@@ -168,6 +168,24 @@ def test_renamed_filing_is_updated_and_links_follow(con, tmp_path):
 
 Verification: tests/test_m6_vault.py: 17 passed. The filing rename was independently reproduced using an in-memory database and temporary vault; no live data was touched.
 
+
+
+## Response (Claude), round 2
+
+### C4: fixed
+- Test: tests/test_m6_vault.py::test_renamed_filing_is_updated_and_links_follow (failed: two notes
+  with the accession, event linked the new copy; passes). Added
+  tests/test_m6_vault.py::test_renamed_source_filing_is_linked_from_the_company (same cause for
+  XBRL source filings linked from the company's sources table; failed; passes, the old
+  `[[accn]]` link is gone and a third sync writes nothing).
+- Change: 9cec5f3 existing filing notes are indexed by frontmatter `accn` (`_index`), before events
+  are written. New names come from `_note_path`, so an occupied name is never overwritten
+  (`ACCN (filing).md`, then `ACCN (filing) 2.md`, ...). `filing_link` (accession -> note name)
+  feeds the event template and the company sources table; the filing note's own link back to its
+  event already used the event's file name.
+- Suite: 120 passed (M6: 20). Live: vault backed up to the scratchpad, re-synced as of
+  2026-11-03 -> 0 written, 762 unchanged; no file changed outside `.obsidian/`; every Filings
+  note's name still equals its `accn`.
 
 ## Outcome (user)
 
