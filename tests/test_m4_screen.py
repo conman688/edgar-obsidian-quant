@@ -219,7 +219,7 @@ def test_screen_shortlist_quarantine_fail_and_trace(con):
     add_company(con, 5000, "LATE", cheap_company())
     add_buy(con, 5000, "f4-late", filed=date(2024, 9, 4))                   # filed after as_of
 
-    rows = screen_rows(con)
+    rows = screen_rows(con, filters=Filters(min_drawdown=0.5))
     assert "BANK" not in rows                                              # financials excluded
     acme = rows["ACME"]
     assert acme["status"] == "shortlist" and acme["rank"] == 1
@@ -230,7 +230,8 @@ def test_screen_shortlist_quarantine_fail_and_trace(con):
     assert {("shares", "q2"), ("cash", "q2"), ("debt", "q2"), ("ebit", "k"), ("cfo", "k"), ("capex", "k")} <= used
     assert rows["NODEBT"]["status"] == "quarantine" and rows["NODEBT"]["rank"] is None
     assert "missing_debt" in rows["NODEBT"]["issues"]
-    assert rows["PRICEY"]["status"] == "fail"
+    assert rows["PRICEY"]["status"] == "fail" and "drawdown" in rows["PRICEY"]["failed_filters"]
+    assert screen_rows(con)["PRICEY"]["failed_filters"] == ["ev_ebit"]     # no drawdown rule by default
     assert rows["LATE"]["status"] == "fail" and rows["LATE"]["form4_accns"] is None
 
 

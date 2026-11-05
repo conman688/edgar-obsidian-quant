@@ -91,7 +91,7 @@ table instead of eleven); runs under a 600 MB DuckDB cap. `--trace` and the Parq
 `sources` / `form4_accns` columns give the accessions. As of 2026-11-02 the defaults
 shortlist 0 of 4,182 companies (14 quarantined); as of 2025-06-30, 1 (WFRD). Only 118
 companies have EV/EBIT < 6 and 323 have an insider cluster buy; none of the clean ones is
-also down 50%. M5 should test looser defaults.
+also down 50%. M5 tested the defaults; see M5.
 
 Open data gaps found by the quarantine:
 - Debt-free companies have no debt tag, so they cannot be told from untagged debt (1,213
@@ -104,7 +104,7 @@ Open data gaps found by the quarantine:
   the old CIK, so EBIT and FCF are missing. Successor CIKs are not linked.
 - Companies table (SIC, financial exclusion) and tickers are current snapshots, not as of the date.
 
-### M5 Backtest harness (size: L)
+### M5 Backtest harness (size: L, done)
 
 - Monthly rebalance from 2012 to today using `as_first_reported` and `filed <= rebalance date`.
 - Forward 3, 6 and 12-month returns vs equal-weight universe, with costs.
@@ -114,6 +114,32 @@ Open data gaps found by the quarantine:
 Checks:
 - A deliberately leaky version (using `period_end` instead of `filed`) scores better than the real one. This proves the harness can detect look-ahead.
 - Report written to `reports/backtest-YYYY-MM-DD.md` and to the vault.
+
+Result (2026-11-04, `reports/backtest-2026-11-04.md`): 177 month ends, 2012-01 to 2026-10.
+First run 44 min, reruns 1 min from the snapshot cache. Equal-weight universe (close >= $1):
+9.3% a year, max drawdown 37%.
+
+| variant | months with picks | avg picks | 3m excess | 12m excess | 3m hit rate | both halves |
+|---|---|---|---|---|---|---|
+| default (value + insider buying) | 99 | 1.8 | +4.1% | +15.2% | 57% | yes (3m +3.8% / +4.4%) |
+| drawdown_50 (the M4 default) | 27 | 1.2 | +7.2% | +35.7% | 48% | no (3m -7.5% / +20.9%) |
+| value (no insider rule) | 177 | 13.4 | +0.1% | +0.4% | 48% | no |
+| insider_fcf (insider buying, FCF > 0) | 177 | 60.5 | +0.2% | +2.2% | 47% | no |
+
+Checks: leak check passes (value variant, 3m excess: real +0.1%, leaky +1.9%), but narrowly,
+and for the default variant the leaky run scored worse, a sign of how few picks there are
+(about 180). Report written to `reports/` and the vault.
+
+Decision: the drawdown rule is off by default (`--min-drawdown 0.5` restores it); it only
+worked after 2020. The default variant is the only one positive in both halves. Its one-month
+strategy still returns 6.3% a year against the universe's 9.3%, because it holds cash in 78 of
+177 months; the edge is per pick, not as a fully invested portfolio. With these filters the
+live screen shortlists 3 names (2026-11-03), not the 20 the outcome asks for.
+
+Open:
+- Few picks: about 180 over 15 years. Treat the excess as a hint, not proof.
+- Survivorship gap 57%; delisted names are missing from both picks and universe.
+- Insider data before 2023 has no 10b5-1 checkbox; only plan footnotes exclude plan trades.
 
 ### M6 Obsidian vault sync (size: M)
 

@@ -47,9 +47,10 @@ uv run python -m src.cli screen --as-of 2026-11-02            # default filters
 uv run python -m src.cli screen --min-drawdown 0.3 --max-ev-ebit 10 --trace
 ```
 
-Ranks priced, non-financial companies on five filters: drawdown from the 52-week high
-> 50%, trailing FCF > 0, EV/EBIT < 6, net debt <= 25% of market cap, and a cluster buy by
-insiders known within 90 days. Every input is point-in-time. Each company gets a status:
+Ranks priced, non-financial companies on four filters: trailing FCF > 0, EV/EBIT < 6, net
+debt <= 25% of market cap, and a cluster buy by insiders known within 90 days. A drawdown rule
+(`--min-drawdown 0.5`: at least 50% below the 52-week high) is available but off by default;
+the backtest found it worked only after 2020. Every input is point-in-time. Each company gets a status:
 
 - `shortlist`: passes every filter on clean data. Ranked by EV/EBIT, cheapest first.
 - `quarantine`: no filter fails, but an input is missing or suspect (`issues`). Never ranked.
@@ -70,7 +71,32 @@ accession numbers behind each number. Every company, with all metrics, issues, s
 Form 4 accessions, is written to `data/screens/screen-<as_of>.parquet`; the filters used are
 in the file metadata. A full screen takes about 9 s.
 
-BACKTEST_SECTION
+## Backtest
+
+```bash
+uv run python -m src.cli backtest --start 2012-01-31          # about 45 min first time, 1 min after
+```
+
+Asks whether the screen picked stocks that beat the market they were picked from. On every
+month end since 2012 it rebuilds the screen's inputs as first reported and known on that date,
+then measures 1, 3, 6 and 12-month total returns (splits adjusted, dividends added) of the
+picks against the equal-weight average of every company the screen looked at. Costs are 50 bps
+each way (`--cost-bps`). It compares filter variants (`VARIANTS` in `src/backtest.py`) and reports
+excess return, hit rate, a one-month-holding strategy's CAGR, drawdown and turnover, and whether
+a variant worked in both halves of the period.
+
+Monthly snapshots are cached in `data/backtest/` with a fingerprint of the data and SQL, so a
+rerun recomputes only what changed. The report goes to `reports/backtest-<date>.md` and to the
+vault's `Reports/` folder.
+
+Safeguards and limits:
+- Leak check: the whole run is repeated with numbers visible from their period end, weeks
+  before filing. That version must score better, or the harness cannot tell look-ahead from skill.
+- Only names closing at $1 or more count; a 10x one-day jump is a broken price series and the
+  return across it is left out.
+- Survivorship: free prices exist only for companies listed today. On an average date 57% of
+  active non-financial filers have no price (mostly later delisted), so results are an upper bound.
+- SIC codes (the financial exclusion) and tickers are today's, not as of each date.
 
 ## First full load
 

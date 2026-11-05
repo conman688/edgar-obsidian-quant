@@ -31,7 +31,10 @@ from src.db.queries import cluster_buys_sql, share_trend_sql, valuation_sql
 @dataclass(frozen=True)
 class Filters:
     """None (or False) switches a filter off, for comparing variants in the backtest."""
-    min_drawdown: float | None = 0.50           # at least 50% below the 52-week high
+    # Off by default: in the M5 backtest (2012-2026) the 50%-drawdown rule left picks in 27 of
+    # 177 months and only worked after 2020; without it the screen beat the universe in both
+    # halves (reports/backtest-2026-11-04.md). --min-drawdown 0.5 restores it.
+    min_drawdown: float | None = None           # fraction below the 52-week high, e.g. 0.5
     max_ev_ebit: float | None = 6.0
     max_net_debt_to_mcap: float | None = 0.25   # "net cash or low debt": net debt <= 25% of mcap
     require_fcf: bool = True                    # trailing FCF > 0

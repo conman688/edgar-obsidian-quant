@@ -234,7 +234,8 @@ def cmd_screen(args) -> None:
     print(f"Screen as of {args.as_of} ({args.policy}): {len(rows):,} companies, "
           f"{len(by['shortlist'])} shortlisted, {len(by['quarantine'])} quarantined, "
           f"{len(by['fail']):,} failed, in {seconds:.1f}s")
-    print(f"Filters: drawdown > {filters.min_drawdown:.0%}, FCF > 0, EV/EBIT < {filters.max_ev_ebit:g}, "
+    dd = f"drawdown > {filters.min_drawdown:.0%}" if filters.min_drawdown is not None else "no drawdown rule"
+    print(f"Filters: {dd}, FCF > 0, EV/EBIT < {filters.max_ev_ebit:g}, "
           f"net debt <= {filters.max_net_debt_to_mcap:.0%} of mcap, insider buying in {filters.insider_window_days} days\n")
     head = f"{'#':>3} {'ticker':<7} {'name':<26} {'EV/EBIT':>7} {'drawdn':>6} {'FCF yld':>7} {'netcash':>7} {'mcap':>7} {'buyers':>6} {'bought':>7}  flags"
     print("SHORTLIST\n" + head)
@@ -298,7 +299,7 @@ def main(argv: list[str] | None = None) -> None:
     sc.add_argument("--as-of", type=date.fromisoformat, default=date.today())
     sc.add_argument("--policy", choices=["as_last_known", "as_first_reported"], default="as_last_known")
     d = Filters()
-    sc.add_argument("--min-drawdown", type=float, default=d.min_drawdown, help="fraction below 52-week high")
+    sc.add_argument("--min-drawdown", type=float, default=d.min_drawdown, help="fraction below 52-week high (default: off)")
     sc.add_argument("--max-ev-ebit", type=float, default=d.max_ev_ebit)
     sc.add_argument("--max-net-debt", type=float, default=d.max_net_debt_to_mcap, help="net debt / market cap")
     sc.add_argument("--insider-days", type=int, default=d.insider_window_days)

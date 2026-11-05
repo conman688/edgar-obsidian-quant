@@ -39,11 +39,11 @@ EXIT_GAP_DAYS = 10          # last close this far before the exit date: stopped 
 SNAPSHOT_DROP = ("sources", "buyers", "form4_accns")   # traceability lives in the live screen
 
 VARIANTS: dict[str, Filters] = {
-    "default": Filters(),
+    "default": Filters(),                                   # value + insider buying
+    "drawdown_50": Filters(min_drawdown=0.50),              # the M4 default
     "loose": Filters(min_drawdown=0.30, max_ev_ebit=10.0),
-    "value": Filters(min_drawdown=None, require_insider=False),
-    "value_insider": Filters(min_drawdown=None),
-    "insider_fcf": Filters(min_drawdown=None, max_ev_ebit=None, max_net_debt_to_mcap=None),
+    "value": Filters(require_insider=False),
+    "insider_fcf": Filters(max_ev_ebit=None, max_net_debt_to_mcap=None),
 }
 LEAK_VARIANT = "value"      # enough picks per month to measure; the default has 0-1
 
