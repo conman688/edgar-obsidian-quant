@@ -311,6 +311,22 @@ CREATE TABLE IF NOT EXISTS filing_sections (
 -- this column) and older versions are fetched again once by fetch_sections.
 ALTER TABLE filing_sections ADD COLUMN parser INTEGER;
 """),
+    (8, """
+-- M9: one row per scheduled run (`run weekly` / `run daily`). counts are the table row
+-- counts at the end of the run, for the next run's drift check; steps, warnings and backup
+-- are JSON for the health report.
+CREATE TABLE IF NOT EXISTS run_log (
+    started    TIMESTAMP PRIMARY KEY,
+    finished   TIMESTAMP NOT NULL,
+    job        VARCHAR   NOT NULL,     -- 'weekly' | 'daily'
+    status     VARCHAR   NOT NULL,     -- 'ok' | 'failed'
+    steps      VARCHAR   NOT NULL,
+    counts     VARCHAR   NOT NULL,
+    throttled  INTEGER   NOT NULL,     -- SEC 403/429/503 responses during the run
+    backup     VARCHAR,
+    warnings   VARCHAR   NOT NULL
+);
+"""),
 ]
 
 # Macros and views are code, not data: recreated on every connect so edits take effect.

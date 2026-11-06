@@ -9,17 +9,21 @@
     uv run --env-file .env python -m src.cli fetch-text --as-of 2026-11-03
     uv run --env-file .env python -m src.cli sync-vault --as-of 2026-11-03
     uv run --env-file .env python -m src.cli journal DINO
+    uv run --env-file .env python -m src.cli run weekly        # backup, ingest, screen, text, sync
+    uv run --env-file .env python -m src.cli schedule          # launchd files for run weekly / daily
 """
 from __future__ import annotations
 
 import argparse
+import functools
+import shutil
 import sys
 import time
 from datetime import date, timedelta
 from pathlib import Path
 from typing import Callable
 
-from src import backtest, config
+from src import backtest, config, ops
 from src.db.pit import concept_sql
 from src.db.schema import connect
 from src.ingestion import companyfacts, form4_sources, prices, reference
@@ -27,11 +31,18 @@ from src.ingestion.sec import SecClient, sha256_file
 from src.ingestion.filing_text import fetch_sections
 from src.journal import REVIEW_DAYS
 from src.obsidian.sync import sync_vault, vault_ciks, write_journal
+from src.obsidian.writer import upsert_note
 from src.screen import Filters, screen, write_parquet
 
 
+@functools.cache
 def _client() -> SecClient:
+    """One client per process: one rate limit, and one throttle count for the health report."""
     return SecClient(config.sec_user_agent())
+
+
+def _db(con=None):
+    return connect(str(config.DB_PATH)) if con is None else con
 
 
 def _fetch_zip(url: str, name: str, local: str | None,
@@ -142,9 +153,9 @@ def ingest_form4(con, args) -> None:
           f"{s.rows:,} rows in {s.seconds:,.0f}s")
 
 
-def cmd_ingest(args) -> None:
+def cmd_ingest(args, con=None) -> None:
     config.DATA_DIR.mkdir(parents=True, exist_ok=True)
-    con = connect(str(config.DB_PATH))
+    con = _db(con)
     jobs = {"tickers": [ingest_tickers], "companies": [ingest_companies], "facts": [ingest_facts],
             "prices": [ingest_prices], "form4": [ingest_form4],
             "all": [ingest_tickers, ingest_companies, ingest_facts, ingest_prices, ingest_form4]}[args.what]
@@ -163,8 +174,8 @@ def _resolve_cik(con, ident: str) -> int:
     return row[0]
 
 
-def cmd_facts(args) -> None:
-    con = connect(str(config.DB_PATH))
+def cmd_facts(args, con=None) -> None:
+    con = _db(con)
     cik = _resolve_cik(con, args.ident)
     rows = con.sql(
         f"SELECT period_kind, period_start, period_end, value, tag, form, filed, accn "
@@ -178,8 +189,8 @@ def cmd_facts(args) -> None:
         print(f"{kind:<10} {start} {end} {value:>20,.0f}  {form:<7} filed {filed}  {tag}  {accn}")
 
 
-def cmd_stats(args) -> None:
-    con = connect(str(config.DB_PATH))
+def cmd_stats(args, con=None) -> None:
+    con = _db(con)
     for label, sql in [
         ("facts", "SELECT count(*) FROM xbrl_facts"),
         ("companies with facts", "SELECT count(DISTINCT cik) FROM xbrl_facts"),
@@ -226,8 +237,8 @@ def _usd(v) -> str:
     return f"{v / 1e9:,.1f}B" if abs(v) >= 1e9 else f"{v / 1e6:,.1f}M" if abs(v) >= 1e6 else f"{v / 1e3:,.0f}k"
 
 
-def cmd_screen(args) -> None:
-    con = connect(str(config.DB_PATH))
+def cmd_screen(args, con=None) -> None:
+    con = _db(con)
     filters = Filters(min_drawdown=args.min_drawdown, max_ev_ebit=args.max_ev_ebit,
                       max_net_debt_to_mcap=args.max_net_debt, insider_window_days=args.insider_days)
     t0 = time.perf_counter()
@@ -262,8 +273,8 @@ def cmd_screen(args) -> None:
     print(f"\nwrote {path}")
 
 
-def cmd_backtest(args) -> None:
-    con = connect(str(config.DB_PATH))
+def cmd_backtest(args, con=None) -> None:
+    con = _db(con)
     t0 = time.perf_counter()
 
     def progress(policy: str, d: date, computed: bool) -> None:
@@ -278,9 +289,9 @@ def cmd_backtest(args) -> None:
     print(f"total {time.perf_counter() - t0:,.0f}s")
 
 
-def cmd_fetch_text(args) -> None:
+def cmd_fetch_text(args, con=None) -> None:
     vault = Path(args.vault) if args.vault else config.VAULT_DIR
-    con = connect(str(config.DB_PATH))
+    con = _db(con)
     ciks = args.cik or vault_ciks(con, vault, args.as_of)
     t0 = time.perf_counter()
     got = fetch_sections(con, _client(), ciks, args.as_of)
@@ -288,11 +299,11 @@ def cmd_fetch_text(args) -> None:
           f"{got['ok']} found, {got['not_found']} not found, in {time.perf_counter() - t0:.0f}s")
 
 
-def cmd_sync_vault(args) -> None:
+def cmd_sync_vault(args, con=None) -> None:
     vault = Path(args.vault) if args.vault else config.VAULT_DIR
     if vault is None:
         sys.exit("set EOQ_VAULT_DIR in .env or pass --vault")
-    con = connect(str(config.DB_PATH))
+    con = _db(con)
     t0 = time.perf_counter()
     s = sync_vault(con, vault, args.as_of)
     folders = sorted(set(s.written) | set(s.unchanged))
@@ -302,11 +313,11 @@ def cmd_sync_vault(args) -> None:
         print(f"  {f:<12} {s.written[f]:>5} written {s.unchanged[f]:>6} unchanged")
 
 
-def cmd_journal(args) -> None:
+def cmd_journal(args, con=None) -> None:
     vault = Path(args.vault) if args.vault else config.VAULT_DIR
     if vault is None:
         sys.exit("set EOQ_VAULT_DIR in .env or pass --vault")
-    con = connect(str(config.DB_PATH))
+    con = _db(con)
     try:
         path = write_journal(con, vault, args.ticker, args.as_of, args.review_days)
     except LookupError as e:
@@ -316,7 +327,71 @@ def cmd_journal(args) -> None:
     print(f"wrote {path}; review due {args.as_of + timedelta(days=args.review_days)}")
 
 
-def main(argv: list[str] | None = None) -> None:
+RUN_STEPS = {"weekly": [["ingest", "all"], ["screen"], ["fetch-text"], ["sync-vault"]],
+             "daily": [["ingest", "form4"]]}
+
+
+def cmd_run(args) -> None:
+    """A scheduled run: lock, backup (weekly), the job's steps on one connection, health report."""
+    today = date.today()
+    try:
+        with ops.run_lock(config.DATA_DIR / ".run.lock"):
+            b = None
+            if args.job == "weekly":
+                b = ops.backup(config.DB_PATH, Path(args.backup_dir) if args.backup_dir else config.BACKUP_DIR, today)
+                print(f"backup {b['status']}: {b['message']}", flush=True)
+            con = connect(str(config.DB_PATH))
+            parser = build_parser()
+            steps = [(" ".join(a), functools.partial(_step, parser, a, con)) for a in RUN_STEPS[args.job]]
+            r = ops.run_steps(con, args.job, steps, today, backup=b,
+                              throttled=lambda: _client().throttled if _client.cache_info().currsize else 0)
+    except ops.RunLocked as e:
+        sys.exit(f"not started: {e}")
+    report = ops.render_health(r)
+    print(report)
+    if config.VAULT_DIR:
+        upsert_note(config.VAULT_DIR / "Reports" / "Health.md",
+                    {"type": "health", "job": r["job"], "status": r["status"], "started": r["started"],
+                     "warnings": len(r["warnings"])}, report)
+    if r["status"] != "ok":
+        sys.exit(1)
+
+
+def _step(parser: argparse.ArgumentParser, argv: list[str], con) -> None:
+    print(f"== {' '.join(argv)}", flush=True)
+    args = parser.parse_args(argv)
+    args.func(args, con)
+
+
+def cmd_backup(args) -> None:
+    dest = Path(args.dest) if args.dest else config.BACKUP_DIR
+    try:
+        with ops.run_lock(config.DATA_DIR / ".run.lock"):
+            b = ops.backup(config.DB_PATH, dest, date.today())
+    except ops.RunLocked as e:
+        sys.exit(f"not started: {e}")
+    print(f"backup {b['status']}: {b['message']} ({b['seconds']} s)"
+          + (f"; removed {', '.join(b['removed'])}" if b["removed"] else ""))
+    if b["status"] == "failed":
+        sys.exit(1)
+
+
+def cmd_schedule(args) -> None:
+    repo = Path(__file__).resolve().parent.parent
+    uv = shutil.which("uv")
+    if uv is None:
+        sys.exit("uv not found on PATH")
+    (repo / "data" / "logs").mkdir(parents=True, exist_ok=True)
+    for p in ops.write_schedule(Path(args.out), repo, uv):
+        print(f"wrote {p}")
+    print("\nNothing is installed yet. To install (runs as you, while you are logged in):\n"
+          f"  cp {args.out}/com.edgar-obsidian-quant.*.plist ~/Library/LaunchAgents/\n"
+          "  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.edgar-obsidian-quant.weekly.plist\n"
+          "  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.edgar-obsidian-quant.daily.plist\n"
+          "To remove: launchctl bootout gui/$(id -u)/com.edgar-obsidian-quant.weekly (and .daily).")
+
+
+def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="edgar-obsidian-quant")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
@@ -382,7 +457,24 @@ def main(argv: list[str] | None = None) -> None:
     st = sub.add_parser("stats", help="row counts and health checks")
     st.set_defaults(func=cmd_stats)
 
-    args = ap.parse_args(argv)
+    r = sub.add_parser("run", help="scheduled job: weekly (backup, ingest all, screen, fetch-text, sync-vault) "
+                                   "or daily (Form 4)")
+    r.add_argument("job", choices=sorted(RUN_STEPS))
+    r.add_argument("--backup-dir", help="backup folder (default: EOQ_BACKUP_DIR)")
+    r.set_defaults(func=cmd_run)
+
+    bk = sub.add_parser("backup", help="copy the database to the backup folder; keep the last 4")
+    bk.add_argument("--dest", help="backup folder (default: EOQ_BACKUP_DIR)")
+    bk.set_defaults(func=cmd_backup)
+
+    sch = sub.add_parser("schedule", help="write launchd files for run weekly / run daily (does not install)")
+    sch.add_argument("--out", default=str(config.DATA_DIR / "launchd"))
+    sch.set_defaults(func=cmd_schedule)
+    return ap
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = build_parser().parse_args(argv)
     args.func(args)
 
 

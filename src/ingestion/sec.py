@@ -22,6 +22,7 @@ class SecClient:
         self._interval = 1.0 / rate_per_s
         self._lock = threading.Lock()
         self._next = 0.0
+        self.throttled = 0          # 403/429/503 responses, for the health report
 
     def _send(self, url: str, headers: dict | None = None, stream: bool = False,
               retries: int = 5) -> requests.Response:
@@ -33,6 +34,7 @@ class SecClient:
                 self._next = max(self._next, time.monotonic()) + self._interval
             r = self._session.get(url, headers=headers, stream=stream, timeout=60)
             if r.status_code in (403, 429, 503):
+                self.throttled += 1
                 r.close()
                 time.sleep(min(60, 2 ** attempt * 5))  # SEC 403 = throttled; back off hard
                 continue

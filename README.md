@@ -157,6 +157,36 @@ commercial use needs a licence from the authors. They are not in the repository:
 https://sraf.nd.edu/loughranmcdonald-master-dictionary/ into `data/lm/` (or set `EOQ_LM_DICT`).
 Without the file, notes say the lists are not installed.
 
+## Operations
+
+```bash
+uv run --env-file .env python -m src.cli run weekly    # backup, ingest all, screen, fetch-text, sync-vault
+uv run --env-file .env python -m src.cli run daily     # Form 4 only
+uv run --env-file .env python -m src.cli backup        # the backup step alone
+uv run python -m src.cli schedule                      # launchd files in data/launchd (not installed)
+```
+
+A run takes a lock (`data/.run.lock`), so two runs never overlap, and stops at the first step
+that fails. Every load keeps a ledger, so the next run picks up where it stopped: a run killed
+mid-way refetches at most the batch it was writing. Each run adds a row to `run_log` and writes
+a health report (stdout, and `Reports/Health.md` in the vault). The report lists step results,
+row counts against the previous run, and warnings for: a step that failed, a table that shrank,
+failed Form 4 or price ledger entries, a latest price more than 4 days old, SEC throttling, and a
+backup that did not happen.
+
+Backups: set `EOQ_BACKUP_DIR` to a folder on another disk, for example
+`/Volumes/External/edgar-obsidian-quant-backups`. The weekly run copies the database there as
+`edgar-YYYY-MM-DD.duckdb` and checks the copy (it opens and has the same number of loaded
+filings). Then it deletes all but the newest 4 files with that name pattern. It never deletes
+any other file, and never creates the folder. If the folder is missing (drive unplugged), on
+the database's own disk, or the disk has too little room, the backup is skipped and the health
+report says so. The rest of the run goes ahead.
+
+Scheduling: `schedule` writes two launchd agents: weekly on Saturday at 07:00, daily on weekdays
+at 21:00. Both run under `caffeinate`, and a run missed while the Mac sleeps starts when it
+wakes. Install them with the `launchctl bootstrap` commands that `schedule` prints. Logs go to
+`data/logs/`. GitHub Actions runs the tests on every push (`.github/workflows/tests.yml`).
+
 ## First full load
 
 First full load (2026-11-02, 8 GB MacBook):
@@ -201,6 +231,7 @@ Uncapped, a heavy query on an 8 GB machine with little free disk can crash the c
 | `src/tone.py` | Loughran-McDonald word lists (current words only) and word-share tone |
 | `src/forensics.py` | Buybacks, acquisitions, impairments, debt maturities of the latest fiscal year; flags |
 | `src/obsidian/sync.py`, `src/obsidian/templates/` | `sync-vault`: companies, insiders, purchases, filings, dashboard (Jinja); `journal` notes |
+| `src/ops.py` | `run`, `backup`, `schedule`: run lock, steps, `run_log`, health report, backup and retention, launchd files |
 | `src/journal.py` | Decision journal: frozen screen snapshot, journal notes read back, return since the decision |
 | `tests/test_failure_modes.py` | One test per audited failure mode |
 | `tests/test_ingest.py` | Bulk load idempotency, crash resume, reference data, conditional download |
@@ -213,6 +244,7 @@ Uncapped, a heavy query on an 8 GB machine with little free disk can crash the c
 | `tests/test_m4_screen.py` | Debt source by date, stale items, EBIT/capex ladders, typo dates, screen status and trace |
 | `tests/test_m6_vault.py` | Frontmatter comments survive, idempotent sync, hand edits, renamed notes, one note per insider, name order |
 | `tests/test_m7_text.py` | Self-diff and number-only checks, extraction, fetch ledger, PIT redline, forensics, note |
+| `tests/test_m9_ops.py` | Backup checks and retention, run log and health warnings, run lock, killed Form 4 fetch resumes, launchd files |
 | `tests/test_m8_journal.py` | Journal template and snapshot, never overwritten, then-vs-now returns, PIT, missing keys |
 | `tests/test_m5_backtest.py` | Split/dividend returns, delisted exits, statistics, costs, halves, leaky policy, cache, report |
 
@@ -231,6 +263,8 @@ Uncapped, a heavy query on an 8 GB machine with little free disk can crash the c
 - Notes are written atomically. Only the `AUTO-GENERATED` block and auto frontmatter keys change.
 - A journal note is written once, on its decision date, and never rewritten; its snapshot is the
   screen as it was then.
+- A backup goes only to an existing folder on another disk, and deletes only its own
+  `edgar-YYYY-MM-DD.duckdb` files beyond the newest 4.
 
 ## SEC access
 
@@ -241,7 +275,9 @@ SEC requires a `User-Agent` with a real contact email and caps traffic at 10 req
 
 Done: schema with migrations, PIT layer, screens, Obsidian writer, M1 ingestion (live SEC data),
 M2 prices/splits/dividends, M3 insider trades, M4 screener, M5 backtest, M6 vault sync,
-M7 Risk Factors redline and forensics, M8 decision journal, CLI.
-Not done: M7 executive pay and footnote text (deferred), scheduling (M9).
+M7 Risk Factors redline and forensics, M8 decision journal, M9 operations (run, backup, health,
+launchd files, CI), CLI.
+Not done: M7 executive pay and footnote text (deferred); installing the launchd agents and two
+unattended weeks (M9 check).
 
 See [ROADMAP.md](ROADMAP.md) for goals, milestones and acceptance checks.
