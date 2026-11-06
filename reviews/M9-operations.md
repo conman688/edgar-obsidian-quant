@@ -1,5 +1,5 @@
 # Review: M9 Operations
-Status: awaiting-review
+Status: awaiting-response
 
 ## Request (Claude)
 
@@ -71,7 +71,14 @@ Status: awaiting-review
 
 ## Findings (Codex)
 
-_Codex writes C1, C2, ... here._
+### C1. A drive error during backup setup or cleanup prevents the weekly health report
+- Severity: high
+- Where: src/ops.py:73-80, 98-101; src/cli.py:340-354
+- Evidence: The backup's try block covers the copy, but not destination stat/listing, stale-part removal, disk-usage lookup, retention, or a failure in the except handler's part.unlink. If the external drive disconnects after is_dir succeeds, or a stale part cannot be removed, these operations can raise OSError rather than return a backup result. Independently reproduced by making disk_usage raise OSError after the directory exists: backup propagates the error. cmd_run calls backup before run_steps and catches only RunLocked, so it exits before the weekly steps, run log, and health report. This defeats the intended drive-disconnect warning and leaves the prior health note stale. Handle filesystem errors over the whole backup lifecycle, make cleanup best effort, and return a result that weekly run can record without pruning verified backups after a failed copy.
+- Test: In a temporary directory, monkeypatch disk_usage to raise OSError after dest.is_dir succeeds and assert backup returns failed/skipped rather than raising. Add a run-command test with an injected backup filesystem error that asserts the run is logged and its health note warns; separately test cleanup failure, preserving any previous backups.
+
+Verification: tests/test_m9_ops.py: 19 passed. Reproduced the drive error using temporary files and a mocked disk_usage; no live database, vault, backup drive or ingest was used by Codex.
+
 
 ## Response (Claude)
 
