@@ -302,3 +302,57 @@ def test_run_command_logs_reports_to_the_vault_and_skips_a_missing_backup(tmp_pa
     con = connect(str(db))
     assert con.execute("SELECT job, status FROM run_log ORDER BY started").fetchall() == [
         ("weekly", "ok"), ("daily", "failed")]
+
+
+# --- live weekly run, 2026-11-05 -------------------------------------------------------
+
+def test_sec_client_retries_a_dropped_connection(monkeypatch):
+    """The first live weekly run died on one RemoteDisconnected from SEC."""
+    import requests
+    from src.ingestion import sec
+
+    class R:
+        status_code, content = 200, b"ok"
+
+        def raise_for_status(self):
+            pass
+    calls = []
+
+    def get(*a, **k):
+        calls.append(1)
+        if len(calls) <= 2:
+            raise requests.ConnectionError("('Connection aborted.', RemoteDisconnected(...))")
+        return R()
+    c = sec.SecClient("Test test@example.com", rate_per_s=1000)
+    monkeypatch.setattr(c._session, "get", get)
+    monkeypatch.setattr(sec.time, "sleep", lambda s: None)
+    assert c.get("https://www.sec.gov/x") == b"ok" and len(calls) == 3 and c.dropped == 2
+
+
+def test_sec_client_gives_up_on_a_connection_that_keeps_dropping(monkeypatch):
+    import requests
+    from src.ingestion import sec
+
+    def get(*a, **k):
+        raise requests.ConnectionError("down")
+    c = sec.SecClient("Test test@example.com", rate_per_s=1000)
+    monkeypatch.setattr(c._session, "get", get)
+    monkeypatch.setattr(sec.time, "sleep", lambda s: None)
+    with pytest.raises(requests.ConnectionError):
+        c.get("https://www.sec.gov/x")
+    assert c.dropped == 5
+
+
+def test_snapshot_tables_may_shrink_a_little_but_ledgers_never(tmp_path):
+    con = connect(":memory:")
+    con.execute("INSERT INTO prices VALUES (1, 'A', DATE '2026-11-06', 10, NULL, 't')")
+    con.executemany("INSERT INTO tickers (ticker, cik, fetched_on) VALUES (?, ?, DATE '2026-11-01')", [(f"T{i}", i) for i in range(200)])
+    con.executemany("INSERT INTO loaded_filings (cik, accn) VALUES (?, ?)", [(i, f"a{i}") for i in range(200)])
+    ops.run_steps(con, "weekly", [], TODAY)
+    con.execute("DELETE FROM tickers WHERE ticker = 'T0'")                 # one delisting: 0.5%
+    con.execute("DELETE FROM loaded_filings WHERE accn = 'a0'")            # a ledger row lost
+    w = ops.run_steps(con, "weekly", [], TODAY)["warnings"]
+    assert not any(x.startswith("tickers") for x in w)
+    assert "loaded_filings fell from 200 to 199" in w
+    con.execute("DELETE FROM tickers WHERE ticker IN ('T1', 'T2', 'T3')")    # 1.5% in one run
+    assert "tickers fell from 199 to 196" in ops.run_steps(con, "weekly", [], TODAY)["warnings"]

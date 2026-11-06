@@ -344,7 +344,8 @@ def cmd_run(args) -> None:
             parser = build_parser()
             steps = [(" ".join(a), functools.partial(_step, parser, a, con)) for a in RUN_STEPS[args.job]]
             r = ops.run_steps(con, args.job, steps, today, backup=b,
-                              throttled=lambda: _client().throttled if _client.cache_info().currsize else 0)
+                              throttled=lambda: _client().throttled if _client.cache_info().currsize else 0,
+                              dropped=lambda: _client().dropped if _client.cache_info().currsize else 0)
     except ops.RunLocked as e:
         sys.exit(f"not started: {e}")
     report = ops.render_health(r)

@@ -30,6 +30,8 @@ from src import config
 KEEP = 4
 ROOM = 1.05                 # free space needed on the backup disk, as a multiple of the database
 STALE_RUN_DAYS = 4          # latest close older than this on a run day: the price refresh is stuck
+DRIFT = 0.01                # a table that shrinks by more than this in one run gets a warning
+LEDGERS = ("loaded_filings", "form4_filings", "filing_sections")   # never shrink: any drop is a warning
 BACKUP_NAME = re.compile(r"^edgar-\d{4}-\d{2}-\d{2}\.duckdb$")
 PART_NAME = re.compile(r"^\.edgar-\d{4}-\d{2}-\d{2}\.duckdb\.part$")
 TABLES = ("xbrl_facts", "loaded_filings", "companies", "tickers", "prices", "splits", "dividends",
@@ -124,10 +126,17 @@ def table_counts(con: duckdb.DuckDBPyConnection) -> dict:
     return {t: con.execute(f"SELECT count(*) FROM {t}").fetchall()[0][0] for t in TABLES}
 
 
+def _shrank(table: str, before: int, now: int) -> bool:
+    """Ledgers only grow. Other tables are snapshots (SEC's ticker list, refreshed price windows,
+    replaced filings) that lose a few rows normally; only a drop beyond DRIFT is a warning."""
+    return now < before and (table in LEDGERS or now < before * (1 - DRIFT))
+
+
 def _warnings(con, today: date, counts: dict, before: dict, steps: list[dict], throttled: int,
-              backup: dict | None) -> list[str]:
+              dropped: int, backup: dict | None) -> list[str]:
     w = [f"{s['name']} failed: {s['message']}" for s in steps if s["status"] == "failed"]
-    w += [f"{t} fell from {before[t]:,} to {n:,}" for t, n in counts.items() if t in before and n < before[t]]
+    w += [f"{t} fell from {before[t]:,} to {n:,}" for t, n in counts.items()
+          if t in before and _shrank(t, before[t], n)]
     failed_f4 = con.execute("SELECT count(*) FROM form4_filings WHERE status = 'failed'").fetchall()[0][0]
     if failed_f4:
         w.append(f"{failed_f4:,} Form 4 filings failed (retried next run)")
@@ -141,13 +150,16 @@ def _warnings(con, today: date, counts: dict, before: dict, steps: list[dict], t
         w.append(f"latest price is {latest} ({(today - latest).days} days old)")
     if throttled:
         w.append(f"SEC throttled {throttled} requests (backed off and retried)")
+    if dropped:
+        w.append(f"SEC dropped {dropped} connections (retried)")
     if backup and backup["status"] != "ok":
         w.append(f"backup {backup['status']}: {backup['message']}")
     return w
 
 
 def run_steps(con: duckdb.DuckDBPyConnection, job: str, steps: list[tuple[str, Callable[[], object]]],
-              today: date, throttled: Callable[[], int] = lambda: 0, backup: dict | None = None) -> dict:
+              today: date, throttled: Callable[[], int] = lambda: 0, backup: dict | None = None,
+              dropped: Callable[[], int] = lambda: 0) -> dict:
     """Run steps in order; after a failure the rest are 'not run'. Logs the run and returns it
     with its health warnings. A step that calls sys.exit is a failure, not the end of the run."""
     started, results, failed = datetime.now(), [], False
@@ -168,7 +180,7 @@ def run_steps(con: duckdb.DuckDBPyConnection, job: str, steps: list[tuple[str, C
     prev = con.execute("SELECT counts FROM run_log ORDER BY started DESC LIMIT 1").fetchall()
     before = json.loads(prev[0][0]) if prev else {}
     n_throttled = throttled()
-    warnings = _warnings(con, today, counts, before, results, n_throttled, backup)
+    warnings = _warnings(con, today, counts, before, results, n_throttled, dropped(), backup)
     r = {"job": job, "started": started, "finished": datetime.now(), "status": "failed" if failed else "ok",
          "steps": results, "counts": counts, "before": before, "throttled": n_throttled, "backup": backup,
          "warnings": warnings}

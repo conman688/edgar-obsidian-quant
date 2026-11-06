@@ -23,6 +23,7 @@ class SecClient:
         self._lock = threading.Lock()
         self._next = 0.0
         self.throttled = 0          # 403/429/503 responses, for the health report
+        self.dropped = 0            # connections SEC closed or that timed out, also retried
 
     def _send(self, url: str, headers: dict | None = None, stream: bool = False,
               retries: int = 5) -> requests.Response:
@@ -32,7 +33,15 @@ class SecClient:
                 if wait > 0:
                     time.sleep(wait)
                 self._next = max(self._next, time.monotonic()) + self._interval
-            r = self._session.get(url, headers=headers, stream=stream, timeout=60)
+            try:
+                r = self._session.get(url, headers=headers, stream=stream, timeout=60)
+            except (requests.ConnectionError, requests.Timeout):
+                # One dropped connection killed the first live weekly run (RemoteDisconnected).
+                self.dropped += 1
+                if attempt == retries - 1:
+                    raise
+                time.sleep(min(60, 2 ** attempt * 5))
+                continue
             if r.status_code in (403, 429, 503):
                 self.throttled += 1
                 r.close()
