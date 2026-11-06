@@ -356,3 +356,104 @@ def test_snapshot_tables_may_shrink_a_little_but_ledgers_never(tmp_path):
     assert "loaded_filings fell from 200 to 199" in w
     con.execute("DELETE FROM tickers WHERE ticker IN ('T1', 'T2', 'T3')")    # 1.5% in one run
     assert "tickers fell from 199 to 196" in ops.run_steps(con, "weekly", [], TODAY)["warnings"]
+
+
+# --- review M9 round 1: C1 ---------------------------------------------------------------
+
+def old_backups(dest, days=(3, 10, 17, 24)):
+    paths = [dest / f"edgar-2026-10-{d:02d}.duckdb" for d in days]
+    for p in paths:
+        p.write_bytes(b"x")
+    return paths
+
+
+def test_drive_error_after_the_folder_check_is_a_failed_backup_not_a_crash(tmp_path, monkeypatch):
+    db, dest = make_db(tmp_path), tmp_path / "backups"
+    dest.mkdir()
+    old = old_backups(dest)
+
+    def gone(path):
+        raise OSError(5, "Input/output error")                         # drive pulled after is_dir
+    monkeypatch.setattr(ops.shutil, "disk_usage", gone)
+    b = backup(db, dest)
+    assert b["status"] == "failed" and "Input/output error" in b["message"]
+    assert all(p.exists() for p in old)
+
+
+def test_listing_error_is_a_failed_backup(tmp_path, monkeypatch):
+    db, dest = make_db(tmp_path), tmp_path / "backups"
+    dest.mkdir()
+    real = Path.iterdir
+
+    def iterdir(self):
+        if self == dest:
+            raise PermissionError(13, "Permission denied")
+        return real(self)
+    monkeypatch.setattr(Path, "iterdir", iterdir)
+    assert backup(db, dest)["status"] == "failed"
+
+
+def test_cleanup_failures_are_best_effort_and_keep_the_new_backup(tmp_path, monkeypatch):
+    db, dest = make_db(tmp_path), tmp_path / "backups"
+    dest.mkdir()
+    old = old_backups(dest, (3, 10, 17, 24, 31))
+    (dest / ".edgar-2026-10-31.duckdb.part").write_bytes(b"half")      # from a cut-short backup
+    real = Path.unlink
+
+    def unlink(self, missing_ok=False):
+        if self.name in (".edgar-2026-10-31.duckdb.part", "edgar-2026-10-03.duckdb"):
+            raise PermissionError(13, "Permission denied")
+        return real(self, missing_ok=missing_ok)
+    monkeypatch.setattr(Path, "unlink", unlink)
+    b = backup(db, dest)
+    assert b["status"] == "ok" and (dest / f"edgar-{TODAY}.duckdb").exists()
+    assert b["removed"] == ["edgar-2026-10-10.duckdb"]                    # the one it could delete
+    assert "edgar-2026-10-03.duckdb" in b["warning"] and ".edgar-2026-10-31.duckdb.part" in b["warning"]
+    assert [p.exists() for p in old] == [True, False, True, True, True]
+    con = connect(":memory:")
+    w = ops.run_steps(con, "weekly", [], TODAY, backup=b)["warnings"]
+    assert any(x.startswith("backup cleanup:") and "edgar-2026-10-03.duckdb" in x for x in w)
+
+
+def test_failed_copy_whose_part_cannot_be_removed_still_returns_failed(tmp_path, monkeypatch):
+    db, dest = make_db(tmp_path), tmp_path / "backups"
+    dest.mkdir()
+    old = old_backups(dest)
+
+    def boom(src, dst):
+        Path(dst).write_bytes(b"half")
+        raise OSError("drive removed")
+    real = Path.unlink
+
+    def unlink(self, missing_ok=False):
+        if self.name.endswith(".part"):
+            raise OSError(5, "Input/output error")
+        return real(self, missing_ok=missing_ok)
+    monkeypatch.setattr(ops.shutil, "copyfile", boom)
+    monkeypatch.setattr(Path, "unlink", unlink)
+    b = backup(db, dest)
+    assert b["status"] == "failed" and "drive removed" in b["message"]
+    assert all(p.exists() for p in old)
+
+
+def test_weekly_run_with_a_drive_error_still_logs_and_reports(tmp_path, monkeypatch, capsys):
+    from src import cli, config
+    db, dest, vault = make_db(tmp_path), tmp_path / "backups", tmp_path / "vault"
+    dest.mkdir()
+    monkeypatch.setattr(config, "DATA_DIR", db.parent)
+    monkeypatch.setattr(config, "DB_PATH", db)
+    monkeypatch.setattr(config, "VAULT_DIR", vault)
+    monkeypatch.setattr(config, "BACKUP_DIR", dest)
+    monkeypatch.setitem(cli.RUN_STEPS, "weekly", [["stats"]])
+    real = ops.backup
+    monkeypatch.setattr(ops, "backup", lambda *a, **k: real(*a, **{**k, "other_disk_only": False}))
+
+    def gone(path):
+        raise OSError(5, "Input/output error")
+    monkeypatch.setattr(ops.shutil, "disk_usage", gone)
+    cli.main(["run", "weekly"])
+    assert "| stats | ok |" in capsys.readouterr().out
+    note = (vault / "Reports" / "Health.md").read_text()
+    assert "backup failed:" in note and "Input/output error" in note
+    with duckdb.connect(str(db), read_only=True) as c:
+        assert c.execute("SELECT job, status FROM run_log").fetchall() == [("weekly", "ok")]

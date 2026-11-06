@@ -48,41 +48,54 @@ def _db_config() -> dict:
     return {"memory_limit": config.DB_MEMORY_LIMIT, "threads": config.DB_THREADS}
 
 
-def prune(dest: Path, keep: int = KEEP) -> list[str]:
-    """Delete all but the newest `keep` backups. Only names matching BACKUP_NAME are touched."""
+def _remove(paths: list[Path]) -> tuple[list[str], list[str]]:
+    """Delete each path, best effort: (names removed, errors). One file that will not go does
+    not stop the others, and never stops the run."""
+    removed, errors = [], []
+    for p in paths:
+        try:
+            p.unlink()
+            removed.append(p.name)
+        except OSError as e:
+            errors.append(f"could not delete {p.name}: {e.strerror or e}")
+    return removed, errors
+
+
+def prune(dest: Path, keep: int = KEEP) -> tuple[list[str], list[str]]:
+    """Delete all but the newest `keep` backups: (names removed, errors). Only names matching
+    BACKUP_NAME are touched."""
     ours = sorted(p.name for p in dest.iterdir() if p.is_file() and BACKUP_NAME.match(p.name))
-    old = ours[:-keep] if keep > 0 else ours
-    for name in old:
-        (dest / name).unlink()
-    return old
+    return _remove([dest / name for name in (ours[:-keep] if keep > 0 else ours)])
 
 
 def backup(db_path: Path, dest: Path | None, today: date, keep: int = KEEP,
            other_disk_only: bool = True) -> dict:
     """Copy the database to dest/edgar-<today>.duckdb, check the copy, then keep the last `keep`.
-    status: ok | skipped (not configured, folder missing, same disk, no room) | failed."""
+    status: ok | skipped (not configured, folder missing, same disk, no room) | failed.
+    Never raises: a drive that fails or disappears at any point is a `failed` result the run
+    records. Old backups are pruned only after the new copy is checked and in place; clean-up
+    problems (a file that will not delete) leave the backup ok and are reported in `warning`."""
     t0 = time.monotonic()
+    notes: list[str] = []
 
     def out(status: str, message: str, **kw) -> dict:
         return {"status": status, "message": message, "path": None, "bytes": 0, "removed": [],
-                "seconds": round(time.monotonic() - t0, 1), **kw}
+                "warning": "; ".join(notes) or None, "seconds": round(time.monotonic() - t0, 1), **kw}
 
     if dest is None:
         return out("skipped", "EOQ_BACKUP_DIR not set")
     dest, db_path = Path(dest), Path(db_path)
     if not dest.is_dir():
         return out("skipped", f"backup folder not found: {dest} (drive unplugged?)")
-    if other_disk_only and os.stat(dest).st_dev == os.stat(db_path).st_dev:
-        return out("skipped", f"{dest} is on the same disk as the database")
-    for p in dest.iterdir():
-        if PART_NAME.match(p.name):
-            p.unlink()                                   # an earlier backup that was cut short
-    size, free = db_path.stat().st_size, shutil.disk_usage(dest)[2]
-    if free < size * ROOM:
-        return out("skipped", f"not enough room on {dest}: need {_gb(size * ROOM)}, {_gb(free)} free")
     target = dest / f"edgar-{today}.duckdb"
     part = dest / f".{target.name}.part"
     try:
+        if other_disk_only and os.stat(dest).st_dev == os.stat(db_path).st_dev:
+            return out("skipped", f"{dest} is on the same disk as the database")
+        notes += _remove([p for p in dest.iterdir() if PART_NAME.match(p.name)])[1]   # cut-short copies
+        size, free = db_path.stat().st_size, shutil.disk_usage(dest)[2]
+        if free < size * ROOM:
+            return out("skipped", f"not enough room on {dest}: need {_gb(size * ROOM)}, {_gb(free)} free")
         # The open connection holds DuckDB's file lock, so no other process can write during the copy.
         with duckdb.connect(str(db_path), config=_db_config()) as con:
             con.execute("CHECKPOINT")
@@ -95,12 +108,19 @@ def backup(db_path: Path, dest: Path | None, today: date, keep: int = KEEP,
         if got != expected:
             raise OSError(f"copy has {got} loaded filings, database {expected}")
         os.replace(part, target)
+        size_copied = target.stat().st_size
     except Exception as e:
-        part.unlink(missing_ok=True)
+        try:
+            part.unlink(missing_ok=True)
+        except OSError:
+            pass                  # the drive may be gone; the next backup removes the .part
         return out("failed", f"{type(e).__name__}: {e}")
-    removed = prune(dest, keep)
-    return out("ok", f"{_gb(size)} copied to {target}", path=str(target), bytes=target.stat().st_size,
-               removed=removed)
+    try:
+        removed, errors = prune(dest, keep)
+    except OSError as e:
+        removed, errors = [], [f"could not list {dest} to remove old backups: {e.strerror or e}"]
+    notes += errors
+    return out("ok", f"{_gb(size)} copied to {target}", path=str(target), bytes=size_copied, removed=removed)
 
 
 class RunLocked(RuntimeError):
@@ -154,6 +174,8 @@ def _warnings(con, today: date, counts: dict, before: dict, steps: list[dict], t
         w.append(f"SEC dropped {dropped} connections (retried)")
     if backup and backup["status"] != "ok":
         w.append(f"backup {backup['status']}: {backup['message']}")
+    if backup and backup.get("warning"):
+        w.append(f"backup cleanup: {backup['warning']}")
     return w
 
 
@@ -201,7 +223,8 @@ def render_health(r: dict) -> str:
     if r["backup"]:
         b = r["backup"]
         lines += ["", "## Backup", "", f"{b['status']}: {b['message']}"
-                  + (f". Removed: {', '.join(b['removed'])}" if b.get("removed") else "")]
+                  + (f". Removed: {', '.join(b['removed'])}" if b.get("removed") else "")
+                  + (f". Clean-up: {b['warning']}" if b.get("warning") else "")]
     lines += ["", "## Row counts", "", "| Table | Before | Now | Change |", "|---|---|---|---|"]
     for t, n in r["counts"].items():
         b = r["before"].get(t)

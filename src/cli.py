@@ -372,7 +372,8 @@ def cmd_backup(args) -> None:
     except ops.RunLocked as e:
         sys.exit(f"not started: {e}")
     print(f"backup {b['status']}: {b['message']} ({b['seconds']} s)"
-          + (f"; removed {', '.join(b['removed'])}" if b["removed"] else ""))
+          + (f"; removed {', '.join(b['removed'])}" if b["removed"] else "")
+          + (f"; clean-up: {b['warning']}" if b["warning"] else ""))
     if b["status"] == "failed":
         sys.exit(1)
 
