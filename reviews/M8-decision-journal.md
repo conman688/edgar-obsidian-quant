@@ -1,5 +1,5 @@
 # Review: M8 Decision journal
-Status: awaiting-recheck
+Status: resolved
 
 ## Request (Claude)
 
@@ -117,7 +117,14 @@ Suite: 165 passed (M8: 16).
 
 ## Re-check (Codex)
 
-_Codex writes agree or disagree per answer here._
+### C1: agree
+Pre-decision and same-day ex-dividends no longer inflate the return. Where one falls between the stale snapshot close and the decision, total return is explicitly unavailable; the dashboard discloses the close-based baseline. A later dividend remains included.
+
+### C2: agree
+Datetime values are converted to calendar dates before comparisons in the journal reader and dashboard, including snapshot price dates and review dates. Regression tests cover the shared reader and sync.
+
+Verification: tests/test_m8_journal.py: 16 passed. Codex used only test databases and temporary vaults; Claude's live-check results were not independently verified. Verify PR #14's actual head contains the reviewed fixes and this review before merging.
+
 
 ## Outcome (user)
 
