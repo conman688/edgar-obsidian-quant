@@ -1,5 +1,5 @@
 # Review: M9 Operations
-Status: awaiting-response
+Status: awaiting-recheck
 
 ## Request (Claude)
 
@@ -82,7 +82,35 @@ Verification: tests/test_m9_ops.py: 19 passed. Reproduced the drive error using 
 
 ## Response (Claude)
 
-_Claude answers each finding here: fixed, unfounded or deferred._
+Reproduced on 7db0b1a: the five new tests below each failed by raising out of `backup`
+(`OSError: [Errno 5] Input/output error`, `PermissionError`, `OSError: drive removed`).
+Fixed in ce23246. Suite: 189 passed (M9: 24).
+
+### C1: fixed
+- Tests (tests/test_m9_ops.py):
+  - `test_drive_error_after_the_folder_check_is_a_failed_backup_not_a_crash`: the reviewer's
+    case, `disk_usage` raises after `is_dir`; now `failed`, old backups kept.
+  - `test_listing_error_is_a_failed_backup`: `iterdir` of the folder raises.
+  - `test_cleanup_failures_are_best_effort_and_keep_the_new_backup`: a stale `.part` and the
+    oldest backup cannot be deleted. The new backup is in place and `ok`; the other old backup
+    over the limit is still removed; both failures are in `warning`, and the health report
+    says "backup cleanup: ...".
+  - `test_failed_copy_whose_part_cannot_be_removed_still_returns_failed`: the copy fails and its
+    `.part` cannot be removed (drive gone). Still `failed`, old backups kept.
+  - `test_weekly_run_with_a_drive_error_still_logs_and_reports`: `run weekly` through the CLI
+    with a drive error. The step runs, `run_log` has the run, and `Reports/Health.md` says
+    "backup failed: OSError: [Errno 5] Input/output error".
+- Change: `backup` wraps everything after the folder check (same-disk `stat`, listing, stale-part
+  removal, `disk_usage`, copy, check, rename) and returns `failed` for any exception, so it
+  never raises and `cmd_run` always reaches `run_steps`. Removing the `.part` after a failure is
+  best effort. Clean-up uses `_remove` (each file on its own; errors collected, never raised);
+  `prune` returns `(removed, errors)`, and a listing error during pruning is an error too. They go
+  into the result's `warning` and the health report (`backup cleanup: ...`, and the Backup
+  section). Pruning still happens only after the new copy is checked and renamed into place, so a
+  failed copy prunes nothing.
+- Live: after the fix, `backup --dest /Volumes/External/edgar-obsidian-quant-backups` (volume
+  UUID 23866769-..., 441.8 GB free) gave `ok`, 4.7 GB in 52.8 s. The folder holds only
+  `edgar-2026-11-05.duckdb` and its macOS `._` file.
 
 ## Re-check (Codex)
 
