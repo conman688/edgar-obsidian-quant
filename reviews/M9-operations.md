@@ -1,5 +1,5 @@
 # Review: M9 Operations
-Status: awaiting-recheck
+Status: resolved
 
 ## Request (Claude)
 
@@ -114,7 +114,11 @@ Fixed in ce23246. Suite: 189 passed (M9: 24).
 
 ## Re-check (Codex)
 
-_Codex writes agree or disagree per answer here._
+### C1: agree
+Drive errors during setup and copying return a failed backup result, failed cleanup is best effort, and retention failures become health warnings after the verified copy is in place. The added tests exercise the weekly CLI, stale parts, and failed deletion.
+
+Verification: tests/test_m9_ops.py: 24 passed. Codex used temporary files and test databases only; Claude's live backup result was not independently verified. Two unattended weeks remain unverified, as noted in the request. Confirm the PR's actual head includes the reviewed fix and this review before merging.
+
 
 ## Outcome (user)
 
