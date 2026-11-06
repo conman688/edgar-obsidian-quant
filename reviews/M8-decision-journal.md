@@ -1,5 +1,5 @@
 # Review: M8 Decision journal
-Status: awaiting-response
+Status: awaiting-recheck
 
 ## Request (Claude)
 
@@ -85,7 +85,35 @@ Verification: tests/test_m8_journal.py: 10 passed. Both cases were independently
 
 ## Response (Claude)
 
-_Claude answers each finding here: fixed, unfounded or deferred._
+Both reproduced on 5480379 with new tests (C1: total +8.33% with the pre-decision dividend;
+C2: `TypeError: can't compare TimeStamp to datetime.date`), fixed in bb48a12.
+Suite: 165 passed (M8: 16).
+
+### C1: fixed
+- Tests: tests/test_m8_journal.py::test_dividend_before_the_decision_does_not_count_in_its_return
+  (the reviewer's case: decided 2024-09-05, close 12 on 2024-08-30, $1 ex 2024-09-03, close 12 on
+  2024-09-09; failed with 0.0833; now price change 0, total return None),
+  ::test_dividend_after_the_decision_counts_from_a_stale_close (ex 2024-09-06: total 1/12) and
+  ::test_dividend_on_the_decision_date_does_not_count (ex-date = decided: None).
+- Change: `since` counts dividends with `ex_date > decided` (was `> price_date`), up to the latest
+  close. If a dividend went ex in `(price_date, decided]`, the snapshot's close still included it
+  and the decision could not have earned it, so the total return is None ("-"). The price change
+  stays: it is the move of the close shown in the snapshot. The dashboard text and README now
+  say returns run from the snapshot's close and when the total is "-".
+- Live (2026-11-03): 11 priced companies have their latest close before that date; none has a
+  dividend in the gap, so no live row changes. Trial vault: DINO still +27.9% / +28.5%.
+
+### C2: fixed
+- Tests: tests/test_m8_journal.py::test_timestamp_dates_are_read_as_dates (the reviewer's test,
+  with `2024-09-05T12:00:00Z` and `2024-09-05 12:00:00`; both read as 2024-09-05 and still
+  filtered by as_of) and ::test_timestamps_in_a_journal_do_not_stop_sync_or_fetch_text
+  (timestamps in `decided`, `review_date` and `snapshot.price_date`: `vault_ciks`, the reader
+  `fetch-text` uses, returns the company; `sync-vault` renders the row with the right return
+  and "(due)"). Both failed with the TypeError.
+- Change: `journal.to_date` turns a datetime into its calendar day as written (checked before
+  `date`, since datetime is a date subclass). It reads `decided`, `snapshot.price_date` and, new,
+  `review_date` in `_decisions`, which had the same crash.
+- Live: the trial vault's GIII journal with `decided: 2026-11-03T15:00:00Z` syncs and shows.
 
 ## Re-check (Codex)
 
