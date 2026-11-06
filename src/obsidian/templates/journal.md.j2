@@ -1,0 +1,50 @@
+# {{ j.ticker }} decision, {{ j.decided }}
+
+Company: [[{{ j.company }}]]. Review on {{ j.review_date }}.
+
+Fill in the sections below and the `decision`, `position_size` and `thesis` keys above.
+Nothing rewrites this note: the snapshot stays as it was on {{ j.decided }}.
+
+## Thesis
+
+
+## What the market believes
+
+
+## Why it is wrong
+
+
+## Kill criteria
+
+What would prove the thesis wrong, and what you do then.
+
+## Position size
+
+
+## Review
+
+Due {{ j.review_date }}. The dashboard sets this snapshot against the latest screen.
+
+## Snapshot on {{ s.as_of }}
+
+Screen status **{{ s.status }}**{% if s.rank %}, rank {{ s.rank }}{% endif %}.
+{% if s.issues %}Issues: {{ s.issues | join(", ") }}.
+{% endif %}{% if s.flags %}Check by hand: {{ s.flags | join(", ") }}.
+{% endif %}{% if s.failed_filters %}Failed filters: {{ s.failed_filters | join(", ") }}.
+{% endif %}
+
+| | |
+|---|---|
+| EV/EBIT | {{ s.ev_ebit | num(1) }} |
+| Net cash / market cap | {{ s.net_cash_to_mcap | pct }} |
+| FCF yield | {{ s.fcf_yield | pct }} |
+| Below 52-week high | {{ s.drawdown_52w | pct }} |
+| Diluted shares, 3-year change a year | {{ s.share_cagr_3y | pct }} |
+| Insider buys, 90 days | {{ s.insider_buy_90d_usd | usd }}{% if s.n_insiders %} ({{ s.n_insiders }} insiders){% endif %} |
+| Market cap | {{ s.mcap | usd }} |
+| EV | {{ s.ev | usd }} |
+| EBIT (TTM) | {{ s.ebit_ttm | usd }} |
+| FCF (TTM) | {{ s.fcf_ttm | usd }} |
+| Cash and short-term investments | {{ s.cash_like | usd }} |
+| Debt | {{ s.debt | usd }} |
+| Close on {{ s.price_date }} | {{ s.close_raw | num(2) }} |

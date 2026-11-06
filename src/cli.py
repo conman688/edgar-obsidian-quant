@@ -8,13 +8,14 @@
     uv run python -m src.cli backtest --start 2012-01-31
     uv run --env-file .env python -m src.cli fetch-text --as-of 2026-11-03
     uv run --env-file .env python -m src.cli sync-vault --as-of 2026-11-03
+    uv run --env-file .env python -m src.cli journal DINO
 """
 from __future__ import annotations
 
 import argparse
 import sys
 import time
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Callable
 
@@ -24,7 +25,8 @@ from src.db.schema import connect
 from src.ingestion import companyfacts, form4_sources, prices, reference
 from src.ingestion.sec import SecClient, sha256_file
 from src.ingestion.filing_text import fetch_sections
-from src.obsidian.sync import sync_vault, vault_ciks
+from src.journal import REVIEW_DAYS
+from src.obsidian.sync import sync_vault, vault_ciks, write_journal
 from src.screen import Filters, screen, write_parquet
 
 
@@ -300,6 +302,20 @@ def cmd_sync_vault(args) -> None:
         print(f"  {f:<12} {s.written[f]:>5} written {s.unchanged[f]:>6} unchanged")
 
 
+def cmd_journal(args) -> None:
+    vault = Path(args.vault) if args.vault else config.VAULT_DIR
+    if vault is None:
+        sys.exit("set EOQ_VAULT_DIR in .env or pass --vault")
+    con = connect(str(config.DB_PATH))
+    try:
+        path = write_journal(con, vault, args.ticker, args.as_of, args.review_days)
+    except LookupError as e:
+        sys.exit(str(e))
+    except FileExistsError as e:
+        sys.exit(f"{e} already exists; a journal note is never overwritten (pass another --as-of)")
+    print(f"wrote {path}; review due {args.as_of + timedelta(days=args.review_days)}")
+
+
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(prog="edgar-obsidian-quant")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -355,6 +371,13 @@ def main(argv: list[str] | None = None) -> None:
     v.add_argument("--as-of", type=date.fromisoformat, default=date.today())
     v.add_argument("--vault", help="vault folder (default: EOQ_VAULT_DIR)")
     v.set_defaults(func=cmd_sync_vault)
+
+    j = sub.add_parser("journal", help="start a decision journal note with today's screen metrics frozen in it")
+    j.add_argument("ticker")
+    j.add_argument("--as-of", type=date.fromisoformat, default=date.today(), help="decision date (default: today)")
+    j.add_argument("--review-days", type=int, default=REVIEW_DAYS, help="days until the review")
+    j.add_argument("--vault", help="vault folder (default: EOQ_VAULT_DIR)")
+    j.set_defaults(func=cmd_journal)
 
     st = sub.add_parser("stats", help="row counts and health checks")
     st.set_defaults(func=cmd_stats)

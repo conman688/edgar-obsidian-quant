@@ -206,6 +206,13 @@ Deferred:
 Checks:
 - Journal snapshot does not change when the underlying data later updates.
 
+Result (2026-11-05): `journal TICKER` takes 17 s (one screen). Trial on a copy of the vault:
+DINO as of 2026-08-03 (status fail, EV/EBIT 6.3, close 88.65) against the screen on 2026-11-03
+(shortlist, EV/EBIT 4.0, close 113.36): price +27.9%, total return +28.5% with the $0.525
+dividend of 2026-08-11, both matching a hand calculation from raw prices. A second `journal`
+for the same date is refused; JPM (a bank) is refused. Syncing the real vault wrote only
+`Dashboard.md` (new table, no decisions yet), then 0 of 781 files.
+
 ### M9 Operations (size: S)
 
 - Weekly `launchd` job: ingest, screen, sync. Daily job: Form 4 only.

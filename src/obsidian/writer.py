@@ -108,6 +108,21 @@ def atomic_write(path: Path, text: str) -> None:
         raise
 
 
+def create_note(path: Path, frontmatter: dict, body: str) -> None:
+    """Write a new note atomically and never replace one: FileExistsError if `path` exists.
+    The temp file is hard-linked into place, which fails rather than overwrites."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".tmp-", suffix=".md")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+            f.write("---\n" + _dump(CommentedMap(frontmatter)) + "---\n" + body)
+            f.flush()
+            os.fsync(f.fileno())
+        os.link(tmp, path)
+    finally:
+        Path(tmp).unlink(missing_ok=True)
+
+
 def upsert_note(path: Path, auto_frontmatter: dict, auto_body: str) -> bool:
     """Write or update a note. Returns False when the result is byte-identical (no write)."""
     old_text = path.read_text(encoding="utf-8") if path.exists() else ""

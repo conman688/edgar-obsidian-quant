@@ -43,5 +43,8 @@ takes about 40 minutes and locks the database.
 - Loads are idempotent (ledgers: `loaded_filings`, `form4_filings`, `ledger`, `price_status`,
   `filing_sections`).
 - Same inputs, same outputs, including list order.
+- A journal note (`Journal/`) is created once and never rewritten: `journal` refuses an existing
+  note and `sync-vault` never writes there. The dashboard shows only decisions with
+  `decided <= as_of`.
 - DuckDB is capped at 2 GB RAM. Never `count(DISTINCT whole-row)` over `xbrl_facts` (123M rows).
   One process at a time may open `data/edgar.duckdb`.
