@@ -129,3 +129,61 @@ def test_journal_without_a_snapshot_shows_dashes_not_an_error(con, tmp_path):
 def test_snapshot_close_drops_float_noise(con, tmp_path):
     con.execute("UPDATE prices SET close_raw = 88.6500015258789 WHERE cik = ?", [CIK])   # float32 in the source
     assert fm(write_journal(con, tmp_path, "ACME", AS_OF))["snapshot"]["close_raw"] == 88.65
+
+
+# --- review M8 round 1 ----------------------------------------------------------
+
+from src.journal import read_journals, since                         # noqa: E402
+from src.obsidian.sync import vault_ciks                             # noqa: E402
+
+
+def stale_journal(con, tmp_path, ex_date):
+    """Decided 2024-09-05 on a stale close (12 on 2024-08-30); $1 dividend; close 12 on 2024-09-09."""
+    folder = tmp_path / "Journal"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "ACME-2024-09-05.md").write_text(
+        f"---\ntype: journal\ncik: {CIK}\ndecided: 2024-09-05\n"
+        "snapshot:\n  close_raw: 12.0\n  price_date: 2024-08-30\n---\ntext\n")
+    con.execute("INSERT INTO dividends VALUES (?, ?, 1.0, 't')", [CIK, ex_date])
+    con.execute("INSERT INTO prices (cik, ticker, price_date, close_raw, source) "
+                "VALUES (?, 'ACME', DATE '2024-09-09', 12.0, 't')", [CIK])
+    return since(con, read_journals(folder, date(2024, 9, 9)), date(2024, 9, 9))[0]
+
+
+def test_dividend_before_the_decision_does_not_count_in_its_return(con, tmp_path):   # C1
+    r = stale_journal(con, tmp_path, date(2024, 9, 3))
+    assert r["price_change"] == pytest.approx(0.0)
+    assert r["total_return"] is None          # the stale close was cum-dividend: unknowable
+
+
+def test_dividend_after_the_decision_counts_from_a_stale_close(con, tmp_path):      # C1
+    r = stale_journal(con, tmp_path, date(2024, 9, 6))
+    assert r["total_return"] == pytest.approx(1 / 12)
+
+
+def test_dividend_on_the_decision_date_does_not_count(con, tmp_path):                # C1: ex-date = decided
+    r = stale_journal(con, tmp_path, date(2024, 9, 5))
+    assert r["total_return"] is None
+
+
+@pytest.mark.parametrize("stamp", ["2024-09-05T12:00:00Z", "2024-09-05 12:00:00"])
+def test_timestamp_dates_are_read_as_dates(stamp, tmp_path):                         # C2
+    folder = tmp_path / "Journal"
+    folder.mkdir()
+    (folder / "j.md").write_text(f"---\ntype: journal\ncik: 1234\ndecided: {stamp}\n---\ntext\n")
+    got = read_journals(folder, date(2024, 9, 9))
+    assert len(got) == 1 and got[0]["decided"] == date(2024, 9, 5)
+    assert read_journals(folder, date(2024, 9, 4)) == []
+
+
+def test_timestamps_in_a_journal_do_not_stop_sync_or_fetch_text(con, tmp_path):     # C2
+    path = write_journal(con, tmp_path, "ACME", AS_OF)
+    text = path.read_text()
+    path.write_text(text.replace(f"decided: {AS_OF}", f"decided: {AS_OF}T09:30:00Z")
+                        .replace("review_date: 2024-12-02", "review_date: 2024-12-02T00:00:00Z")
+                        .replace("price_date: 2024-08-30", "price_date: 2024-08-30T00:00:00Z"))
+    assert vault_ciks(con, tmp_path, LATER) == [CIK]
+    move_on(con)
+    sync_vault(con, tmp_path, LATER)
+    row = next(line for line in (tmp_path / "Dashboard.md").read_text().splitlines() if f"[[ACME-{AS_OF}]]" in line)
+    assert "| 2024-09-03 |" in row and "(due)" in row and "+58.3%" in row

@@ -40,7 +40,7 @@ SORT review_date ASC
 
 ## Decisions: then and now
 
-{% if decisions %}Each journal's snapshot on its decision date against the screen on {{ as_of }}. Returns use today's share basis (splits adjusted); the total adds dividends.
+{% if decisions %}Each journal's snapshot on its decision date against the screen on {{ as_of }}. Returns run from the close in the snapshot (the latest on or before the decision date), on today's share basis (splits adjusted); the total adds dividends that went ex after the decision date. Total "-": a dividend went ex between that close and the decision, so the close included it.
 
 | Journal | Decided | Decision | Review | Status | EV/EBIT | FCF yield | Net cash / mcap | Price change | Total return |
 |---|---|---|---|---|---|---|---|---|---|

@@ -24,7 +24,7 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from src.db.pit import Policy
 from src.db.queries import conviction_buys_sql
 from src.forensics import assess, forensics
-from src.journal import REVIEW_DAYS, read_journals, since, snapshot
+from src.journal import REVIEW_DAYS, read_journals, since, snapshot, to_date
 from src.obsidian.writer import PersonRegistry, create_note, slug, split_note, upsert_note
 from src.redline import risk_factor_redline
 from src.tone import load_lists
@@ -302,7 +302,7 @@ def _decisions(con: duckdb.DuckDBPyConnection, journals: list[dict], now: dict, 
     """Each journal's frozen snapshot against the screen on as_of, newest decision first."""
     out = []
     for j, moved in zip(journals, since(con, journals, as_of)):
-        review = j["meta"].get("review_date")
+        review = to_date(j["meta"].get("review_date"))
         out.append({"title": j["path"].stem, "decided": j["decided"], "decision": j["meta"].get("decision"),
                     "review_date": review, "due": isinstance(review, date) and review <= as_of,
                     # The note is the user's: a key they deleted shows as "-".

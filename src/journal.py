@@ -8,7 +8,7 @@ the dashboard can set them against the screen on the sync date.
 from __future__ import annotations
 
 from dataclasses import asdict
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 import duckdb
@@ -39,7 +39,11 @@ def snapshot(row: dict, filters: Filters, policy: str) -> dict:
             "filters": asdict(filters), "policy": policy}
 
 
-def _date(v) -> date | None:
+def to_date(v) -> date | None:
+    """A frontmatter date. YAML reads `2024-09-05T12:00:00Z` as a datetime (a date subclass that
+    cannot be compared with a date): keep its calendar day as written."""
+    if isinstance(v, datetime):
+        return v.date()
     if isinstance(v, date):
         return v
     try:
@@ -57,7 +61,7 @@ def read_journals(folder: Path, as_of: date) -> list[dict]:
             meta = split_note(p.read_text(encoding="utf-8"))[0]
         except Exception:
             continue
-        decided = _date(meta.get("decided"))
+        decided = to_date(meta.get("decided"))
         if meta.get("type") != "journal" or not isinstance(meta.get("cik"), int) or decided is None:
             continue
         if decided <= as_of:
@@ -69,24 +73,32 @@ def read_journals(folder: Path, as_of: date) -> list[dict]:
 
 def since(con: duckdb.DuckDBPyConnection, journals: list[dict], as_of: date) -> list[dict]:
     """Per journal (same order): the latest close on or before as_of, and the price change and
-    total return from the snapshot's close, both on today's share basis (close / split_factor);
-    the total adds dividends with ex-date after the snapshot's price date, up to the latest close.
-    None when either close is missing."""
+    total return from the snapshot's close, both on today's share basis (close / split_factor).
+    The total adds dividends with ex-date after the decision date, up to the latest close: a
+    decision made on an ex-date or later does not get that dividend. When the snapshot's close is
+    older than the decision and a dividend went ex in between, that close still included the
+    dividend, so the total return is unknown (None). None also when either close is missing."""
     if not journals:
         return []
     snaps = [j["snapshot"] for j in journals]
     rows = con.execute("""
-        WITH j AS (SELECT unnest($i) AS i, unnest($cik) AS cik, unnest($d0)::DATE AS d0, unnest($c0) AS c0),
+        WITH j AS (SELECT unnest($i) AS i, unnest($cik) AS cik, unnest($dec)::DATE AS dec,
+                          unnest($d0)::DATE AS d0, unnest($c0) AS c0),
         n AS (SELECT cik, price_date AS d1, close_raw AS c1 FROM prices
               WHERE price_date <= $as_of AND list_contains($cik, cik)
               QUALIFY row_number() OVER (PARTITION BY cik ORDER BY price_date DESC) = 1),
         r AS (SELECT j.i, n.d1, n.c1, j.c0 / split_factor(j.cik, j.d0) AS a0, n.c1 / split_factor(j.cik, n.d1) AS a1,
                      (SELECT sum(d.amount_raw / split_factor(d.cik, d.ex_date)) FROM dividends d
-                      WHERE d.cik = j.cik AND d.ex_date > j.d0 AND d.ex_date <= n.d1) AS divs
+                      WHERE d.cik = j.cik AND d.ex_date > j.dec AND d.ex_date <= n.d1) AS divs,
+                     EXISTS (SELECT 1 FROM dividends d
+                             WHERE d.cik = j.cik AND d.ex_date > j.d0 AND d.ex_date <= j.dec) AS gap
               FROM j LEFT JOIN n USING (cik))
-        SELECT d1, c1, a1 / nullif(a0, 0) - 1, (a1 + coalesce(divs, 0)) / nullif(a0, 0) - 1 FROM r ORDER BY i
+        SELECT d1, c1, a1 / nullif(a0, 0) - 1,
+               CASE WHEN NOT gap THEN (a1 + coalesce(divs, 0)) / nullif(a0, 0) - 1 END
+        FROM r ORDER BY i
     """, {"i": list(range(len(journals))), "cik": [j["cik"] for j in journals],
-          "d0": [_date(s.get("price_date")) for s in snaps],
+          "dec": [j["decided"] for j in journals],
+          "d0": [to_date(s.get("price_date")) for s in snaps],
           "c0": [s.get("close_raw") if isinstance(s.get("close_raw"), (int, float)) else None for s in snaps],
           "as_of": as_of}).fetchall()
     return [{"price_date": d1, "close_raw": c1, "price_change": pc, "total_return": tr}

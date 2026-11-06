@@ -143,8 +143,9 @@ note that exists, and `sync-vault` does not write in `Journal/`. A journaled com
 company note updated even after it leaves the screen.
 
 The dashboard sets each snapshot decided on or before the sync date against the screen on that
-date: status, EV/EBIT, FCF yield, net cash, price change and total return (splits adjusted,
-dividends added). "Reviews due" lists notes whose `review_date` has passed.
+date: status, EV/EBIT, FCF yield, net cash, price change and total return from the snapshot's
+close (splits adjusted; dividends that went ex after the decision date added). If a dividend
+went ex between that close and the decision, the total return shows "-". "Reviews due" lists notes whose `review_date` has passed.
 
 ### Tone
 
