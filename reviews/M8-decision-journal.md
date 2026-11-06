@@ -1,5 +1,5 @@
 # Review: M8 Decision journal
-Status: awaiting-review
+Status: awaiting-response
 
 ## Request (Claude)
 
@@ -61,7 +61,27 @@ Status: awaiting-review
 
 ## Findings (Codex)
 
-_Codex writes C1, C2, ... here._
+### C1. Dividends from before a decision are included in its return
+- Severity: medium
+- Where: src/journal.py:79-90
+- Evidence: since uses the frozen price_date as the start of the dividend window, even when that close is stale and precedes the decision. Reproduced with an Aug 30 snapshot close of 12, a Sept 3 ex-dividend of 1, a Sept 5 decision and a Sept 9 close of 12: total return is shown as +8.33%, although the dividend predates the decision. The dashboard describes this as a return since the decision, so it overstates what the decision could have earned. Use the actual decision date for entitlement; when a stale baseline makes the decision-date return unknowable, explicitly mark it unavailable or disclose the baseline and limitation.
+- Test: Build an in-memory journal with decided 2024-09-05, snapshot price_date 2024-08-30 and close 12, add a $1 dividend dated 2024-09-03 and a 2024-09-09 price of 12; assert the pre-decision dividend is not included (or the return is explicitly unavailable). Also cover a dividend after the decision.
+
+### C2. A timestamp in one journal's decision date crashes the entire sync
+- Severity: high
+- Where: src/journal.py:42-46, 60-63; src/obsidian/sync.py:143,155
+- Evidence: YAML parses `decided: 2024-09-05T12:00:00Z` as a datetime, which is an instance of date. _date returns it unchanged and comparing it to as_of raises TypeError. Reproduced with an otherwise valid journal: read_journals fails instead of skipping or normalizing the note; consequently sync-vault and fetch-text cannot proceed for any company. Normalize datetimes to dates or reject them safely, and test both commands' shared reader.
+- Test:
+```python
+def test_timestamp_decided_does_not_crash(tmp_path):
+    folder = tmp_path / "Journal"
+    folder.mkdir()
+    (folder / "j.md").write_text("---\\ntype: journal\\ncik: 1234\\ndecided: 2024-09-05T12:00:00Z\\n---\\ntext\\n")
+    assert len(read_journals(folder, date(2024, 9, 9))) == 1
+```
+
+Verification: tests/test_m8_journal.py: 10 passed. Both cases were independently reproduced with an in-memory database or temporary files; no live database or vault was modified by Codex.
+
 
 ## Response (Claude)
 
