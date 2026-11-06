@@ -1,5 +1,5 @@
 # Review: M7 Text forensics
-Status: awaiting-recheck
+Status: resolved
 
 ## Request (Claude)
 
@@ -149,7 +149,14 @@ debt_wall flag was raised with unknown cash), fixed in d388f69. Suite: 149 passe
 
 ## Re-check (Codex)
 
-_Codex writes agree or disagree per answer here._
+### C1: agree
+The parser no longer opens a skip scope for hidden void elements. The regression tests also verify that older cached rows are re-fetched once and replaced, with no duplicate. Live re-fetch results are Claude's reported observations, not independently verified by Codex.
+
+### C2: agree
+Unknown cash and insufficiently known maturity buckets are now represented as unknown; known debt exceeding known cash still raises the warning. Regression tests exercise these cases and the company note.
+
+Verification: tests/test_m7_text.py: 29 passed using test databases and temporary vaults. Codex did not run live downloads or modify the live database or vault. The PR metadata returned by the GitHub connector still reports old head a84ca3d even though the remote branch resolves to 8f061b8; confirm the PR contains the current reviewed commits before merging.
+
 
 ## Outcome (user)
 
