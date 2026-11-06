@@ -224,6 +224,22 @@ Checks:
 - Two unattended weeks with no manual fixes.
 - A forced crash mid-run resumes without duplicates or wasted refetches.
 
+Result (2026-11-05): `run`, `backup`, `schedule`, `run_log` (migration 8), health report,
+GitHub Actions. Backups go to an external USB drive (`/Volumes/External`, 500 GB, exFAT,
+446.5 GB free), folder `edgar-obsidian-quant-backups`: 4.7 GB in 54 s; the copy opens and has
+the same counts as the database (123,556,824 facts, 424,435 filings, 5,929,257 Form 4 rows).
+Daily run: 807 new Form 4 filings (2,088 rows) in 160 s, then 0 refetched in 24 s; a run started
+alongside is refused by the lock. First weekly run: backup, tickers, profiles, 231,400 new facts
+and 4,184 companies priced, then it stopped at Form 4 on one dropped SEC connection
+(`RemoteDisconnected`). Fixed: the SEC client now retries dropped connections and timeouts.
+The rerun finished in 276 s with no warnings: both zips and all 8 Form 4 data sets answered
+"not modified" (no refetch), 8 new Risk Factors sections, 144 vault notes written, shortlist
+DINO, GIII, LRN. Forced crash: a `SIGKILL`ed Form 4 fetch resumes with no duplicates and
+refetches at most the one uncommitted batch (`tests/test_m9_ops.py`).
+
+Open: the launchd agents are written (`schedule`) but not installed, so the "two unattended
+weeks" check has not started.
+
 ## Order
 
 ```
