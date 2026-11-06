@@ -185,7 +185,8 @@ report says so. The rest of the run goes ahead.
 Scheduling: `schedule` writes two launchd agents: weekly on Saturday at 07:00, daily on weekdays
 at 21:00. Both run under `caffeinate`, and a run missed while the Mac sleeps starts when it
 wakes. Install them with the `launchctl bootstrap` commands that `schedule` prints. Logs go to
-`data/logs/`. GitHub Actions runs the tests on every push (`.github/workflows/tests.yml`).
+`data/logs/`. The jobs run the code checked out in this folder: keep `main` checked out here and
+do branch work in a separate worktree. GitHub Actions runs the tests on every push (`.github/workflows/tests.yml`).
 
 ## First full load
 
@@ -277,7 +278,7 @@ Done: schema with migrations, PIT layer, screens, Obsidian writer, M1 ingestion 
 M2 prices/splits/dividends, M3 insider trades, M4 screener, M5 backtest, M6 vault sync,
 M7 Risk Factors redline and forensics, M8 decision journal, M9 operations (run, backup, health,
 launchd files, CI), CLI.
-Not done: M7 executive pay and footnote text (deferred); installing the launchd agents and two
-unattended weeks (M9 check).
+Not done: M7 executive pay and footnote text (deferred; footnotes first, after the M9 check);
+two unattended weeks of the installed launchd agents (M9 check, to about 2026-11-19).
 
 See [ROADMAP.md](ROADMAP.md) for goals, milestones and acceptance checks.

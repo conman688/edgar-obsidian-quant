@@ -196,7 +196,13 @@ Deferred:
 - Executive pay: the `ecd:` tags are not in companyfacts.zip; needs each DEF 14A's XBRL.
 - Footnote text blocks: companyfacts.zip has numbers only; needs each filing's XBRL instance.
 
-### M8 Decision journal (size: S)
+Decision (user, 2026-11-05): build nothing while the M9 two-week check runs (to about
+2026-11-19), since a merge into main changes what the scheduled jobs run. Then footnotes first,
+narrow: going-concern, related-party and debt-default text blocks for the vault companies only.
+Executive pay last or not at all: it says little about whether a cheap stock is a buy, and
+insider buying is already tracked.
+
+### M8 Decision journal (size: S, done)
 
 - `cli.py journal TICKER` creates `Journal/TICKER-YYYY-MM-DD.md` from a template:
   thesis, what the market believes, why it is wrong, kill criteria, position size, review date.
@@ -213,7 +219,7 @@ dividend of 2026-08-11, both matching a hand calculation from raw prices. A seco
 for the same date is refused; JPM (a bank) is refused. Syncing the real vault wrote only
 `Dashboard.md` (new table, no decisions yet), then 0 of 781 files.
 
-### M9 Operations (size: S)
+### M9 Operations (size: S, done except the two-week check)
 
 - Weekly `launchd` job: ingest, screen, sync. Daily job: Form 4 only.
 - Health report: row-count drift, failed ledger entries, stale prices, SEC throttling events.
@@ -237,8 +243,11 @@ The rerun finished in 276 s with no warnings: both zips and all 8 Form 4 data se
 DINO, GIII, LRN. Forced crash: a `SIGKILL`ed Form 4 fetch resumes with no duplicates and
 refetches at most the one uncommitted batch (`tests/test_m9_ops.py`).
 
-Open: the launchd agents are written (`schedule`) but not installed, so the "two unattended
-weeks" check has not started.
+Installed 2026-11-05: `EOQ_BACKUP_DIR=/Volumes/External/edgar-obsidian-quant-backups` in `.env`,
+both launchd agents bootstrapped (weekly Saturday 07:00, daily weekdays 21:00). The jobs run the
+code checked out in the repository folder, so keep `main` checked out there. Open: the "two
+unattended weeks" check, 2026-11-06 to about 2026-11-19; `run_log` and `Reports/Health.md`
+show each run.
 
 ## Order
 
