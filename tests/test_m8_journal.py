@@ -187,3 +187,68 @@ def test_timestamps_in_a_journal_do_not_stop_sync_or_fetch_text(con, tmp_path): 
     sync_vault(con, tmp_path, LATER)
     row = next(line for line in (tmp_path / "Dashboard.md").read_text().splitlines() if f"[[ACME-{AS_OF}]]" in line)
     assert "| 2024-09-03 |" in row and "(due)" in row and "+58.3%" in row
+
+
+# --- M8 price-break guard -------------------------------------------------------
+
+@pytest.mark.parametrize("break_rows", [
+    [("2024-09-03", 120.0), ("2024-11-29", 120.0)],                          # 10x on first comparison after snapshot d0
+    [("2024-09-03", 15.0), ("2024-10-15", 150.0), ("2024-11-29", 150.0)],    # 10x inside the interval
+])
+def test_price_break_in_interval_makes_both_returns_unavailable(con, tmp_path, break_rows):
+    path = write_journal(con, tmp_path, "ACME", AS_OF)
+    before = path.read_bytes()
+    for d, v in break_rows:
+        con.execute("INSERT INTO prices (cik, ticker, price_date, close_raw, source) VALUES (?, 'ACME', ?, ?, 't')",
+                    [CIK, date.fromisoformat(d), v])
+    con.execute("INSERT INTO dividends VALUES (?, DATE '2024-11-01', 1.0, 't')", [CIK])
+    got = since(con, read_journals(tmp_path / "Journal", LATER), LATER)[0]
+    assert got["price_date"] == date(2024, 11, 29) and got["close_raw"] == break_rows[-1][1]
+    assert got["price_change"] is None and got["total_return"] is None
+    sync_vault(con, tmp_path, LATER)
+    row = next(line for line in (tmp_path / "Dashboard.md").read_text().splitlines() if f"[[ACME-{AS_OF}]]" in line)
+    assert row.rstrip().endswith("| - | - |")
+    assert path.read_bytes() == before
+
+
+def test_ordinary_move_and_split_are_not_price_breaks(con, tmp_path):
+    write_journal(con, tmp_path, "ACME", AS_OF)
+    # 1-for-10 reverse split on 2024-10-01: raw price jumps 10x (12 -> 120), split-adjusted is flat (120 -> 120).
+    # Then an ordinary +50% move to 180 on 2024-11-29 plus a $6 dividend.
+    con.execute("INSERT INTO splits VALUES (?, DATE '2024-10-01', 0.1, 't')", [CIK])
+    con.execute("INSERT INTO dividends VALUES (?, DATE '2024-11-01', 6.0, 't')", [CIK])
+    con.executemany("INSERT INTO prices (cik, ticker, price_date, close_raw, source) VALUES (?, 'ACME', ?, ?, 't')",
+                    [(CIK, date(2024, 10, 1), 120.0), (CIK, date(2024, 11, 29), 180.0)])
+    got = since(con, read_journals(tmp_path / "Journal", LATER), LATER)[0]
+    assert got["price_change"] == pytest.approx(180 / 120 - 1)
+    assert got["total_return"] == pytest.approx((180 + 6) / 120 - 1)
+
+
+def test_price_breaks_outside_interval_or_after_as_of_do_not_affect_returns(con, tmp_path):
+    # Break on or before snapshot price_date (2024-08-29: 1.0 -> 2024-08-30: 12.0 is 12x at d0).
+    con.execute("INSERT INTO prices (cik, ticker, price_date, close_raw, source) "
+                "VALUES (?, 'ACME', DATE '2024-08-29', 1.0, 't')", [CIK])
+    write_journal(con, tmp_path, "ACME", AS_OF)
+    move_on(con)
+    # Break after LATER (2024-12-03: 9.0 -> 90.0).
+    con.execute("INSERT INTO prices (cik, ticker, price_date, close_raw, source) "
+                "VALUES (?, 'ACME', DATE '2024-12-03', 90.0, 't')", [CIK])
+    got = since(con, read_journals(tmp_path / "Journal", LATER), LATER)[0]
+    assert got["price_change"] == pytest.approx(9 / 6 - 1)
+    assert got["total_return"] == pytest.approx((9 + 0.5) / 6 - 1)
+
+
+def test_multiple_journals_same_cik_only_affected_interval_breaks(con, tmp_path):
+    write_journal(con, tmp_path, "ACME", AS_OF)                     # d0 = 2024-08-30 (12.0)
+    con.executemany("INSERT INTO prices (cik, ticker, price_date, close_raw, source) VALUES (?, 'ACME', ?, ?, 't')",
+                    [(CIK, date(2024, 10, 1), 120.0),               # 10x break on 2024-10-01
+                     (CIK, date(2024, 11, 29), 150.0)])
+    con.execute("INSERT INTO dividends VALUES (?, DATE '2024-11-01', 6.0, 't')", [CIK])
+    mid = date(2024, 10, 15)
+    write_journal(con, tmp_path, "ACME", mid)                       # d0 = 2024-10-01 (120.0)
+    journals = read_journals(tmp_path / "Journal", LATER)
+    assert [j["decided"] for j in journals] == [AS_OF, mid]
+    first, second = since(con, journals, LATER)
+    assert first["price_change"] is None and first["total_return"] is None
+    assert second["price_change"] == pytest.approx(150 / 120 - 1)
+    assert second["total_return"] == pytest.approx((150 + 6) / 120 - 1)
