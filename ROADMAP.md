@@ -163,7 +163,7 @@ Result (2026-11-04): first sync as of 2026-11-03 wrote 762 notes (52 companies, 
 on re-sync (now round-tripped with ruamel.yaml), and Form 4 names in the bulk data sets are
 mixed case, so "Oliver George" was not turned into "George Oliver".
 
-### M7 Text forensics (size: M)
+### M7 Text forensics (size: M, done except the deferred items below)
 
 - Shortlist only, so request volume stays small.
 - YoY redline of Risk Factors and key footnote text blocks: sentence split, numbers and dates
@@ -175,6 +175,26 @@ mixed case, so "Oliver George" was not turned into "George Oliver".
 Checks:
 - A 10-K diffed against itself yields 0 new sentences.
 - A changed number alone does not mark a sentence as new.
+
+Result (2026-11-05): `fetch-text` as of 2026-11-03 stored Item 1A of 38 10-Ks (19 companies, the
+latest two each, 4.5 MB of text) in 21 s; a second run downloads no documents. The other 33 vault
+companies file 20-F/40-F or no 10-K yet. Each live 10-K diffed against itself gives 0 new
+sentences. New sentences, latest 10-K against the prior one: median 9%, HRL 52% (rewritten
+economic-conditions risks and a $163.7M impairment), DINO 85 of 686 (CEO and CFO leave in
+February 2026, review of disclosure controls), GIII 57 removed (Calvin Klein and Tommy Hilfiger
+licences ending). Forensics (latest fiscal year from facts): 20 companies; flags `debt_wall`,
+`acquisitive`, `impairment` (1 acquisitive on 2026-11-03). Fixed on live data: sentences broken
+across lines and page breaks (page numbers, "Table of Contents") are rejoined; a risk summary
+repeating a sentence lists it once.
+
+Tone (2026-11-05, user approved the licence: free for academic research): the 2026 Master
+Dictionary (1993-2025, 86,553 words; 2,345 negative, 903 litigious, 297 uncertainty currently
+listed). Risk Factors negative share 3.0-5.1% across the 18 companies with text; largest rise
+HRL +0.32 points (4.73% to 5.05%).
+
+Deferred:
+- Executive pay: the `ecd:` tags are not in companyfacts.zip; needs each DEF 14A's XBRL.
+- Footnote text blocks: companyfacts.zip has numbers only; needs each filing's XBRL instance.
 
 ### M8 Decision journal (size: S)
 

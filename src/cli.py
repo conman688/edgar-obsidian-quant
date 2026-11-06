@@ -6,6 +6,7 @@
     uv run python -m src.cli stats
     uv run python -m src.cli screen --as-of 2026-10-30
     uv run python -m src.cli backtest --start 2012-01-31
+    uv run --env-file .env python -m src.cli fetch-text --as-of 2026-11-03
     uv run --env-file .env python -m src.cli sync-vault --as-of 2026-11-03
 """
 from __future__ import annotations
@@ -22,7 +23,8 @@ from src.db.pit import concept_sql
 from src.db.schema import connect
 from src.ingestion import companyfacts, form4_sources, prices, reference
 from src.ingestion.sec import SecClient, sha256_file
-from src.obsidian.sync import sync_vault
+from src.ingestion.filing_text import fetch_sections
+from src.obsidian.sync import sync_vault, vault_ciks
 from src.screen import Filters, screen, write_parquet
 
 
@@ -274,6 +276,16 @@ def cmd_backtest(args) -> None:
     print(f"total {time.perf_counter() - t0:,.0f}s")
 
 
+def cmd_fetch_text(args) -> None:
+    vault = Path(args.vault) if args.vault else config.VAULT_DIR
+    con = connect(str(config.DB_PATH))
+    ciks = args.cik or vault_ciks(con, vault, args.as_of)
+    t0 = time.perf_counter()
+    got = fetch_sections(con, _client(), ciks, args.as_of)
+    print(f"10-K risk factors for {len(ciks)} companies as of {args.as_of}: "
+          f"{got['ok']} found, {got['not_found']} not found, in {time.perf_counter() - t0:.0f}s")
+
+
 def cmd_sync_vault(args) -> None:
     vault = Path(args.vault) if args.vault else config.VAULT_DIR
     if vault is None:
@@ -332,6 +344,12 @@ def main(argv: list[str] | None = None) -> None:
     b.add_argument("--reports", default="reports")
     b.add_argument("--no-leak-check", action="store_true", help="skip the look-ahead control run")
     b.set_defaults(func=cmd_backtest)
+
+    ft = sub.add_parser("fetch-text", help="fetch Item 1A of the latest two 10-Ks of the vault's companies")
+    ft.add_argument("--as-of", type=date.fromisoformat, default=date.today())
+    ft.add_argument("--vault", help="vault folder (default: EOQ_VAULT_DIR); its companies are included")
+    ft.add_argument("--cik", type=int, action="append", help="only these CIKs (repeatable)")
+    ft.set_defaults(func=cmd_fetch_text)
 
     v = sub.add_parser("sync-vault", help="write the screen into the Obsidian vault")
     v.add_argument("--as-of", type=date.fromisoformat, default=date.today())
