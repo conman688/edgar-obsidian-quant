@@ -32,8 +32,18 @@ SORT filed DESC
 ## Reviews due
 
 ```dataview
-TABLE ticker, review_date AS "Review date", thesis
+TABLE ticker, decision, review_date AS "Review date", thesis
 FROM "Journal"
-WHERE review_date AND review_date <= date(today)
+WHERE type = "journal" AND review_date AND review_date <= date(today)
 SORT review_date ASC
 ```
+
+## Decisions: then and now
+
+{% if decisions %}Each journal's snapshot on its decision date against the screen on {{ as_of }}. Returns use today's share basis (splits adjusted); the total adds dividends.
+
+| Journal | Decided | Decision | Review | Status | EV/EBIT | FCF yield | Net cash / mcap | Price change | Total return |
+|---|---|---|---|---|---|---|---|---|---|
+{% for d in decisions %}{% set t, n = d.then, d.now %}| [[{{ d.title }}]] | {{ d.decided }} | {{ d.decision | cell }} | {{ d.review_date | cell }}{% if d.due %} (due){% endif %} | {{ t.status | cell }} → {{ n.status if n else "not screened" }} | {{ t.ev_ebit | num(1) }} → {{ (n.ev_ebit if n else none) | num(1) }} | {{ t.fcf_yield | pct }} → {{ (n.fcf_yield if n else none) | pct }} | {{ t.net_cash_to_mcap | pct }} → {{ (n.net_cash_to_mcap if n else none) | pct }} | {{ d.price_change | spct }} | {{ d.total_return | spct }} |
+{% endfor %}{% else %}No decisions recorded on or before {{ as_of }}. `journal TICKER` starts one.
+{% endif %}

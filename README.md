@@ -107,8 +107,9 @@ uv run --env-file .env python -m src.cli sync-vault --as-of 2026-11-03   # vault
 Writes the screen into the vault: `Companies/` (shortlisted and quarantined names, plus any
 company that already has a note), `Executives/` (one note per insider, by SEC owner CIK, other
 spellings as aliases), `Events/` (one note per Form 4 purchase), `Filings/` (every filing a
-number came from, with an EDGAR link), an empty `Journal/` for M8, and `Dashboard.md` with
-Dataview tables (shortlist, quarantine, new insider buys, reviews due; needs the Dataview plugin).
+number came from, with an EDGAR link), `Journal/` (decision notes, below; never written by a
+sync), and `Dashboard.md` with Dataview tables (shortlist, quarantine, new insider buys, reviews
+due; needs the Dataview plugin) and a then-vs-now table of decisions.
 
 Notes are found by the `cik` in their frontmatter, so renaming one is safe. Only the
 `AUTO-GENERATED` block and the auto frontmatter keys change; your own keys, comments and text
@@ -126,6 +127,24 @@ masked, below 0.8 similarity counts as new), and forensics from facts already lo
 acquisitions and impairments of the latest fiscal year, the debt maturity schedule, and flags
 `debt_wall` (due within 2 years above cash), `acquisitive` (10% of market cap),
 `impairment` (5% of market cap). Flags are for checking by hand; they do not change the screen.
+
+### Decision journal
+
+```bash
+uv run --env-file .env python -m src.cli journal DINO              # --as-of DATE, --review-days 90
+```
+
+Creates `Journal/DINO-YYYY-MM-DD.md`: sections for the thesis, what the market believes, why it
+is wrong, kill criteria, position size and the review, frontmatter keys `decision`,
+`position_size`, `thesis`, `review_date` (90 days on by default) for you to fill in, and the
+company's screen row on that date frozen under `snapshot` (status, rank, EV/EBIT, FCF yield, net
+cash, raw close and its date, issues, filters). The note is never rewritten: `journal` refuses a
+note that exists, and `sync-vault` does not write in `Journal/`. A journaled company keeps its
+company note updated even after it leaves the screen.
+
+The dashboard sets each snapshot decided on or before the sync date against the screen on that
+date: status, EV/EBIT, FCF yield, net cash, price change and total return (splits adjusted,
+dividends added). "Reviews due" lists notes whose `review_date` has passed.
 
 ### Tone
 
@@ -180,7 +199,8 @@ Uncapped, a heavy query on an 8 GB machine with little free disk can crash the c
 | `src/redline.py` | Risk Factors redline: sentences, number/date masking, new and removed sentences |
 | `src/tone.py` | Loughran-McDonald word lists (current words only) and word-share tone |
 | `src/forensics.py` | Buybacks, acquisitions, impairments, debt maturities of the latest fiscal year; flags |
-| `src/obsidian/sync.py`, `src/obsidian/templates/` | `sync-vault`: companies, insiders, purchases, filings, dashboard (Jinja) |
+| `src/obsidian/sync.py`, `src/obsidian/templates/` | `sync-vault`: companies, insiders, purchases, filings, dashboard (Jinja); `journal` notes |
+| `src/journal.py` | Decision journal: frozen screen snapshot, journal notes read back, return since the decision |
 | `tests/test_failure_modes.py` | One test per audited failure mode |
 | `tests/test_ingest.py` | Bulk load idempotency, crash resume, reference data, conditional download |
 | `tests/test_ingest_recovery.py` | 304 after failed or filtered loads, M0 upgrade, facts added to known filings |
@@ -192,6 +212,7 @@ Uncapped, a heavy query on an 8 GB machine with little free disk can crash the c
 | `tests/test_m4_screen.py` | Debt source by date, stale items, EBIT/capex ladders, typo dates, screen status and trace |
 | `tests/test_m6_vault.py` | Frontmatter comments survive, idempotent sync, hand edits, renamed notes, one note per insider, name order |
 | `tests/test_m7_text.py` | Self-diff and number-only checks, extraction, fetch ledger, PIT redline, forensics, note |
+| `tests/test_m8_journal.py` | Journal template and snapshot, never overwritten, then-vs-now returns, PIT, missing keys |
 | `tests/test_m5_backtest.py` | Split/dividend returns, delisted exits, statistics, costs, halves, leaky policy, cache, report |
 
 ## Invariants
@@ -207,6 +228,8 @@ Uncapped, a heavy query on an 8 GB machine with little free disk can crash the c
 - Market cap = raw close on `as_of` x cover-page shares. Historical share trends are split-adjusted.
 - Conviction buys = non-derivative, code `P`, acquired `A`, price > 0, not a 10b5-1 plan.
 - Notes are written atomically. Only the `AUTO-GENERATED` block and auto frontmatter keys change.
+- A journal note is written once, on its decision date, and never rewritten; its snapshot is the
+  screen as it was then.
 
 ## SEC access
 
@@ -217,7 +240,7 @@ SEC requires a `User-Agent` with a real contact email and caps traffic at 10 req
 
 Done: schema with migrations, PIT layer, screens, Obsidian writer, M1 ingestion (live SEC data),
 M2 prices/splits/dividends, M3 insider trades, M4 screener, M5 backtest, M6 vault sync,
-M7 Risk Factors redline and forensics, CLI.
-Not done: M7 executive pay and footnote text (deferred), decision journal (M8), scheduling (M9).
+M7 Risk Factors redline and forensics, M8 decision journal, CLI.
+Not done: M7 executive pay and footnote text (deferred), scheduling (M9).
 
 See [ROADMAP.md](ROADMAP.md) for goals, milestones and acceptance checks.

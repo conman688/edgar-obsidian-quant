@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from itertools import count
 from pathlib import Path
 
@@ -24,7 +24,8 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from src.db.pit import Policy
 from src.db.queries import conviction_buys_sql
 from src.forensics import assess, forensics
-from src.obsidian.writer import PersonRegistry, slug, split_note, upsert_note
+from src.journal import REVIEW_DAYS, read_journals, since, snapshot
+from src.obsidian.writer import PersonRegistry, create_note, slug, split_note, upsert_note
 from src.redline import risk_factor_redline
 from src.tone import load_lists
 from src import config
@@ -35,6 +36,7 @@ SYNCED = ("shortlist", "quarantine")     # statuses that get a note; existing no
 HISTORY_DAYS = 365                       # insider purchases shown per company and person
 TONE_KEYS = ("negative", "litigious", "uncertainty")
 NEW_SHOWN, REMOVED_SHOWN = 25, 10        # risk-factor sentences listed per company note
+DECISION_KEYS = ("status", "ev_ebit", "fcf_yield", "net_cash_to_mcap")   # dashboard: then vs now
 
 
 @dataclass
@@ -58,6 +60,15 @@ def _pct2(v) -> str:
     return "-" if v is None else f"{v * 100:.2f}%"
 
 
+def _spct(v) -> str:
+    return "-" if v is None else f"{v * 100:+.1f}%"
+
+
+def _cell(v) -> str:
+    """A user's frontmatter value inside a Markdown table cell."""
+    return "-" if v is None or v == "" else str(v).replace("|", "\\|").replace("\n", " ")
+
+
 def _pp(pair) -> str:
     """Change in percentage points between (this year, prior year) shares."""
     now, before = pair
@@ -75,7 +86,7 @@ def _usd(v) -> str:
 def _env() -> Environment:
     env = Environment(loader=FileSystemLoader(Path(__file__).parent / "templates"), undefined=StrictUndefined,
                       trim_blocks=True, lstrip_blocks=True, keep_trailing_newline=True, autoescape=False)
-    env.filters.update(num=_num, pct=_pct, pct2=_pct2, pp=_pp, usd=_usd)
+    env.filters.update(num=_num, pct=_pct, pct2=_pct2, pp=_pp, usd=_usd, spct=_spct, cell=_cell)
     return env
 
 
@@ -118,8 +129,10 @@ def _edgar_url(cik: int, accn: str) -> str:
     return f"https://www.sec.gov/Archives/edgar/data/{cik}/{accn.replace('-', '')}/"
 
 
-def _targets(rows: list[dict], companies_idx: dict) -> list[dict]:
-    return [r for r in rows if r["status"] in SYNCED or r["cik"] in companies_idx]
+def _targets(rows: list[dict], companies_idx: dict, journals: list[dict]) -> list[dict]:
+    """Shortlisted and quarantined companies, plus every company with a note or a journal entry."""
+    keep = set(companies_idx) | {j["cik"] for j in journals}
+    return [r for r in rows if r["status"] in SYNCED or r["cik"] in keep]
 
 
 def vault_ciks(con: duckdb.DuckDBPyConnection, vault: Path | None, as_of: date, filters: Filters = Filters(),
@@ -127,7 +140,8 @@ def vault_ciks(con: duckdb.DuckDBPyConnection, vault: Path | None, as_of: date, 
     """The companies a sync on as_of would write: for fetching their 10-K text first."""
     rows = screen(con, as_of, filters, policy).to_arrow_table().to_pylist()
     idx = _index(vault / "Companies", "cik") if vault and (vault / "Companies").is_dir() else {}
-    return sorted(r["cik"] for r in _targets(rows, idx))
+    journals = read_journals(vault / "Journal", as_of) if vault else []
+    return sorted(r["cik"] for r in _targets(rows, idx, journals))
 
 
 def sync_vault(con: duckdb.DuckDBPyConnection, vault: Path, as_of: date, filters: Filters = Filters(),
@@ -138,7 +152,8 @@ def sync_vault(con: duckdb.DuckDBPyConnection, vault: Path, as_of: date, filters
         (vault / f).mkdir(parents=True, exist_ok=True)
     rows = screen(con, as_of, filters, policy).to_arrow_table().to_pylist()
     companies_idx = _index(vault / "Companies", "cik")
-    targets = _targets(rows, companies_idx)
+    journals = read_journals(vault / "Journal", as_of)
+    targets = _targets(rows, companies_idx, journals)
     by_cik = {r["cik"]: r for r in targets}
     company_link = {cik: _note_path(companies_idx, vault / "Companies", cik, r["ticker"], cik).stem
                     for cik, r in sorted(by_cik.items())}
@@ -277,6 +292,45 @@ def sync_vault(con: duckdb.DuckDBPyConnection, vault: Path, as_of: date, filters
         stats.record("Companies", changed)
 
     changed = upsert_note(vault / "Dashboard.md", {"type": "dashboard"}, env.get_template("dashboard.md.j2").render(
-        as_of=as_of, filters=json.dumps(asdict(filters), sort_keys=True)))
+        as_of=as_of, filters=json.dumps(asdict(filters), sort_keys=True),
+        decisions=_decisions(con, journals, {r["cik"]: r for r in rows}, as_of)))
     stats.record("Dashboard", changed)
     return stats
+
+
+def _decisions(con: duckdb.DuckDBPyConnection, journals: list[dict], now: dict, as_of: date) -> list[dict]:
+    """Each journal's frozen snapshot against the screen on as_of, newest decision first."""
+    out = []
+    for j, moved in zip(journals, since(con, journals, as_of)):
+        review = j["meta"].get("review_date")
+        out.append({"title": j["path"].stem, "decided": j["decided"], "decision": j["meta"].get("decision"),
+                    "review_date": review, "due": isinstance(review, date) and review <= as_of,
+                    # The note is the user's: a key they deleted shows as "-".
+                    "then": {k: j["snapshot"].get(k) for k in DECISION_KEYS}, "now": now.get(j["cik"]), **moved})
+    return out[::-1]
+
+
+def write_journal(con: duckdb.DuckDBPyConnection, vault: Path, ticker: str, as_of: date,
+                  review_days: int = REVIEW_DAYS, filters: Filters = Filters(),
+                  policy: Policy = "as_last_known") -> Path:
+    """Create Journal/TICKER-as_of.md with the decision template and the screen row frozen in it.
+    Never replaces a note (FileExistsError); a ticker outside the screen is a LookupError."""
+    rows = screen(con, as_of, filters, policy).to_arrow_table().to_pylist()
+    row = next((r for r in rows if (r["ticker"] or "").upper() == ticker.upper()), None)
+    if row is None:
+        raise LookupError(f"{ticker.upper()} is not in the screen on {as_of}: unknown ticker, "
+                          "a financial or shell company, or no price")
+    path = vault / "Journal" / f"{slug(row['ticker'])}-{as_of}.md"
+    if path.exists():
+        raise FileExistsError(path)
+    companies = vault / "Companies"
+    idx = _index(companies, "cik") if companies.is_dir() else {}
+    j = {"ticker": row["ticker"], "decided": as_of, "review_date": as_of + timedelta(days=review_days),
+         "company": _note_path(idx, companies, row["cik"], row["ticker"], row["cik"]).stem}
+    snap = snapshot(row, filters, policy)
+    create_note(path, {
+        "type": "journal", "ticker": row["ticker"], "cik": row["cik"], "company": f"[[{j['company']}]]",
+        "decided": as_of, "decision": None, "position_size": None, "review_date": j["review_date"],
+        "thesis": "", "snapshot": snap, "tags": ["journal"]},
+        _env().get_template("journal.md.j2").render(j=j, s=snap))
+    return path
