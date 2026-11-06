@@ -249,6 +249,13 @@ code checked out in the repository folder, so keep `main` checked out there. Ope
 unattended weeks" check, 2026-11-06 to about 2026-11-19; `run_log` and `Reports/Health.md`
 show each run.
 
+### Research R1: suggested repositories (from 2026-11-06)
+
+GitHub's AI suggested 11 repositories to study (SEC/XBRL parsing, Form 4, DuckDB ingestion,
+backtesting, Obsidian). Claude and Codex assess each one for fit, invariants, licence and cost,
+with numbers on a sample: `reviews/R1-repo-candidates.md`. Research only until the M9 two-week
+check ends; anything adopted becomes its own milestone.
+
 ## Order
 
 ```
