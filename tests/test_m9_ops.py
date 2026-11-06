@@ -274,6 +274,7 @@ def test_schedule_writes_weekly_and_daily_launchd_jobs_without_installing(tmp_pa
     assert daily["ProgramArguments"][-2:] == ["run", "daily"]
     assert [d["Weekday"] for d in daily["StartCalendarInterval"]] == [1, 2, 3, 4, 5]
     assert weekly["StandardOutPath"] == "/repo/data/logs/weekly.log"
+    assert weekly["EnvironmentVariables"]["PYTHONUNBUFFERED"] == "1"    # a killed run still leaves its log
     assert [p.parent for p in paths] == [tmp_path / "launchd"] * 2          # written here, not installed
 
 

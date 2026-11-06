@@ -208,7 +208,9 @@ def write_schedule(out_dir: Path, repo: Path, uv: str) -> list[Path]:
         plist = {"Label": label, "WorkingDirectory": str(repo),
                  "ProgramArguments": ["/usr/bin/caffeinate", "-i", uv, "run", "--env-file", ".env",
                                       "python", "-m", "src.cli", "run", job],
-                 "StartCalendarInterval": SCHEDULE[job], "StandardOutPath": log, "StandardErrorPath": log}
+                 "StartCalendarInterval": SCHEDULE[job], "StandardOutPath": log, "StandardErrorPath": log,
+                 # Unbuffered: a run that is killed or crashes still leaves its log up to that point.
+                 "EnvironmentVariables": {"PYTHONUNBUFFERED": "1"}}
         p = out_dir / f"{label}.plist"
         p.write_bytes(plistlib.dumps(plist))
         paths.append(p)
