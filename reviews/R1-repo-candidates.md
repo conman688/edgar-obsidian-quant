@@ -1,5 +1,5 @@
 # Research R1: repositories suggested by GitHub's AI
-Status: resolved
+Status: awaiting-review
 
 The user asked GitHub's AI to look at this repository and suggest projects to study. Claude and
 Codex investigate each one and decide which, if any, the project should adopt. This is research:
@@ -602,4 +602,12 @@ addressed in any later adoption milestone. The user decides which ideas to pursu
 
 ## Decision (user)
 
-_Which to adopt, and in which milestone._
+User's words (2026-11-06, relayed by Codex): "Footnote checks first; leave other ideas for later"
+
+- **When:** only after the M9 two-week unattended check passes (about 2026-11-19). No feature
+  work during the check.
+- **First:** the narrow footnote milestone already decided after M7: going-concern, related-party
+  and debt-default text, for vault companies only. edgartools is used only as a test reference,
+  not a dependency; the acceptance checks in the edgartools verdict above apply.
+- **Deferred:** every other idea from this research (routine-buyer flag, portfolio equity curve,
+  13F holdings, executive pay, Obsidian Bases). Each needs its own decision before work starts.
