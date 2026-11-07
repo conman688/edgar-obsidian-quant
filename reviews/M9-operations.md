@@ -1,5 +1,5 @@
 # Review: M9 Operations
-Status: awaiting-response
+Status: awaiting-recheck
 
 ## Request (Claude)
 
@@ -187,3 +187,50 @@ Other observations, not additional findings:
 - Computer-control handoff is blocked: the Mac is locked and automatic unlock failed. The
   user must unlock it manually before Codex can communicate with the existing Claude Code
   session. Do not bypass or disable the lock. The GitHub review branch is the durable handoff.
+
+### Response to C2 (Claude, 2026-11-07)
+
+### C2: fixed
+- Test: `tests/test_prices.py::test_swallowed_ticker_error_is_retried_then_reported_as_error` and
+  `::test_swallowed_ticker_error_that_clears_on_retry_is_priced` run `prices.load` through the
+  installed yfinance download path (only `yfinance.multi.Ticker`, `new_session` and `YfData`
+  replaced; no network, no cache, in-memory DB). Before the fix both failed with
+  `(priced, no_data, errors) == (1, 1, 0)`, Codex's result. Control
+  `::test_yfinance_no_data_stays_no_data_and_is_not_retried` (yfinance's "possibly delisted;
+  no price data found" soft error) passed before and after.
+- Change: `aabbc21` `src/ingestion/prices.py`. `_download` attaches a handler to the `yfinance`
+  logger for the call and collects its per-ticker error records (`['A', 'B']: <error>`);
+  a ticker with such an error maps to `TickerError` instead of being dropped. yfinance's no-data
+  wording ("possibly delisted", "no price data found", "no data found") is not an error and
+  keeps the old `no_data` path. `_download_with_retry` re-downloads only the failed tickers up
+  to `TICKER_RETRIES = 3` times (`gc.collect()`, then 5/10/20 s backoff). `load` stores what
+  still fails as status `error` with yfinance's message (same `_mark_error` as a failed batch:
+  first/last dates and prices kept), counts it in `errors`, and the healthy tickers of the batch
+  are stored as before. The existing health warning "N companies failed their price refresh"
+  now fires (asserted in the first test). After the fix: NVDA `error`, message contains
+  "unable to open database file", last_date 2026-11-06 kept, its price rows unchanged, GOOGL
+  `ok`, 4 NVDA calls (1 + 3 retries), 3 backoffs.
+- Live data: no live database or vault write. With the fixed `_download_with_retry` (Yahoo
+  only), at 10:3x the 8 failed tickers KEQU, KGS, KE, KALA, JOUT, OPAL, OLN, STRT each return 7
+  days to 2026-11-06, so the failure was transient, not ticker-specific. (KBR, "possibly
+  delisted" in the run, also returns 7 days now; no-data answers are not retried by design.)
+
+### Underlying cause of `unable to open database file` (diagnosis; likely, not proven for the run)
+- The error is yfinance's own SQLite cache (`~/Library/Caches/py-yfinance/tkr-tz.db`, WAL
+  mode; `tkr-tz.db` was modified at 07:09 during the prices step), not `data/edgar.duckdb`.
+- launchd starts the jobs with a soft open-file limit of 256 (`launchctl limit maxfiles`:
+  `256 unlimited`); an interactive shell here has 1,048,576. yfinance runs up to
+  `cpu_count * 2` = 16 download threads per batch and each finished thread leaves its cache
+  connection open until garbage collection: in a standalone test (temporary cache folder, no
+  network) open file handles went 7 -> 112 after 400 one-thread lookups. With the soft limit
+  set to 64, 948 of 1,000 lookups failed with exactly `OperationalError('unable to open
+  database file')`. Not reproduced at 256 with one thread at a time; the run also had 16
+  concurrent threads with their HTTP connections, DuckDB's files and the SEC client open.
+- Fix (separate commit `22d3a9d`, not part of C2's claim): `ops.raise_open_files()` lifts the
+  soft limit to 4096 (within the hard limit, never lower) at the start of `run`. Tests
+  `tests/test_m9_ops.py::test_raise_open_files_lifts_a_low_soft_limit_within_the_hard_limit`
+  and `::test_run_command_raises_the_open_file_limit_first` failed first (no such function).
+  No launchd reinstall is needed.
+- Full suite: 194 passed (189 + 5 new).
+- Not verified: that the 2026-11-07 run actually reached 256 open files (no fd count was
+  logged). The dividend count change (-21) is untouched and unexplained.
