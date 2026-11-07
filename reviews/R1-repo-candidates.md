@@ -1,5 +1,5 @@
 # Research R1: repositories suggested by GitHub's AI
-Status: in progress (Claude first pass 1-5 done 2026-11-06; Codex 6-11 pending)
+Status: in progress (Claude verdicts 1-11 done 2026-11-06; Codex verdicts pending)
 
 The user asked GitHub's AI to look at this repository and suggest projects to study. Claude and
 Codex investigate each one and decide which, if any, the project should adopt. This is research:
@@ -161,6 +161,95 @@ LRN (1157408); Form 4 window: filed 2025-01-01 to 2026-11-05.
   pay-versus-performance tags: one request per tag per year covers every company. That is the
   cheapest route if the user ever wants the deferred executive-pay item.
 - **Verdict: reject as code.**
+
+### Second pass, repositories 6-11 (Claude, 2026-11-06)
+
+Written before reading Codex's verdicts (none existed on any branch when this was written). Same
+rules as above: throwaway venv, read-only export of our prices for the three companies.
+
+| # | Repository | Verdict | One-line reason |
+|---|---|---|---|
+| 6 | yfinance | **keep**; upgrade 1.7.0 -> 1.8.0 after the two-week check | 1.8.0 returns exactly our stored prices; it forces a `curl_cffi` security update |
+| 7 | backtesting.py | **reject** | AGPL-3.0, and it tests one ticker's trading rules, not a cross-sectional screen |
+| 8 | bt | **reject as code; borrow one idea** (a portfolio equity curve with drawdown in the M5 report) | Reproduces our arithmetic exactly, but duplicates M5 and adds scipy, scikit-learn, matplotlib |
+| 9 | obsidian-dataview | **keep for now, but it is not installed in the vault**; consider Obsidian Bases | `Dashboard.md`'s 4 query tables need it; the vault has no community plugins |
+| 10 | obsidian-api | **reject** | TypeScript plugin API; we write plain Markdown from Python |
+| 11 | obsidian-tasks | **reject** | Another community plugin for what `review_date` + a table already do |
+
+### 6. ranaroussi/yfinance (already our price source)
+
+- **Fit:** in use (`src/ingestion/prices.py`, `auto_adjust=False, actions=True`); the lock pins
+  1.7.0. Latest is 1.8.0 (2026-11-03): forces `curl_cffi >= 0.17` "for security updates", adds
+  `Tickers.info/calendar`, improves price-split repair (we do not use `repair`).
+- **Invariants:** unchanged. We convert Yahoo's split-adjusted closes back to raw (`close_raw =
+  close_adj x F(d)`); everything Yahoo-specific stays in that module.
+- **Cost:** Apache-2.0, very active (25,847 stars, pushed 2026-11-05). Unofficial API: it can
+  break or rate-limit, which M9's health report would show.
+- **Proof:** yfinance 1.8.0, 2024-12-02 to 2026-11-05, compared with our database: DINO, GIII and
+  LRN each 484 days on both sides, largest close difference 0 (exact), dividends DINO 7 = $3.525,
+  GIII 4 = $0.40, LRN 0 on both sides, no splits in the window (ours: GIII 2015, DINO 2011).
+- **Verdict: keep.** Upgrade to 1.8.0 in its own small PR after the two-week check (a dependency
+  change is code; not during the check).
+
+### 7. kernc/backtesting.py
+
+- **Fit:** none. It backtests trading rules on one instrument's OHLC bars. Our question is
+  cross-sectional: which of ~4,000 companies the screen picks each month, point-in-time.
+- **Cost:** **AGPL-3.0** (this is the AGPL project GitHub's AI warned about): usable only as a
+  separate tool or for ideas. No tagged releases on GitHub; last push 2026-08-05.
+- **Proof:** not run; licence and design rule it out.
+- **Verdict: reject.**
+
+### 8. pmorissette/bt
+
+- **Fit:** portfolio backtests from a price matrix and a stack of "algos". M5 already measures
+  forward 1/3/6/12-month total returns of the screen's picks against the equal-weight universe,
+  with point-in-time snapshots, exit gaps, the 10x price-break rule and a leak check. bt would need
+  all of that rebuilt as algos and pre-built total-return series.
+- **Invariants:** it wants adjusted prices; dividend-adjusted series change after each dividend,
+  so they are not point-in-time levels (fine for returns, wrong for things like the 52-week
+  drawdown). We would have to feed it our own series.
+- **Cost:** MIT, active (v1.4.1 2026-10-10). Heavy: through `ffn` it pulls matplotlib, scipy and
+  scikit-learn.
+- **Proof:** equal-weight DINO+GIII+LRN, rebalanced on each month's first trading day,
+  2025-01-02 to 2026-10-30, on total-return series built from our prices and dividends:
+  bt +53.948785%, the same by hand +53.948785% (difference 4e-15). bt also reports CAGR 26.65%
+  and max drawdown -23.85%.
+- **Verdict: reject as code.** Idea worth borrowing: the M5 report shows average forward returns
+  but no portfolio path. A monthly equity curve with max drawdown is a few lines over the cached
+  snapshots, if the user wants it.
+
+### 9. blacksmithgu/obsidian-dataview
+
+- **Fit:** already required: `Dashboard.md` has 4 `dataview` blocks (shortlist, quarantine, new
+  insider buys, reviews due); the then-vs-now table is plain Markdown.
+- **Finding:** the vault has **no community plugins installed** (`.obsidian/community-plugins.json`
+  does not exist), so those 4 tables show as code, not tables. Today they would list 3 shortlist
+  companies (DINO, GIII, LRN), 50 quarantined, insider buys from 284 event notes, and 0 journals.
+- **Invariants:** Dataview runs when the note is opened, relative to the real today
+  (`date(today) - dur(30 days)`), not the sync's `as_of`. Fine for a live dashboard; not
+  point-in-time.
+- **Cost:** MIT, but slowing: last release 0.5.70 on 2025-04-07, 668 open issues.
+- **Alternative:** Obsidian 1.15 is installed and the core **Bases** plugin is already enabled
+  (`core-plugins.json`: `"bases": true`). Bases builds tables from note properties with no
+  community plugin. Not yet checked: whether its filters cover the 30-day insider-buy window.
+- **Verdict: keep Dataview for now** (the user installs it once: Settings > Community plugins >
+  Browse > Dataview). Consider moving the 4 tables to a `.base` file after the two-week check.
+
+### 10. obsidianmd/obsidian-api
+
+- **Fit:** TypeScript type definitions for writing Obsidian plugins. Our notes are plain files
+  written by Python (`sync-vault`); nothing here needs a plugin.
+- **Cost:** MIT, active. Adopting it means a TypeScript plugin to build and maintain.
+- **Verdict: reject.**
+
+### 11. obsidian-tasks-group/obsidian-tasks
+
+- **Fit:** checkbox tasks with due dates. Journal notes already carry `review_date` in their
+  properties and the dashboard lists reviews due. Tasks would need task lines inside journal notes
+  (write-once, so only at creation) and another community plugin.
+- **Cost:** MIT, active (8.6.0, 2026-10-16).
+- **Verdict: reject.** If reviews need more than a table, Bases (core) is the lighter route.
 
 ## Verdicts (Codex)
 
