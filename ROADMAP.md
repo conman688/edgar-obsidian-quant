@@ -196,7 +196,13 @@ Deferred:
 - Executive pay: the `ecd:` tags are not in companyfacts.zip; needs each DEF 14A's XBRL.
 - Footnote text blocks: companyfacts.zip has numbers only; needs each filing's XBRL instance.
 
-### M8 Decision journal (size: S)
+Decision (user, 2026-11-05): build nothing while the M9 two-week check runs (to about
+2026-11-19), since a merge into main changes what the scheduled jobs run. Then footnotes first,
+narrow: going-concern, related-party and debt-default text blocks for the vault companies only.
+Executive pay last or not at all: it says little about whether a cheap stock is a buy, and
+insider buying is already tracked.
+
+### M8 Decision journal (size: S, done)
 
 - `cli.py journal TICKER` creates `Journal/TICKER-YYYY-MM-DD.md` from a template:
   thesis, what the market believes, why it is wrong, kill criteria, position size, review date.
@@ -213,7 +219,7 @@ dividend of 2026-08-11, both matching a hand calculation from raw prices. A seco
 for the same date is refused; JPM (a bank) is refused. Syncing the real vault wrote only
 `Dashboard.md` (new table, no decisions yet), then 0 of 781 files.
 
-### M9 Operations (size: S)
+### M9 Operations (size: S, done except the two-week check)
 
 - Weekly `launchd` job: ingest, screen, sync. Daily job: Form 4 only.
 - Health report: row-count drift, failed ledger entries, stale prices, SEC throttling events.
@@ -223,6 +229,32 @@ for the same date is refused; JPM (a bank) is refused. Syncing the real vault wr
 Checks:
 - Two unattended weeks with no manual fixes.
 - A forced crash mid-run resumes without duplicates or wasted refetches.
+
+Result (2026-11-05): `run`, `backup`, `schedule`, `run_log` (migration 8), health report,
+GitHub Actions. Backups go to an external USB drive (`/Volumes/External`, 500 GB, exFAT,
+446.5 GB free), folder `edgar-obsidian-quant-backups`: 4.7 GB in 54 s; the copy opens and has
+the same counts as the database (123,556,824 facts, 424,435 filings, 5,929,257 Form 4 rows).
+Daily run: 807 new Form 4 filings (2,088 rows) in 160 s, then 0 refetched in 24 s; a run started
+alongside is refused by the lock. First weekly run: backup, tickers, profiles, 231,400 new facts
+and 4,184 companies priced, then it stopped at Form 4 on one dropped SEC connection
+(`RemoteDisconnected`). Fixed: the SEC client now retries dropped connections and timeouts.
+The rerun finished in 276 s with no warnings: both zips and all 8 Form 4 data sets answered
+"not modified" (no refetch), 8 new Risk Factors sections, 144 vault notes written, shortlist
+DINO, GIII, LRN. Forced crash: a `SIGKILL`ed Form 4 fetch resumes with no duplicates and
+refetches at most the one uncommitted batch (`tests/test_m9_ops.py`).
+
+Installed 2026-11-05: `EOQ_BACKUP_DIR=/Volumes/External/edgar-obsidian-quant-backups` in `.env`,
+both launchd agents bootstrapped (weekly Saturday 07:00, daily weekdays 21:00). The jobs run the
+code checked out in the repository folder, so keep `main` checked out there. Open: the "two
+unattended weeks" check, 2026-11-06 to about 2026-11-19; `run_log` and `Reports/Health.md`
+show each run.
+
+### Research R1: suggested repositories (from 2026-11-06)
+
+GitHub's AI suggested 11 repositories to study (SEC/XBRL parsing, Form 4, DuckDB ingestion,
+backtesting, Obsidian). Claude and Codex assess each one for fit, invariants, licence and cost,
+with numbers on a sample: `reviews/R1-repo-candidates.md`. Research only until the M9 two-week
+check ends; anything adopted becomes its own milestone.
 
 ## Order
 

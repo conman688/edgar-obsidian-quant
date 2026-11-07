@@ -27,8 +27,9 @@ uv run python -m src.cli screen --as-of 2026-11-02
 uv run python -m src.cli facts AAPL revenue --as-of 2024-06-30
 ```
 
-Do not run `ingest` (it downloads from SEC). Do not run `backtest` unless the request says to: it
-takes about 40 minutes and locks the database.
+Do not run `ingest`, `run` or `backup` (they download from SEC, write the database, or write to an
+external drive). Do not run `backtest` unless the request says to: it takes about 40 minutes and
+locks the database.
 
 ## Invariants (a finding that breaks one is high severity)
 
@@ -43,6 +44,10 @@ takes about 40 minutes and locks the database.
 - Loads are idempotent (ledgers: `loaded_filings`, `form4_filings`, `ledger`, `price_status`,
   `filing_sections`).
 - Same inputs, same outputs, including list order.
+- A backup is written only to an existing folder on another disk than the database, and deletes
+  only files named `edgar-YYYY-MM-DD.duckdb` there beyond the newest 4.
+- A scheduled run holds `data/.run.lock`; a failed step stops the run, and the next run resumes
+  through the ledgers without duplicates.
 - A journal note (`Journal/`) is created once and never rewritten: `journal` refuses an existing
   note and `sync-vault` never writes there. The dashboard shows only decisions with
   `decided <= as_of`.
