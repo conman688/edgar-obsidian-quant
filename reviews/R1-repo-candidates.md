@@ -1,5 +1,5 @@
 # Research R1: repositories suggested by GitHub's AI
-Status: awaiting-response
+Status: awaiting-recheck
 
 The user asked GitHub's AI to look at this repository and suggest projects to study. Claude and
 Codex investigate each one and decide which, if any, the project should adopt. This is research:
@@ -142,6 +142,14 @@ LRN (1157408); Form 4 window: filed 2025-01-01 to 2026-11-05.
   flag reads only the checkbox (`aff10b5One`, 2023 onward), while ours also reads footnotes; it
   collapses same-day lots into one event. Rate limit 9/s with a required real User-Agent: good.
   SQLite/Postgres via SQLAlchemy, Alpaca trading module: does not fit our DuckDB design.
+- **Look-ahead in its routine flag (Codex C5, reproduced by Claude):** `compute_routine_flags`
+  (`form4lab/scoring/flags.py`, commit `1a1dccc`) classifies each insider from every row it is
+  given, with no date cutoff, then labels all of that insider's rows; `portfolio_simulator.py`
+  calls it on the backtest's buys. Synthetic input, buys on 2022-03-10, 2023-03-10 and
+  2024-03-10: all three come back `is_routine=True`, so the 2022 buy is labelled from two later
+  years. The same 2022 row alone comes back `False`. The file's docstring calls its builders
+  "look-ahead-free"; this function is not. It also uses buys only, while the paper uses buys and
+  sales.
 - **Cost:** Apache-2.0; created 2026-07-09, one commit, 8 stars, no releases ("pre-release"). Many
   tests (39 files), but young.
 - **Idea worth testing:** routine vs opportunistic insiders (Cohen, Malloy and Pomorski 2012).
@@ -165,7 +173,11 @@ LRN (1157408); Form 4 window: filed 2025-01-01 to 2026-11-05.
     12 unclassified. So the flag would not change today's shortlist, and its value is unproven
     until the M5 backtest compares the screen with and without it.
 - **Verdict: borrow the idea, not the code.** A `routine_buyer` flag plus a backtest comparison,
-  as a small later milestone if the user wants it.
+  as a small later milestone if the user wants it. Its classification may use only trades filed
+  before each decision (the paper-style counts above use trades filed before 1 January of the
+  year; the narrow rule, trades filed by the buy's filing date). Required test: a signal computed
+  from all rows equals the same signal with every later trade removed (the C5 case: 2022 stays
+  not routine).
 
 ### 5. DMulajkar/Quantgress
 
@@ -410,6 +422,16 @@ to awaiting-review for that outstanding work; this does not authorize a merge.
 - **C4: agree.** The research now reports that this Mac already runs curl-cffi 0.17.0 and does
   not present the yfinance update as necessary to obtain it. The version and local sample checks
   are recorded above. The wider independent research pass remains open.
+
+### Response to findings round 3 (Claude)
+
+### C5: fixed (in the assessment; nothing in this project uses form4lab)
+- Test: ran only the extracted `compute_routine_flags` from form4lab `1a1dccc` (no other module
+  imported), in the throwaway venv: rows 2022-03-10, 2023-03-10, 2024-03-10 for one insider ->
+  `[True, True, True]`; the 2022 row alone -> `[False]`. The claim holds.
+- Change: form4lab assessment gains a look-ahead bullet with this evidence; the verdict now
+  requires point-in-time classification and a "later trades removed" equality test.
+- Live data: none.
 
 ## Decision (user)
 
