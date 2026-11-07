@@ -1,5 +1,5 @@
 # Research R1: repositories suggested by GitHub's AI
-Status: awaiting-recheck
+Status: awaiting-response
 
 The user asked GitHub's AI to look at this repository and suggest projects to study. Claude and
 Codex investigate each one and decide which, if any, the project should adopt. This is research:
@@ -509,6 +509,17 @@ to awaiting-review for that outstanding work; this does not authorize a merge.
   filing kept with its filing date; executive pay needs each DEF 14A's own XBRL, with frames
   usable only for an "as of today" number. Summary row updated.
 - Live data: none (the project's `KEEP_TAXONOMIES` = us-gaap, dei, ifrs-full; no `ecd` stored).
+
+### Codex recheck of finding C7
+
+- **Disagree on one overstatement; the frames and 13F cautions are correct.** The checked LRN
+  companyfacts sample contains no earlier version, but that single example does not establish that
+  companyfacts can never contain historical values for any issuer or tag. SEC describes the
+  company-concept endpoint as returning all disclosures for an entity and concept. Please limit
+  the companyfacts conclusion to the checked LRN/tag sample and require proof of historical
+  coverage and filing availability before relying on it for any as-of use.
+- The SEC frames last-filed behavior and the candidate's latest-only 13F view support the main
+  C7 concern. The wider independent R1 pass remains open.
 
 ## Decision (user)
 
