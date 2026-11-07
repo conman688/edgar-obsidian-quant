@@ -1,5 +1,5 @@
 # Research R1: repositories suggested by GitHub's AI
-Status: awaiting-response
+Status: awaiting-recheck
 
 The user asked GitHub's AI to look at this repository and suggest projects to study. Claude and
 Codex investigate each one and decide which, if any, the project should adopt. This is research:
@@ -68,7 +68,7 @@ LRN (1157408); Form 4 window: filed 2025-01-01 to 2026-11-05.
 | 2 | sec-edgar-downloader | **reject** | Duplicates `SecClient`; downloads whole 13-18 MB submissions with no ledger |
 | 3 | sec-cik-mapper | **reject** | Archived (last release 2022), same SEC file as our `tickers`, fake User-Agent |
 | 4 | form4lab | **borrow an idea** (routine-buyer flag), not code | Our Form 4 handling is stricter; its routine/opportunistic idea is cheap to test |
-| 5 | Quantgress | **reject as code; note two ideas** (13F, `ecd:` frames for pay) | Script collection, weaker point-in-time handling, author's e-mail as User-Agent |
+| 5 | Quantgress | **reject as code; note two ideas** (13F, executive pay), neither point-in-time as Quantgress builds them | Script collection, weaker point-in-time handling, author's e-mail as User-Agent |
 
 ### 1. dgunning/edgartools
 
@@ -191,10 +191,22 @@ LRN (1157408); Form 4 window: filed 2025-01-01 to 2026-11-05.
   self-tests rather than a test suite.
 - **Proof:** its committed database has 6,923 Form 4 rows filed 2026-06-18 to 2026-08-13 for
   1,065 issuers, none for DINO, GIII or LRN. Nothing to compare.
-- **Two ideas noted:** (a) 13F holdings from SEC's quarterly data sets (fund ownership), if
-  alternative data is ever wanted; (b) executive pay from SEC's `frames` API for `ecd:`
-  pay-versus-performance tags: one request per tag per year covers every company. That is the
-  cheapest route if the user ever wants the deferred executive-pay item.
+- **Two ideas noted, both needing point-in-time work Quantgress does not do (Codex C7):**
+  - (a) 13F holdings from SEC's quarterly data sets (fund ownership), if alternative data is ever
+    wanted. Quantgress's collapsed view keeps the most recently filed accession per manager and
+    period, so an amendment replaces the original for all past dates. We would keep every filing
+    with its filing date and read `filed <= as_of`.
+  - (b) Executive pay (`ecd:` pay-versus-performance tags). SEC's `frames` API is cheap (one
+    request per tag per year covers every company) but is **not a point-in-time source**: it
+    returns the last-filed fact per company and period, and its rows carry `accn` but no filing
+    date. Checked 2026-11-06 on `ecd/PeoTotalCompAmt/USD/CY2024` (1,319 companies): Stride (LRN)
+    FY ending 2024-06-30 is $15,623,124 from accession 0001140361-26-040889, a proxy filed
+    2026-10-27, more than two years after that year's own proxy. LRN's companyfacts shows the
+    same: all 5 years (FY2022-FY2026) only from that one 2026-10-27 filing. So neither frames nor
+    companyfacts can say what was known on a past date. A historical version would read each
+    DEF 14A's own XBRL with its filing date; a current-only dashboard number could use frames if
+    labelled "as of today". (`KEEP_TAXONOMIES` drops `ecd` today, so nothing in the project uses
+    either route.) Executive pay stays last or never, as the user decided.
 - **Verdict: reject as code.**
 
 ### Second pass, repositories 6-11 (Claude, 2026-11-06)
@@ -483,6 +495,20 @@ to awaiting-review for that outstanding work; this does not authorize a merge.
 
 - **C6: agree.** The text now distinguishes what the license states from the project's preference
   and no longer claims that use is limited to separate tools or ideas.
+
+### Response to findings round 5 (Claude)
+
+### C7: fixed
+- Test: with the project's User-Agent, 2026-11-06: `frames/ecd/PeoTotalCompAmt/USD/CY2024.json`
+  rows have fields `accn, cik, end, entityName, loc, start, val` (no `filed`); LRN's row (FY to
+  2024-06-30, $15,623,124) comes from accession 0001140361-26-040889, filed 2026-10-27 per LRN's
+  companyfacts. Companyfacts lists all five `PeoTotalCompAmt` years from that one filing. A June
+  2025 query could not get the value then known from either source. The claim holds, and applies
+  to companyfacts' `ecd` facts as well.
+- Change: Quantgress ideas now say both routes are not point-in-time as built: 13F needs every
+  filing kept with its filing date; executive pay needs each DEF 14A's own XBRL, with frames
+  usable only for an "as of today" number. Summary row updated.
+- Live data: none (the project's `KEEP_TAXONOMIES` = us-gaap, dei, ifrs-full; no `ecd` stored).
 
 ## Decision (user)
 
