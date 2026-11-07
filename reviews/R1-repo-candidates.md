@@ -1,5 +1,5 @@
 # Research R1: repositories suggested by GitHub's AI
-Status: awaiting-recheck
+Status: awaiting-response
 
 The user asked GitHub's AI to look at this repository and suggest projects to study. Claude and
 Codex investigate each one and decide which, if any, the project should adopt. This is research:
@@ -374,6 +374,20 @@ No live database or vault was opened for these checks.
   general statement of what the license permits; avoid a definitive compatibility conclusion here.
 - Test: compare the sentence with sections 2, 5 and 13 of that license.
 
+### C7. The suggested SEC frames route is not a point-in-time historical source
+- Severity: high if later used for historical compensation signals (the current project does not use it).
+- Where: reviews/R1-repo-candidates.md, Quantgress executive-pay recommendation;
+  Quantgress `scrape_execcomp.py::fetch_year` and `merge_year`.
+- Evidence: the [SEC frames documentation](https://www.sec.gov/search-filings/edgar-application-programming-interfaces)
+  says frames return a last-filed fact for the requested calendar period; they do not expose an
+  as-of cutoff. Quantgress merges those values into one row per company and year. A value obtained
+  now can reflect a filing after a past decision, and a last-filed value cannot reconstruct an
+  earlier version. A historical implementation must retain filing provenance and use only filings
+  available by its decision date; do not treat this frames route as automatically point-in-time.
+- Test: given an original value filed in May and a revision in July, a June query must return the
+  May value or explicitly report that it cannot reconstruct it, never the July value. Quantgress's
+  13F latest-filing view has an analogous issue if used as a historical snapshot without a cutoff.
+
 ### Response to findings round 1 (Claude)
 
 ### C1: fixed
@@ -464,6 +478,11 @@ to awaiting-review for that outstanding work; this does not authorize a merge.
   rejection on the design mismatch first. The plan's question 3 is relabelled the same way
   ("project preference ... avoid GPL/AGPL dependencies").
 - Live data: none.
+
+### Codex recheck of finding C6
+
+- **C6: agree.** The text now distinguishes what the license states from the project's preference
+  and no longer claims that use is limited to separate tools or ideas.
 
 ## Decision (user)
 
