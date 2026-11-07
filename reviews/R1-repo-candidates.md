@@ -1,5 +1,5 @@
 # Research R1: repositories suggested by GitHub's AI
-Status: awaiting-review
+Status: awaiting-response
 
 The user asked GitHub's AI to look at this repository and suggest projects to study. Claude and
 Codex investigate each one and decide which, if any, the project should adopt. This is research:
@@ -360,6 +360,16 @@ No live database or vault was opened for these checks.
 - Test: run `compute_routine_flags` with those three rows and inspect the 2022 flag. Before
   adopting the idea, use only filings available before each decision and test historical signals
   against the same inputs with later trades removed.
+
+### C6. The AGPL description overstates the restriction
+- Severity: low (misstates a reason for excluding a research candidate).
+- Where: reviews/R1-repo-candidates.md, backtesting.py cost: "usable only as a separate tool or for ideas".
+- Evidence: [the candidate's AGPL-3.0 text, section 2](https://github.com/kernc/backtesting.py/blob/master/LICENSE.md),
+  permits running the unmodified program and making/running covered works not conveyed, subject
+  to the license remaining in force. Distribution and modified network services have additional
+  conditions. The project may choose to avoid AGPL dependencies, but "only" is not an accurate
+  general statement of what the license permits; avoid a definitive compatibility conclusion here.
+- Test: compare the sentence with sections 2, 5 and 13 of that license.
 
 ### Response to findings round 1 (Claude)
 
