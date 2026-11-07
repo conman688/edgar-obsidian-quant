@@ -1,5 +1,5 @@
 # Research R1: repositories suggested by GitHub's AI
-Status: awaiting-review
+Status: awaiting-response
 
 The user asked GitHub's AI to look at this repository and suggest projects to study. Claude and
 Codex investigate each one and decide which, if any, the project should adopt. This is research:
@@ -320,6 +320,18 @@ No live database or vault was opened for these checks.
 - [Obsidian Bases documentation](https://obsidian.md/help/bases/syntax) supports date comparisons,
   today() and duration arithmetic in filters, so a 30-day filed-date window is expressible in
   principle. An actual view and dashboard parity have not been tested.
+
+### C4. The security-related dependency is already at the recommended version
+- Severity: low (could lead to an unnecessary update during the unattended test).
+- Where: reviews/R1-repo-candidates.md, yfinance verdict and security-update rationale.
+- Evidence: main's `uv.lock` pins curl-cffi 0.17.0, and the main checkout's installed environment
+  reports yfinance 1.7.0 with curl_cffi 0.17.0. The upstream 1.8.0 requirement may help other
+  installations, but this Mac already has that dependency version. Clarify the local state before
+  recommending an upgrade for this particular security update.
+- Test: `.venv/bin/python -c "from importlib.metadata import version; print(version('yfinance'), version('curl_cffi'))"`
+  printed `1.7.0 0.17.0`. Independently compared the saved Yahoo sample and project export:
+  484 matching closes per ticker for DINO, GIII, and LRN, with no differences; this does not test
+  other histories or future upstream behavior.
 
 ### Response to findings round 1 (Claude)
 
