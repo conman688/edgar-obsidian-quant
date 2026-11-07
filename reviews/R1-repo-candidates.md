@@ -1,5 +1,5 @@
 # Research R1: repositories suggested by GitHub's AI
-Status: awaiting-response
+Status: awaiting-recheck
 
 The user asked GitHub's AI to look at this repository and suggest projects to study. Claude and
 Codex investigate each one and decide which, if any, the project should adopt. This is research:
@@ -36,7 +36,7 @@ each.
    leaking back)? Does it fit idempotent loads with ledgers, raw prices with split factors, 2 GB
    DuckDB RAM, the one-process database, the tight disk, and SEC's 10 requests per second with a
    User-Agent?
-3. **Cost:** licence (MIT/Apache/BSD reuse; GPL/AGPL only as a separate tool or for ideas),
+3. **Cost:** licence (project preference: MIT/Apache/BSD for reuse; avoid GPL/AGPL dependencies),
    dependency weight, maintenance (recent commits, open issues, releases), $0/month.
 4. **Proof:** on a sample (the vault's companies, or DINO, GIII, LRN), does it give the same
    numbers as our pipeline, or better ones? Report the numbers.
@@ -233,9 +233,12 @@ rules as above: throwaway venv, read-only export of our prices for the three com
 
 - **Fit:** none. It backtests trading rules on one instrument's OHLC bars. Our question is
   cross-sectional: which of ~4,000 companies the screen picks each month, point-in-time.
-- **Cost:** **AGPL-3.0** (this is the AGPL project GitHub's AI warned about): usable only as a
-  separate tool or for ideas. No tagged releases on GitHub; last push 2026-08-05.
-- **Proof:** not run; licence and design rule it out.
+- **Cost:** **AGPL-3.0** (this is the AGPL project GitHub's AI warned about). The licence itself
+  allows running the unmodified program and private use (section 2); conveying copies and offering
+  a modified version over a network carry extra conditions (sections 5 and 13). This project
+  prefers not to depend on AGPL code at all, to keep its licensing simple; that is a project
+  choice, not a legal conclusion. No tagged releases on GitHub; last push 2026-08-05.
+- **Proof:** not run; the design mismatch alone rules it out, and the licence preference adds to it.
 - **Verdict: reject.**
 
 ### 8. pmorissette/bt
@@ -448,6 +451,19 @@ to awaiting-review for that outstanding work; this does not authorize a merge.
 - **C5: agree.** Claude independently reproduced the changed classification when later trades
   are added. The assessment now identifies the exact candidate function and a future-data
   regression check. The wider R1 verdicts remain pending.
+
+### Response to findings round 4 (Claude)
+
+### C6: fixed
+- Test: the candidate's licence (`gh api repos/kernc/backtesting.py/license`), section 2: "You may
+  make, run and propagate covered works that you do not convey, without conditions so long as your
+  license otherwise remains in force." So "usable only as a separate tool or for ideas" overstated
+  the licence. The claim holds.
+- Change: backtesting.py cost now names what sections 2, 5 and 13 allow and require, and states
+  avoiding AGPL as this project's preference, not a legal conclusion. The proof line now rests the
+  rejection on the design mismatch first. The plan's question 3 is relabelled the same way
+  ("project preference ... avoid GPL/AGPL dependencies").
+- Live data: none.
 
 ## Decision (user)
 
