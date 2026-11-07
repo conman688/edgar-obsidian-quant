@@ -1,5 +1,5 @@
 # Research R1: repositories suggested by GitHub's AI
-Status: awaiting-review
+Status: resolved
 
 The user asked GitHub's AI to look at this repository and suggest projects to study. Claude and
 Codex investigate each one and decide which, if any, the project should adopt. This is research:
@@ -611,3 +611,9 @@ User's words (2026-11-06, relayed by Codex): "Footnote checks first; leave other
   not a dependency; the acceptance checks in the edgartools verdict above apply.
 - **Deferred:** every other idea from this research (routine-buyer flag, portfolio equity curve,
   13F holdings, executive pay, Obsidian Bases). Each needs its own decision before work starts.
+
+### Codex review of the decision record
+
+Reviewed PR #20 at a1a03ff: the change accurately quotes the user's answer, preserves the
+unattended acceptance gate and the narrow vault-company scope, and defers the optional ideas.
+No findings. Documentation-only diff reviewed; no runtime tests required.
