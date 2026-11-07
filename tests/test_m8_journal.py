@@ -287,3 +287,21 @@ def test_deleted_snapshot_day_close_still_compares_the_first_close_with_the_froz
                 "(?, 'ACME', DATE '2024-08-29', 120.0, 't'), (?, 'ACME', DATE '2024-09-03', 120.0, 't')", [CIK, CIK])
     got = since(con, read_journals(tmp_path / "Journal", LATER), LATER)[0]
     assert got["price_change"] is None and got["total_return"] is None
+
+
+def test_revised_snapshot_day_close_with_no_later_close_is_checked_against_the_frozen_close(con, tmp_path):   # Codex C1 recheck
+    # No close after 2024-08-30: the latest close is the revised snapshot day itself (1200 against the frozen 12).
+    path = write_journal(con, tmp_path, "ACME", AS_OF)
+    before = path.read_bytes()
+    _revise_snapshot_day(con, 1200.0)
+    got = since(con, read_journals(tmp_path / "Journal", LATER), LATER)[0]
+    assert got["price_date"] == date(2024, 8, 30) and got["close_raw"] == 1200.0
+    assert got["price_change"] is None and got["total_return"] is None
+    assert path.read_bytes() == before
+
+
+def test_unrevised_snapshot_day_with_no_later_close_has_a_zero_return(con, tmp_path):   # Codex C1 recheck
+    write_journal(con, tmp_path, "ACME", AS_OF)
+    got = since(con, read_journals(tmp_path / "Journal", LATER), LATER)[0]
+    assert got["price_date"] == date(2024, 8, 30)
+    assert got["price_change"] == pytest.approx(0.0) and got["total_return"] == pytest.approx(0.0)
