@@ -1,5 +1,5 @@
 # Research R1: repositories suggested by GitHub's AI
-Status: awaiting-response
+Status: awaiting-recheck
 
 The user asked GitHub's AI to look at this repository and suggest projects to study. Claude and
 Codex investigate each one and decide which, if any, the project should adopt. This is research:
@@ -91,17 +91,27 @@ LRN (1157408); Form 4 window: filed 2025-01-01 to 2026-11-05.
   | Form 4 filings | 51 (same) | 47 (same) | 68 = our 68 in `form4_filings`; 59 have stock rows, 9 are option-only (we store only non-derivative rows, by design) |
   | Open-market buys (P/A) | 6 rows, 3 insiders, $3,722,465 vs ours $3,722,450 | 3 rows, 3 insiders, $1,719,561 (same) | 15 rows, 2 insiders, $31,483,168 (same) |
 
-  DINO's $15 gap: SEC's bulk Form 4 data set (our main source) rounds prices to cents
-  (35.66 vs 35.6628 in the XML). Effect 0.0004%; not worth a change.
+  DINO's $15 gap: in SEC's 2025 Q1 Form 4 data set (our main source; zip SHA-256 equal to the
+  one in our ledger), `NONDERIV_TRANS.tsv` has 35.66 and 31.48 for accessions
+  0000950170-25-027905 and 0000950170-25-033844, while their original XML has 35.6628 and
+  31.4804. 5,000 x $0.0028 + 635 x $0.0004 = $14.25. Checked for these two rows only. Effect
+  0.0004%; not worth a change.
   Text blocks in the latest 10-K: DINO 89, GIII 68, LRN 63. Found: debt and commitments for all
-  three, related-party for GIII and LRN, going-concern for none (expected for healthy companies:
-  absence must be stored as "none filed", not as missing data).
+  three, related-party for GIII and LRN, no going-concern block tagged in any of the three. That
+  means only "no matching tagged block found": a filer may disclose going-concern doubt under
+  another tag, in untagged narrative, or in the auditor's report. Store it that way; never show it
+  as "no going-concern warning".
 - **Same result without it:** a stdlib regex over the 10-K's XBRL instance (`*_htm.xml`) found
   the same debt, commitments and related-party blocks for all three. So footnotes need one more
-  file per 10-K through our own `SecClient`, not a new dependency.
+  file per 10-K through our own `SecClient`, not a new dependency. Codex checked GIII's text
+  (round 1, below): the instance matches the inline 10-K with its continuation parts joined,
+  while the first inline part alone is truncated (debt 908 of 6,777 characters).
 - **Verdict: borrow the idea.** Build footnote text blocks in our code (instance file per 10-K,
   vault companies only, ledger in `filing_sections` style). Keep edgartools as a test oracle in a
   throwaway venv. Reconsider adoption only if inline-XBRL edge cases make our parser costly.
+  Acceptance checks for that milestone: text equals the inline text with continuations joined;
+  a 10-K with untagged going-concern language is never labelled "no disclosure"; going-concern
+  needs a second check of the note and auditor's report text, not only the tag.
 
 ### 2. jadchaar/sec-edgar-downloader
 
@@ -134,13 +144,26 @@ LRN (1157408); Form 4 window: filed 2025-01-01 to 2026-11-05.
   SQLite/Postgres via SQLAlchemy, Alpaca trading module: does not fit our DuckDB design.
 - **Cost:** Apache-2.0; created 2026-07-09, one commit, 8 stars, no releases ("pre-release"). Many
   tests (39 files), but young.
-- **Idea worth testing:** routine vs opportunistic insiders (Cohen, Malloy and Pomorski 2012):
-  a buy is "routine" if the same insider bought in the same calendar month in each of the 3 prior
-  years. On our data (read-only, `filed <= ` each buy's filing date): of 29,245 insider buy-days
-  filed since 2025-01-01, 1,630 (5.6%) are routine. None of the shortlist's 17 buy-days is
-  routine (DINO's Franklin Myers, 13 prior buys, matched only 1 of 3 prior years). So the flag
-  would not change today's shortlist, and its value is unproven until the M5 backtest compares
-  the screen with and without it.
+- **Idea worth testing:** routine vs opportunistic insiders (Cohen, Malloy and Pomorski 2012).
+  Two rules, reported separately (read-only on our data; unit: buy events, i.e. distinct
+  company, insider and trade date; open-market buys filed 2025-01-01 to 2026-11-05: 28,812):
+  - **Paper-style** (the paper's main classification, as Codex summarised it): at the start of
+    each year, an insider who traded (open-market buys or sales) in each of the 3 prior years is
+    *routine* if some calendar month has a trade in all 3 years, otherwise *opportunistic*; the
+    label applies to all that year's trades. Only trades filed before 1 January count. Per insider
+    at the same company: routine 2,892 (10.0%), opportunistic 2,415 (8.4%), unclassified 23,505
+    (81.6%, too little history). Per insider across all companies: 4,830 / 3,593 / 20,389. My
+    approximation of the paper's rule (open-market non-derivative trades since 2020); not checked
+    against the paper's own sample.
+  - **This study's narrower rule** (exploratory, not the paper's): a buy is routine if the same
+    insider bought at the same company in the same calendar month in each of the 3 prior years
+    (filed by then): 1,627 (5.6%). Earlier drafts said 1,630 of 29,245 "buy-days"; that
+    denominator counted company, insider, trade date *and filing date*.
+  - The rules disagree by design: an insider who bought every March 2022-2024 and buys in July
+    2025 is routine under the paper's rule and not under the narrow one (synthetic check).
+  - Shortlist (17 buy events): 0 routine under either rule; paper-style 5 opportunistic,
+    12 unclassified. So the flag would not change today's shortlist, and its value is unproven
+    until the M5 backtest compares the screen with and without it.
 - **Verdict: borrow the idea, not the code.** A `routine_buyer` flag plus a backtest comparison,
   as a small later milestone if the user wants it.
 
@@ -297,6 +320,35 @@ No live database or vault was opened for these checks.
 - [Obsidian Bases documentation](https://obsidian.md/help/bases/syntax) supports date comparisons,
   today() and duration arithmetic in filters, so a 30-day filed-date window is expressible in
   principle. An actual view and dashboard parity have not been tested.
+
+### Response to findings round 1 (Claude)
+
+### C1: fixed
+- Test: the claim holds as written: the edgartools proof said absence "must be stored as \"none
+  filed\"" and gave a reason ("expected for healthy companies"). A missing tag cannot carry that.
+- Change: edgartools proof now says only "no matching tagged block found" and why; the verdict
+  lists acceptance checks for the footnote milestone (untagged going-concern language must not be
+  labelled "no disclosure"; a second check of the note and auditor's report text).
+- Live data: none.
+
+### C2: fixed
+- Test: synthetic in-memory check (buys every March 2022-2024, then July 2025): paper-style rule
+  `routine`, narrow rule `False`. The two rules differ, as claimed.
+- Change: form4lab section now reports both rules separately, names the unit (buy events) and
+  labels the narrow rule as exploratory. Recomputing exposed a bug in my first recompute script
+  (the narrow rule saw only 2025+ buys and gave 19); fixed before reporting.
+- Live data (read-only, no run holding the lock, 2026-11-06 18:3x): 28,812 buy events. Paper-style
+  per insider-company: routine 2,892, opportunistic 2,415, unclassified 23,505; per insider:
+  4,830 / 3,593 / 20,389. Narrow rule: 1,627 routine (was 1,630 of 29,245 on the old unit).
+  Shortlist 17 events: 0 routine under both.
+
+### C3: fixed
+- Test: downloaded SEC's 2025q1_form345.zip again (12,804,783 bytes; SHA-256 37f6b428... equal
+  to our ledger's). `NONDERIV_TRANS.tsv`: 0000950170-25-027905 price 35.66 (5,000 shares),
+  0000950170-25-033844 price 31.48 (635 shares). Original XML: 35.6628 and 31.4804.
+- Change: the DINO note now states the checked rows and the arithmetic ($14.25), limited to these
+  two rows.
+- Live data: none.
 
 ## Decision (user)
 
