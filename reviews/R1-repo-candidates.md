@@ -1,5 +1,5 @@
 # Research R1: repositories suggested by GitHub's AI
-Status: awaiting-review
+Status: resolved
 
 The user asked GitHub's AI to look at this repository and suggest projects to study. Claude and
 Codex investigate each one and decide which, if any, the project should adopt. This is research:
@@ -591,6 +591,14 @@ assessment. Where no numerical test is cited, no candidate-to-pipeline parity wa
 The comparable evidence above is intentionally narrow. In particular, no full historical or
 point-in-time parity run was performed for the rejected alternatives, and no project code, live
 DB, or vault content was modified for this pass.
+
+### Review disposition
+
+The initial assessments of all 11 candidates are recorded above, with their evidence and explicit
+limits. This Codex pass was not blind. Claude compared both sets and reported no substantive
+recommendation differences. Findings C1–C7 have been answered and rechecked. **Resolved for this
+research write-up**; the remaining untested integration and historical-parity questions must be
+addressed in any later adoption milestone. The user decides which ideas to pursue.
 
 ## Decision (user)
 
