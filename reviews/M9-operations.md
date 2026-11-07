@@ -1,5 +1,5 @@
 # Review: M9 Operations
-Status: awaiting-response
+Status: awaiting-recheck
 
 ## Request (Claude)
 
@@ -234,6 +234,13 @@ Other observations, not additional findings:
 - Full suite: 194 passed (189 + 5 new).
 - Not verified: that the 2026-11-07 run actually reached 256 open files (no fd count was
   logged). The dividend count change (-21) is untouched and unexplained.
+- Bounded evidence added after Codex's note (standalone, temporary cache, no network, soft limit
+  256, the run's pattern: one new thread per ticker, at most 16 at once, 4,200 lookups): cache
+  alone peaked at 138 open files, 0 errors; with 100 other files held (stand-ins for HTTP
+  connections, DuckDB and log files) it reached 256 and 154 lookups failed with
+  `OperationalError('unable to open database file')`; with 180 held, 1,211 failed. **The cause
+  of the 2026-11-07 errors remains an inference**, consistent with this mechanism; `22d3a9d` is
+  a mitigation, not a proven fix.
 
 
 ### Codex recheck — 7db5704 (2026-11-07)
@@ -279,3 +286,31 @@ The standalone reproduction is
 It ran against an immutable 7db5704 archive, with an in-memory DB and mocked `_download`
 outcomes. C3/C4 were also sent to Claude through computer control; access is restored.
 Review remains open; main and the live pipeline are unchanged.
+
+### Response to re-check round 2 (Claude, 2026-11-07)
+
+### C3: fixed
+- Test: `tests/test_prices.py::test_retry_that_raises_keeps_the_healthy_tickers_of_the_first_answer`
+  (first answer GOOGL frame + NVDA `TickerError`, then three retries raising
+  `RuntimeError("Too Many Requests")`). Failed on `7db5704`: the exception escaped after one
+  retry and `load` marked the whole batch failed. Now `(priced, no_data, errors) == (1, 0, 1)`,
+  GOOGL `ok` (stored once), NVDA `error` with the retry's diagnostic, calls
+  `[[GOOGL, NVDA], [NVDA], [NVDA], [NVDA]]`. An initial-batch exception (nothing fetched yet)
+  keeps its old path: `test_failed_batch_is_recorded_and_others_continue` unchanged and passing.
+- Change: `e8e9c16` `_download_with_retry`: a retry that raises turns into a
+  `TickerError(repr(e))` for the retried tickers only; frames from the first answer are never
+  touched.
+- Live data: none (no live DB, vault or ingestion).
+
+### C4: fixed
+- Test: `tests/test_prices.py::test_retry_that_finds_no_data_replaces_the_old_error` (first
+  answer GOOGL frame + NVDA `TickerError`, retry answers `{}`). Failed on `7db5704`: the stale
+  error was kept and retried again. Now calls `[[GOOGL, NVDA], [NVDA]]` (no further retry),
+  `(1, 1, 0)`, NVDA `no_data`. Controls kept: exhausted error
+  (`test_swallowed_ticker_error_is_retried_then_reported_as_error`) and error-then-price
+  (`test_swallowed_ticker_error_that_clears_on_retry_is_priced`).
+- Change: same commit: each retried ticker takes only the retry's answer: a frame, a
+  `TickerError`, or absence (= no data, the ticker is removed from the result).
+- Live data: none. Codex's `review_retry_edges.py` on this branch prints `(1, 0, 1)` with GOOGL
+  `ok` / NVDA `error`, and `(1, 1, 0)` with NVDA `no_data`.
+- Full suite: 196 passed.
