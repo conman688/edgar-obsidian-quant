@@ -13,6 +13,7 @@ from pathlib import Path
 
 import duckdb
 
+from src.db.queries import PRICE_BREAK
 from src.obsidian.writer import split_note
 from src.screen import Filters
 
@@ -77,24 +78,43 @@ def since(con: duckdb.DuckDBPyConnection, journals: list[dict], as_of: date) -> 
     The total adds dividends with ex-date after the decision date, up to the latest close: a
     decision made on an ex-date or later does not get that dividend. When the snapshot's close is
     older than the decision and a dividend went ex in between, that close still included the
-    dividend, so the total return is unknown (None). None also when either close is missing."""
+    dividend, so the total return is unknown (None). Both are None when either close is missing or
+    the split-adjusted close jumps by PRICE_BREAK (10x) or more in a day inside the window. The
+    window's first close is compared with the frozen snapshot close, not the database's close for
+    that day: the return divides by the frozen close, and the database may have revised it since.
+    With no close after the snapshot day, the latest close itself is checked against the frozen one.
+    If the database's close for the snapshot day now differs from the frozen close by PRICE_BREAK
+    or more in either direction, one of them is wrong and both returns are None."""
     if not journals:
         return []
     snaps = [j["snapshot"] for j in journals]
-    rows = con.execute("""
+    rows = con.execute(f"""
         WITH j AS (SELECT unnest($i) AS i, unnest($cik) AS cik, unnest($dec)::DATE AS dec,
                           unnest($d0)::DATE AS d0, unnest($c0) AS c0),
         n AS (SELECT cik, price_date AS d1, close_raw AS c1 FROM prices
               WHERE price_date <= $as_of AND list_contains($cik, cik)
               QUALIFY row_number() OVER (PARTITION BY cik ORDER BY price_date DESC) = 1),
+        adj AS (SELECT cik, price_date AS d, close_raw / split_factor(cik, price_date) AS a,
+                       lag(close_raw / split_factor(cik, price_date)) OVER (PARTITION BY cik ORDER BY price_date) AS prev,
+                       lag(price_date) OVER (PARTITION BY cik ORDER BY price_date) AS prev_d
+                FROM prices WHERE price_date <= $as_of AND list_contains($cik, cik)),
         r AS (SELECT j.i, n.d1, n.c1, j.c0 / split_factor(j.cik, j.d0) AS a0, n.c1 / split_factor(j.cik, n.d1) AS a1,
                      (SELECT sum(d.amount_raw / split_factor(d.cik, d.ex_date)) FROM dividends d
                       WHERE d.cik = j.cik AND d.ex_date > j.dec AND d.ex_date <= n.d1) AS divs,
                      EXISTS (SELECT 1 FROM dividends d
-                             WHERE d.cik = j.cik AND d.ex_date > j.d0 AND d.ex_date <= j.dec) AS gap
+                             WHERE d.cik = j.cik AND d.ex_date > j.d0 AND d.ex_date <= j.dec) AS gap,
+                     EXISTS (SELECT 1 FROM adj
+                             WHERE adj.cik = j.cik AND adj.d > j.d0 AND adj.d <= n.d1
+                               AND adj.a >= {PRICE_BREAK} * CASE WHEN adj.prev_d > j.d0 THEN adj.prev
+                                                                 ELSE j.c0 / split_factor(j.cik, j.d0) END)
+                     OR (n.d1 <= j.d0 AND n.c1 / split_factor(j.cik, n.d1) >= {PRICE_BREAK} * (j.c0 / split_factor(j.cik, j.d0)))
+                     OR EXISTS (SELECT 1 FROM prices p WHERE p.cik = j.cik AND p.price_date = j.d0
+                                  AND (p.close_raw >= {PRICE_BREAK} * j.c0 OR p.close_raw * {PRICE_BREAK} <= j.c0))
+                     AS broke
               FROM j LEFT JOIN n USING (cik))
-        SELECT d1, c1, a1 / nullif(a0, 0) - 1,
-               CASE WHEN NOT gap THEN (a1 + coalesce(divs, 0)) / nullif(a0, 0) - 1 END
+        SELECT d1, c1,
+               CASE WHEN NOT broke THEN a1 / nullif(a0, 0) - 1 END,
+               CASE WHEN NOT broke AND NOT gap THEN (a1 + coalesce(divs, 0)) / nullif(a0, 0) - 1 END
         FROM r ORDER BY i
     """, {"i": list(range(len(journals))), "cik": [j["cik"] for j in journals],
           "dec": [j["decided"] for j in journals],
