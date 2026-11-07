@@ -165,7 +165,15 @@ def _download_with_retry(tickers: list[str], start: date, retries: int = 4) -> d
             break
         gc.collect()        # yfinance leaves a cache connection open per finished thread
         time.sleep(5 * 2 ** attempt)
-        frames.update(_download(failed, start))
+        try:
+            again = _download(failed, start)
+        except Exception as e:     # the retry failed as a whole: the healthy frames above stand
+            again = {t: TickerError(repr(e)) for t in failed}
+        for t in failed:           # the retry's answer replaces the old one, including "no data"
+            if t in again:
+                frames[t] = again[t]
+            else:
+                del frames[t]
     return frames
 
 

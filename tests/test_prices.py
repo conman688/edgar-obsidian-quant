@@ -197,3 +197,40 @@ def test_yfinance_no_data_stays_no_data_and_is_not_retried():
     assert (stats.priced, stats.no_data, stats.errors) == (1, 1, 0)
     assert calls.count("NVDA") == 1 and backoffs == 0
     assert _status(con, "NVDA")[0] == "no_data"
+
+
+def _scripted(con, answers):
+    """prices.load with the real _download_with_retry and `_download` answering from `answers`:
+    each item is a dict to return or an exception to raise, in call order."""
+    answers, calls = list(answers), []
+
+    def fake(tickers, start):
+        calls.append(sorted(tickers))
+        a = answers.pop(0)
+        if isinstance(a, Exception):
+            raise a
+        return {t: v for t, v in a.items() if t in tickers}
+
+    with patch("src.ingestion.prices._download", fake), patch("src.ingestion.prices.time.sleep"):
+        stats = prices.load(con, tickers=["GOOGL", "NVDA"], pause_s=0)
+    return stats, calls
+
+
+def test_retry_that_raises_keeps_the_healthy_tickers_of_the_first_answer():     # Codex, pre-handoff
+    con = _seeded_refresh()
+    err = prices.TickerError("OperationalError('unable to open database file')")
+    stats, calls = _scripted(con, [{"GOOGL": FRESH, "NVDA": err}] + [RuntimeError("Too Many Requests")] * 3)
+    assert calls == [["GOOGL", "NVDA"], ["NVDA"], ["NVDA"], ["NVDA"]]
+    assert (stats.priced, stats.no_data, stats.errors) == (1, 0, 1)
+    assert _status(con, "GOOGL")[0] == "ok" and _status(con, "NVDA")[0] == "error"
+    assert "Too Many Requests" in _status(con, "NVDA")[1]
+
+
+def test_retry_that_finds_no_data_replaces_the_old_error():                    # Codex, pre-handoff
+    con = connect(":memory:")
+    seed(con)
+    err = prices.TickerError("OperationalError('unable to open database file')")
+    stats, calls = _scripted(con, [{"GOOGL": FRESH, "NVDA": err}, {}])
+    assert calls == [["GOOGL", "NVDA"], ["NVDA"]]
+    assert (stats.priced, stats.no_data, stats.errors) == (1, 1, 0)
+    assert _status(con, "NVDA")[0] == "no_data"
