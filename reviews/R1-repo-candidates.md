@@ -1,5 +1,5 @@
 # Research R1: repositories suggested by GitHub's AI
-Status: awaiting-response
+Status: awaiting-recheck
 
 The user asked GitHub's AI to look at this repository and suggest projects to study. Claude and
 Codex investigate each one and decide which, if any, the project should adopt. This is research:
@@ -192,7 +192,7 @@ rules as above: throwaway venv, read-only export of our prices for the three com
 
 | # | Repository | Verdict | One-line reason |
 |---|---|---|---|
-| 6 | yfinance | **keep**; upgrade 1.7.0 -> 1.8.0 after the two-week check | 1.8.0 returns exactly our stored prices; it forces a `curl_cffi` security update |
+| 6 | yfinance | **keep 1.7.0**; no upgrade needed now | 1.8.0 returns exactly our stored prices; its `curl_cffi` security requirement is already met here (0.17.0) |
 | 7 | backtesting.py | **reject** | AGPL-3.0, and it tests one ticker's trading rules, not a cross-sectional screen |
 | 8 | bt | **reject as code; borrow one idea** (a portfolio equity curve with drawdown in the M5 report) | Reproduces our arithmetic exactly, but duplicates M5 and adds scipy, scikit-learn, matplotlib |
 | 9 | obsidian-dataview | **keep for now**; consider Obsidian Bases | `Dashboard.md`'s 4 query tables need it; it was missing from the vault until the user installed it on 2026-11-06 |
@@ -202,8 +202,10 @@ rules as above: throwaway venv, read-only export of our prices for the three com
 ### 6. ranaroussi/yfinance (already our price source)
 
 - **Fit:** in use (`src/ingestion/prices.py`, `auto_adjust=False, actions=True`); the lock pins
-  1.7.0. Latest is 1.8.0 (2026-11-03): forces `curl_cffi >= 0.17` "for security updates", adds
-  `Tickers.info/calendar`, improves price-split repair (we do not use `repair`).
+  1.7.0. Latest is 1.8.0 (2026-11-03): requires `curl_cffi >= 0.17` "for security updates", adds
+  `Tickers.info/calendar`, improves price-split repair (we do not use `repair`). This Mac already
+  has that security version: `uv.lock` pins curl-cffi 0.17.0 and the project environment runs
+  yfinance 1.7.0 with curl_cffi 0.17.0 (Codex, C4).
 - **Invariants:** unchanged. We convert Yahoo's split-adjusted closes back to raw (`close_raw =
   close_adj x F(d)`); everything Yahoo-specific stays in that module.
 - **Cost:** Apache-2.0, very active (25,847 stars, pushed 2026-11-05). Unofficial API: it can
@@ -211,8 +213,9 @@ rules as above: throwaway venv, read-only export of our prices for the three com
 - **Proof:** yfinance 1.8.0, 2024-12-02 to 2026-11-05, compared with our database: DINO, GIII and
   LRN each 484 days on both sides, largest close difference 0 (exact), dividends DINO 7 = $3.525,
   GIII 4 = $0.40, LRN 0 on both sides, no splits in the window (ours: GIII 2015, DINO 2011).
-- **Verdict: keep.** Upgrade to 1.8.0 in its own small PR after the two-week check (a dependency
-  change is code; not during the check).
+- **Verdict: keep 1.7.0.** Nothing in 1.8.0 is needed now. Upgrade later only as routine
+  maintenance (its own small PR, never during the two-week check), or sooner if Yahoo changes
+  break 1.7.0 or a later yfinance release fixes a problem we hit.
 
 ### 7. kernc/backtesting.py
 
@@ -378,6 +381,16 @@ No live database or vault was opened for these checks.
 The three findings are resolved. The wider R1 research is **not complete**: Codex has not yet
 finished the separate verdicts for all 11 candidates, and this review was not blind. Status returns
 to awaiting-review for that outstanding work; this does not authorize a merge.
+
+### Response to findings round 2 (Claude)
+
+### C4: fixed
+- Test: `grep -A1 '^name = "curl-cffi"' uv.lock` -> `version = "0.17.0"`;
+  `uv run python -c "import curl_cffi, yfinance; print(yfinance.__version__, curl_cffi.__version__)"`
+  -> `1.7.0 0.17.0`. The claim holds: the security requirement is already met on this Mac.
+- Change: yfinance summary row, fit and verdict no longer give the curl_cffi update as a reason
+  to upgrade; verdict is now "keep 1.7.0", upgrade only as routine maintenance.
+- Live data: none.
 
 ## Decision (user)
 
