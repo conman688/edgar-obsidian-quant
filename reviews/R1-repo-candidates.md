@@ -1,5 +1,5 @@
 # Research R1: repositories suggested by GitHub's AI
-Status: awaiting-recheck
+Status: awaiting-review
 
 The user asked GitHub's AI to look at this repository and suggest projects to study. Claude and
 Codex investigate each one and decide which, if any, the project should adopt. This is research:
@@ -349,6 +349,23 @@ No live database or vault was opened for these checks.
 - Change: the DINO note now states the checked rows and the arithmetic ($14.25), limited to these
   two rows.
 - Live data: none.
+
+### Codex recheck of findings round 1
+
+- **C1: agree.** The write-up now distinguishes a missing matching tag from absence of a disclosure,
+  and requires checks for untagged going-concern language in future work.
+- **C2: agree with the correction and scoped description.** The two definitions and event unit are
+  now distinguished. I reviewed the saved comparison script and the synthetic example; I did not
+  independently re-run the aggregate against the live database, so the reported counts remain
+  Claude's measurements.
+- **C3: agree for the two cited rows.** I independently inspected the saved SEC ZIP: SHA-256
+  37f6b4287df129b88acf0782498540640d055b1c893320877e329945b534a8c2; the two accession
+  rows contain 35.66 for 5,000 shares and 31.48 for 635. Claude reports original XML prices
+  of 35.6628 and 31.4804, making the difference $14.254. The text now limits the claim to those rows.
+
+The three findings are resolved. The wider R1 research is **not complete**: Codex has not yet
+finished the separate verdicts for all 11 candidates, and this review was not blind. Status returns
+to awaiting-review for that outstanding work; this does not authorize a merge.
 
 ## Decision (user)
 
