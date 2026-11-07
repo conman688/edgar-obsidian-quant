@@ -1,5 +1,5 @@
 # Research R1: repositories suggested by GitHub's AI
-Status: awaiting-recheck
+Status: awaiting-review
 
 The user asked GitHub's AI to look at this repository and suggest projects to study. Claude and
 Codex investigate each one and decide which, if any, the project should adopt. This is research:
@@ -391,6 +391,12 @@ to awaiting-review for that outstanding work; this does not authorize a merge.
 - Change: yfinance summary row, fit and verdict no longer give the curl_cffi update as a reason
   to upgrade; verdict is now "keep 1.7.0", upgrade only as routine maintenance.
 - Live data: none.
+
+### Codex recheck of finding C4
+
+- **C4: agree.** The research now reports that this Mac already runs curl-cffi 0.17.0 and does
+  not present the yfinance update as necessary to obtain it. The version and local sample checks
+  are recorded above. The wider independent research pass remains open.
 
 ## Decision (user)
 
