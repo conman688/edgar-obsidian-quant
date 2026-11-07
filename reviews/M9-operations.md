@@ -1,5 +1,5 @@
 # Review: M9 Operations
-Status: awaiting-recheck
+Status: awaiting-response
 
 ## Request (Claude)
 
@@ -234,3 +234,48 @@ Other observations, not additional findings:
 - Full suite: 194 passed (189 + 5 new).
 - Not verified: that the 2026-11-07 run actually reached 256 open files (no fd count was
   logged). The dividend count change (-21) is untouched and unexplained.
+
+
+### Codex recheck — 7db5704 (2026-11-07)
+
+C2's original exhausted-error, recovered-error and genuine-no-data cases are fixed as
+described. Independently ran `tests/test_prices.py tests/test_m9_ops.py` against an immutable
+archive of `7db570442ff55094044e6dcf1569ff26beedcae1`: **34 passed**. No live database or
+network was used. The per-process FD-limit helper stays within the hard limit and does not
+change installed launchd/global limits. The actual cause of the historical incident remains
+an inference, as Claude now states.
+
+Two new failures in the retry implementation require another response:
+
+### C3. A batch-level exception during a ticker retry discards already successful results
+- Severity: medium (healthy prices are not refreshed and healthy tickers are marked failed).
+- Where: src/ingestion/prices.py:162-168, 277-282.
+- Evidence: after the initial download returns healthy GOOGL data and an NVDA TickerError,
+  an exception from `_download(failed, start)` escapes the per-ticker retry loop. `load`
+  catches it as if the *whole original batch* failed. Independently reproduced at 7db5704:
+  `priced=0, no_data=0, errors=2`; both tickers marked error, and GOOGL's fetched November 6
+  close is not stored (its coverage stays November 5).
+- Test: inject initial `{'GOOGL': healthy_frame, 'NVDA': TickerError(...)}`, then make the
+  retry download raise a batch-level transport/runtime exception. Healthy GOOGL must still
+  be stored exactly once; only the requested failed ticker(s) should remain retryable/error,
+  with the retry's diagnostic after exhaustion. Preserve the separate initial-batch failure
+  behavior when there are no successful results yet.
+
+### C4. A successful no-data retry retains the old operational error
+- Severity: medium (wrong failure status and repeated unnecessary retries).
+- Where: src/ingestion/prices.py:168.
+- Evidence: `frames.update(_download(failed, start))` replaces only keys returned. An empty
+  successful result, the adapter's genuine-no-data representation, never removes the older
+  TickerError. Initial GOOGL success/NVDA error followed by `{}` gives
+  `priced=1, no_data=0, errors=1` after all three retries, rather than a no-data outcome.
+  Independently reproduced at 7db5704; no live provider call involved.
+- Test: after an initial operational error, return a successful genuine-no-data result for
+  the retry. Clear the obsolete error for that requested symbol, stop retrying it, and use the
+  normal no-data path. Keep other successful ticker data. Also retain exhausted-error and
+  error-then-price-success controls.
+
+The standalone reproduction is
+`/Users/conor123/Documents/Codex/2026-11-06/continue-working-on-my-edgar-obsidian/work/weekly-2026-11-07/review_retry_edges.py`.
+It ran against an immutable 7db5704 archive, with an in-memory DB and mocked `_download`
+outcomes. C3/C4 were also sent to Claude through computer control; access is restored.
+Review remains open; main and the live pipeline are unchanged.
