@@ -1,5 +1,5 @@
 # Review: M9 Operations
-Status: resolved
+Status: awaiting-response
 
 ## Request (Claude)
 
@@ -123,3 +123,67 @@ Verification: tests/test_m9_ops.py: 24 passed. Codex used temporary files and te
 ## Outcome (user)
 
 _Only for findings still disputed after two rounds._
+
+
+## Scheduled acceptance incident — 2026-11-07 (Codex)
+
+This follow-up reviews the first unattended weekly run against main
+`aec2e3a68e4310a0d1cacaaa9b67f5df0d58e0d0`; it does not reopen the resolved backup C1.
+Branch: `review/m9-price-refresh-2026-11-07`. Claude's scheduled check wrote
+`/Users/conor123/edgar-obsidian-quant-checks/weekly-2026-11-07.md`.
+Codex independently read today's weekly log, current vault Health.md and backup metadata,
+and fetched origin before reviewing. No ingestion, live DB connection, pipeline changes,
+vault writes or backup changes were performed by Codex.
+
+The weekly run finished at 07:13 with status ok (752 seconds), a new November 7 backup,
+and updated vault notes. However, the log records eight actual price-download failures that
+were reported as no-data rather than errors. A successful process exit is therefore not
+evidence that every refresh succeeded. The two-week acceptance gate remains pending.
+
+### C2. yfinance's swallowed per-ticker errors bypass retry and the health warning
+- Severity: medium (wrong failure classification and missing operational warning).
+- Where: src/ingestion/prices.py:90-117, 139-148, 216-229; src/ops.py:163-165.
+- Evidence: installed yfinance's `multi._download_one` catches per-ticker exceptions and
+  substitutes an empty DataFrame, then `download` logs the exceptions but returns normally.
+  Our `_download` drops empty ticker data and `_download_with_retry` immediately returns.
+  `_store` writes `no_data`, not `error`, so `_warnings` does not report a failed refresh.
+  Today's log (lines 735-778) records
+  `OperationalError('unable to open database file')` for KEQU, KGS, KE, KALA, JOUT, OPAL,
+  OLN and STRT, while line 792 says `17 with no data, 0 errors`. Health.md warns only about
+  one recovered SEC disconnect.
+- Independent reproduction: exercised the real installed yfinance download/catch path,
+  patching only its Ticker history provider, session creation and YfData so there was no
+  network/cache access. GOOGL returned a valid frame; NVDA raised the identical sqlite
+  OperationalError. An in-memory project DB seeded with existing prices produced:
+  `priced=1, no_data=1, errors=0`; NVDA status `no_data` with message "no rows from source";
+  exactly one NVDA history call, zero backoffs, and `ops._warnings(...) == []`.
+  NVDA's two existing price rows were retained (no price deletion was reproduced).
+- Test: add a regression through the actual yfinance exception-swallowing boundary, not only
+  the existing test whose injected download callable raises directly. Assert an operational
+  per-ticker failure is retried as appropriate and, if exhausted, counted/reported as an
+  error with its diagnostic, preserving existing dates/prices and healthy ticker results.
+  A genuine no-data outcome must remain distinct. The expected `errors == 1` assertion fails
+  on the reviewed main. Also require the normal health warning for an exhausted refresh.
+- Recommendation: make the Yahoo adapter preserve per-symbol error outcomes rather than
+  inferring successful absence from an empty/missing frame. Keep the existing supported
+  partial-batch behavior; this finding does not require all healthy symbols to be discarded
+  or the whole job to fail. Claude should reproduce before implementing on an isolated branch.
+
+Reproduction script (outside the repository):
+`/Users/conor123/Documents/Codex/2026-11-06/continue-working-on-my-edgar-obsidian/work/weekly-2026-11-07/reproduce_masked_price_failure.py`.
+Run it with the project's .venv Python and `PYTHONPATH=/Users/conor123/edgar-obsidian-quant`.
+It uses only an in-memory DB, mocked provider calls and existing source modules.
+
+Other observations, not additional findings:
+- The underlying reason for the sqlite cache error remains **unverified**. Its cache path,
+  permissions, storage and concurrency need diagnosis; this is not proof that DuckDB failed.
+- The dividend table shrank by 21 rows. The refresh deliberately replaces corporate actions
+  within refreshed windows, so the count alone does not prove loss or a defect. Source-level
+  reconciliation has not been done.
+- The two backup files share a byte size; that alone does not establish identical content or
+  a failed backup. Codex checked the dated file's existence/size, not full backup integrity.
+- Current `df` at the Codex check showed about 6.5 GiB free internally and 407 GiB externally.
+  No cleanup was performed.
+- Computer-control handoff is blocked: the Mac is locked and automatic unlock failed. The
+  user must unlock it manually before Codex can communicate with the existing Claude Code
+  session. Do not bypass or disable the lock. The GitHub review branch is the durable handoff.
