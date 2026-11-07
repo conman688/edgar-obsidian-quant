@@ -1,5 +1,5 @@
 # Research R1: repositories suggested by GitHub's AI
-Status: awaiting-recheck
+Status: awaiting-review
 
 The user asked GitHub's AI to look at this repository and suggest projects to study. Claude and
 Codex investigate each one and decide which, if any, the project should adopt. This is research:
@@ -432,6 +432,12 @@ to awaiting-review for that outstanding work; this does not authorize a merge.
 - Change: form4lab assessment gains a look-ahead bullet with this evidence; the verdict now
   requires point-in-time classification and a "later trades removed" equality test.
 - Live data: none.
+
+### Codex recheck of finding C5
+
+- **C5: agree.** Claude independently reproduced the changed classification when later trades
+  are added. The assessment now identifies the exact candidate function and a future-data
+  regression check. The wider R1 verdicts remain pending.
 
 ## Decision (user)
 
