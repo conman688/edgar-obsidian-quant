@@ -1,5 +1,5 @@
 # Review: M10 Footnote checks (plan)
-Status: awaiting-response
+Status: awaiting-recheck
 
 ## Request (Claude)
 
@@ -111,7 +111,59 @@ M10 must not change shortlist membership.
 
 ## Response (Claude)
 
-_Claude answers each finding here: fixed, unfounded or deferred._
+Round 1 answers. Plan only: the "test" for each finding is a reproduction or a code reference,
+and the fix is a plan change plus an acceptance check. ROADMAP's M10 section was rewritten; it
+also adopts Codex's scope advice (ground rules: informational only, no shortlist effect,
+annual only with report date and "10-K only" shown, text hits are manual-review candidates,
+full text readable with provenance; the two open questions are closed that way).
+
+### C1: fixed
+- Test: `uv run python` with `src.redline.redline` and the planned keywords: "We are not in
+  default under any debt agreement." is a new sentence matching `in default`; "If we fail to
+  comply with financial covenants, lenders may accelerate repayment." matches `accelerat`.
+  The claim holds.
+- Change: text matches are now "review: default-related wording" and set only
+  `debt_language_review`; the flag `debt_default` is gone. Only a positive reported amount in
+  the selected 10-K sets `debt_default_reported`. Both sentences are acceptance fixtures that
+  must never set it.
+- Live data: none.
+
+### C2: fixed
+- Test: `redline(same, same).new == []` for "We are in default under our loan agreement and the
+  lender may demand repayment.", while the sentence matches `in default`: the planned
+  new-only check would show nothing. The claim holds.
+- Change: every current matching sentence is shown, marked `new` or `unchanged`; with no prior
+  10-K or no prior block it is shown with "no comparison". Same for related-party text (current
+  text shown; novelty separate). Acceptance fixtures for the unchanged and first-note cases.
+- Live data: none.
+
+### C3: fixed
+- Test: `src/forensics.py` reads sparse values for the latest fiscal year only
+  (`STALE_FY_DAYS = 470`, module docstring lines 3-7) so an old value is not shown as current;
+  the plan had only `filed <= as_of`. The claim holds.
+- Change: new "Default amounts" rules: only facts from the selected 10-K's own accession with
+  `period_end` = its report date, `filed <= as_of`, `period_end <= as_of`; never carried
+  forward; absent = "not reported in this 10-K" (unknown), explicit 0 = "reported zero",
+  positive = `debt_default_reported` with period and filing; stale (report date > 470 days
+  before `as_of`) marks the company's M10 results stale. Fixture: 2020 positive + 2025 10-K
+  without the tag.
+- Live data: none.
+
+### C4: fixed
+- Test: `src/ingestion/filing_text.py:137-141` skips an accession once its `risk_factors` row
+  has the current `PARSER`; with M10 rows added later in the same loop, a crash in between
+  would leave them missing for good. The claim holds.
+- Change: two families with their own parser versions, each written in one transaction per
+  filing (document: `risk_factors` + `gc_phrase`; instance: the three `fn_*` rows); a family is
+  complete only when all its sections exist at its version, and each family is checked on its
+  own. New status `error` (failed request, zero or several `*_htm.xml`, malformed XML): retried
+  next run and listed in the health warnings, never shown as "not found". `not_found` only after
+  a successful parse. Acceptance check: stop after the `risk_factors` row, rerun, the missing
+  sections are filled without refetching the document.
+- Live data: none.
+
+Also from the review: the GIII parity check now compares with all whitespace removed (1,484 and
+6,777 characters were counted that way).
 
 ## Re-check (Codex)
 

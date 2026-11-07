@@ -253,62 +253,95 @@ show each run.
 
 Decision (user, 2026-11-05 and R1): footnotes first, narrow: going-concern, related-party and
 debt-default text for the vault companies only. Plan written 2026-11-07, before any code; facts
-below were checked against SEC on 2026-11-07.
+below were checked against SEC on 2026-11-07. Revised after review round 1
+(`reviews/M10-footnote-checks.md`).
+
+Ground rules:
+- Informational only: M10 never changes screen status, rank or shortlist membership.
+- Annual only: the latest 10-K filed by `as_of` (and the one before it, for comparison). Every
+  result shows that 10-K's report date, filing date and accession, and says "10-K only". 10-Q,
+  10-K/A and 20-F/40-F filers are not covered and are shown as "not covered".
+- A missing tag, phrase or amount is never shown as "no problem": it is "not found" or
+  "not reported in this 10-K".
+- Text matches are **candidates for manual review**, not findings. No language classifier.
+- Full selected text stays readable in the vault with its accession and URL.
 
 What it adds, per vault company that files 10-Ks (25 of the 59 vault companies on 2026-11-06,
-49 stored 10-Ks); 20-F/40-F filers are reported as "not covered":
+49 stored 10-Ks):
 
 | Check | Source | Shown as |
 |---|---|---|
-| Going-concern | `us-gaap:SubstantialDoubtAboutGoingConcernTextBlock` in the 10-K's XBRL instance; also a phrase scan of the whole 10-K text (notes and auditor's report): a sentence with "substantial doubt" and "going concern" | `tagged`, `text only` (phrase found, no tag) or `none found`. Never "no going-concern warning": a missing tag or phrase is not proof of no disclosure (R1 C1) |
-| Related-party | `us-gaap:RelatedPartyTransactionsDisclosureTextBlock` | present or not; new and removed sentences against the prior 10-K (the M7 redline) |
-| Debt default | Numbers: `DebtDefaultLongtermDebtAmount`, `DebtDefaultShorttermDebtAmount` from `xbrl_facts` (already loaded: 360 companies have ever reported one). Text: new sentences in the debt note (`DebtDisclosureTextBlock`, or `LongTermDebtTextBlock` when that is the one tagged) against the prior 10-K that contain "in default", "not in compliance", "waiver", "forbearance" or "accelerat" | default amount with its filing; the flagged new sentences |
+| Going-concern | `us-gaap:SubstantialDoubtAboutGoingConcernTextBlock` in the latest 10-K's XBRL instance; and a phrase scan of the whole 10-K text (notes and auditor's report): a sentence with both "substantial doubt" and "going concern" | `tagged`, `text only` (phrase, no tag) or `none found` ("no tagged block or phrase found") |
+| Related-party | `us-gaap:RelatedPartyTransactionsDisclosureTextBlock` | the current text if present; new and removed sentences against the prior 10-K, or "no comparison" when the prior 10-K has no such block or there is no prior 10-K |
+| Reported default amount | `DebtDefaultLongtermDebtAmount`, `DebtDefaultShorttermDebtAmount` in `xbrl_facts` | see "Default amounts" below |
+| Debt-default language | the current debt note (`DebtDisclosureTextBlock`, or `LongTermDebtTextBlock` when that is the one tagged) | every current sentence containing "in default", "not in compliance", "waiver", "forbearance" or "accelerat", each marked `new` or `unchanged` against the prior 10-K, or "no comparison"; labelled "review: default-related wording", never "in default" |
+
+Default amounts (sparse facts; same rule as `src/forensics.py`, which reads the latest fiscal
+year only so an old value is never shown as current):
+- Read only facts from the selected latest 10-K's own accession with `period_end` equal to its
+  report date, `filed <= as_of` and `period_end <= as_of`. Values from older reports are never
+  carried forward.
+- Absent: "not reported in this 10-K" (unknown, not zero). Explicit 0: "reported zero".
+  Positive: the amount, its period end and filing, and the flag `debt_default_reported`.
+- If the selected 10-K's report date is more than 470 days before `as_of` (forensics'
+  `STALE_FY_DAYS`), all M10 results for that company are marked stale.
 
 How (reusing M7, no new dependency; edgartools only as a test reference in a throwaway venv):
-- Filings: the same latest two 10-Ks with `filed <= as_of` that `fetch-text` already picks
-  (`annual_reports`). 10-K/A excluded, as in M7.
 - Per new 10-K: `index.json` of the filing folder to find the one `*_htm.xml` instance (its name
   does not always follow the primary document: `darkpulse_i10k-123125_htm.xml`), then the
-  instance (GIII 3.2 MB, DarkPulse 1.1 MB). Read text-block facts with the stdlib XML parser,
-  turn their HTML into text with the existing `html_text`. Two requests per new 10-K through
+  instance (GIII 3.2 MB, DarkPulse 1.1 MB). Text-block facts read with the stdlib XML parser,
+  their HTML turned into text with the existing `html_text`. Two requests per new 10-K through
   `SecClient`; raw files are not kept.
-- The going-concern phrase scan runs on the 10-K document `fetch-text` already downloads; a
-  `PARSER` bump refetches the stored 49 once.
-- Storage: rows in `filing_sections` (no migration): `section` = `fn_going_concern`,
-  `fn_related_party`, `fn_debt`, `gc_phrase`; `status` `ok` or `not_found`; `parser` version.
-  The rows are the ledger: a filing is fetched once; `not_found` rows are kept so it is not
-  fetched again.
+- The going-concern phrase scan runs on the 10-K document `fetch-text` already downloads.
+- Storage in `filing_sections` (no migration), in two families, each with its own parser
+  version, each written in one transaction per filing:
+  - document family (one download): `risk_factors`, `gc_phrase`;
+  - instance family (index + instance): `fn_going_concern`, `fn_related_party`, `fn_debt`.
+- A family is complete for a filing only when all its sections exist at its current parser
+  version. Each family is checked on its own: a complete document family never skips a missing
+  instance family, and the other way round.
+- Status per row: `ok` (found), `not_found` (the instance or document parsed and the tag or
+  phrase is absent: final, not fetched again), or `error` (request failed, no or several
+  `*_htm.xml` in the index, XML that does not parse: retried on the next run and listed in the
+  health report's warnings). An `error` row is never shown as "not found".
 - Runs inside `fetch-text`, so the weekly job's steps do not change.
-- Vault: company note gets a "Footnotes" section and a `footnote_flags` frontmatter list
-  (`going_concern_tagged`, `going_concern_text`, `debt_default`, `related_party_new`).
+- Vault: company note gets a "Footnotes" section (report date, filing, "10-K only", each check
+  with its text and provenance) and a `footnote_flags` frontmatter list: `going_concern_tagged`,
+  `going_concern_text`, `debt_default_reported`, `debt_language_review`, `related_party_new`.
   Journal notes are never touched.
 
 Checks:
 - GIII 10-K 0001104659-26-033891: stored text equals the inline 10-K text with continuation parts
-  joined (whitespace-normalised): related-party 1,484 characters, debt 6,777. The first inline
-  part alone would give 908 for debt, so a test must fail on that shortcut.
-- DarkPulse 10-K 0001683168-26-002937 (CIK 866439): going-concern `tagged` (its "Note 3 -
-  Liquidity and Going Concern" block).
+  joined, compared with **all whitespace removed**: related-party 1,484 characters, debt 6,777.
+  The first inline part alone gives 908 for debt, so the test fails on that shortcut.
+- DarkPulse 10-K 0001683168-26-002937 (CIK 866439): going-concern `tagged`.
 - Synthetic 10-K with going-concern language but no tag: `text only`, never `none found`.
 - Synthetic 10-K with neither: `none found`, shown as "no tagged block or phrase found".
-- Point-in-time: a 10-K or a default amount filed after `as_of` is never read; the redline
-  compares the latest two 10-Ks filed by `as_of`.
+- Debt language (R1-style fixtures): "We are not in default under any debt agreement." and "If we
+  fail to comply with financial covenants, lenders may accelerate repayment." are shown only as
+  review candidates and never set `debt_default_reported`.
+- An unchanged paragraph "We are in default under our loan agreement and the lender may demand
+  repayment." in both 10-Ks is shown as a current candidate marked `unchanged`; a first debt note
+  with no prior 10-K shows its candidates with "no comparison".
+- Default amounts: a positive 2020 amount plus a 2025 10-K with no default tag shows "not
+  reported in this 10-K", not a current default and not zero; an explicit 0 shows "reported
+  zero"; a positive amount in the selected 10-K sets `debt_default_reported` with its period
+  and filing.
+- Point-in-time: a 10-K or a default amount filed after `as_of` is never read; comparisons use
+  the latest two 10-Ks filed by `as_of`.
+- Ledger: a run stopped after the `risk_factors` row and before the instance family is written
+  fills the missing sections on the next run without refetching the document; a failed instance
+  request, an index with zero or two `*_htm.xml` files, and malformed XML each leave an `error`
+  row that is retried next run and reported; a parsed instance with no tag stores `not_found`
+  and is not fetched again.
 - A second `fetch-text` downloads 0 documents; a second `sync-vault` writes 0 files.
-- A 10-K whose instance has none of the three blocks stores `not_found` rows and is not
-  fetched again.
-- Debt-default keyword sentences are flagged only when new against the prior 10-K (an unchanged
-  covenant boilerplate sentence is not flagged).
-- Live run on the vault companies (vault backed up first): requests made, 10-Ks read, counts
-  per status, and the companies flagged; parity with edgartools on 3 vault companies offline.
+- Screen output (status, rank, shortlist) is identical with and without M10 data.
+- Live run on the vault companies (vault backed up first): requests made, 10-Ks read, counts per
+  status, the companies flagged; parity with edgartools on 3 vault companies offline.
 
-Not in scope: executive pay, 10-Q footnotes, 20-F/40-F (IFRS) filers, other text blocks,
-events after the latest balance sheet (8-K deals such as GIII's Marc Jacobs purchase).
-
-Open questions for review:
-- 10-Q: a going-concern doubt can first appear in a 10-Q. Add the latest 10-Q filed after the
-  latest 10-K for the going-concern check only (two more requests per company per quarter)?
-- Keywords for debt default: is the list above narrow enough, or should it start with numbers
-  only?
+Not in scope: executive pay, 10-Q footnotes, 10-K/A, 20-F/40-F (IFRS) filers, other text blocks,
+classifying language automatically, events after the latest balance sheet (8-K deals such as
+GIII's Marc Jacobs purchase).
 
 ### Research R1: suggested repositories (from 2026-11-06)
 
