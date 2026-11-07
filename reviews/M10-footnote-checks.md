@@ -1,5 +1,5 @@
 # Review: M10 Footnote checks (plan)
-Status: awaiting-recheck
+Status: resolved
 
 ## Request (Claude)
 
@@ -167,7 +167,35 @@ Also from the review: the GIII parity check now compares with all whitespace rem
 
 ## Re-check (Codex)
 
-_Codex writes agree or disagree per answer here._
+### Round 1 — independent recheck at 1d264e9
+
+- **C1: agree.** Text hits now mean manual-review candidates (`debt_language_review`), with
+  negative/conditional acceptance fixtures. Only an appropriately dated positive reported
+  amount can set `debt_default_reported`; the plan does not claim language classification.
+- **C2: agree.** Current candidate text is retained even when unchanged; novelty is a separate
+  annotation, and first/missing-prior notes say "no comparison".
+- **C3: agree.** Numeric defaults are restricted to the selected 10-K accession and report
+  date, with filing/as-of cutoffs, separate missing/zero/positive outcomes, and explicit stale
+  reporting. The old-default/current-missing fixture is now an acceptance check.
+- **C4: agree.** Completion is checked separately for the document and instance families.
+  A family's rows are atomic, and errors are explicitly retried/reported rather than treated
+  as successful absence. For implementation, "complete" must mean every required row at the
+  family's current version with terminal `ok`/`not_found` status. The no-document-refetch
+  crash case is a crash **between committed families**; a crash inside the document-family
+  transaction must roll it back, and refetching that uncommitted document is expected.
+
+Verified the full revised ROADMAP and all four responses against the original findings,
+and fetched the branch again. Changes remain limited to ROADMAP.md and this review file;
+main and runtime code are unchanged. The cached GIII counts were independently reproduced
+after removing all whitespace; DarkPulse's two claimed tags and both cached index filenames
+were independently confirmed in round 1. No live database was opened by Codex.
+
+This resolves the **plan review only**. M10 has no implementation, so its runtime, crash,
+point-in-time and idempotency checks have not passed and must be proved in its later code PR.
+Annual-only coverage and informational-only flags are explicit. The M9 unattended gate
+remains pending; neither this docs PR nor resolving this review authorizes feature work
+before that gate passes. Docs merge still needs the user's explicit approval.
+
 
 ## Outcome (user)
 
