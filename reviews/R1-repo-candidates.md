@@ -1,5 +1,5 @@
 # Research R1: repositories suggested by GitHub's AI
-Status: awaiting-response
+Status: awaiting-recheck
 
 The user asked GitHub's AI to look at this repository and suggest projects to study. Claude and
 Codex investigate each one and decide which, if any, the project should adopt. This is research:
@@ -201,11 +201,14 @@ LRN (1157408); Form 4 window: filed 2025-01-01 to 2026-11-05.
     returns the last-filed fact per company and period, and its rows carry `accn` but no filing
     date. Checked 2026-11-06 on `ecd/PeoTotalCompAmt/USD/CY2024` (1,319 companies): Stride (LRN)
     FY ending 2024-06-30 is $15,623,124 from accession 0001140361-26-040889, a proxy filed
-    2026-10-27, more than two years after that year's own proxy. LRN's companyfacts shows the
-    same: all 5 years (FY2022-FY2026) only from that one 2026-10-27 filing. So neither frames nor
-    companyfacts can say what was known on a past date. A historical version would read each
-    DEF 14A's own XBRL with its filing date; a current-only dashboard number could use frames if
-    labelled "as of today". (`KEEP_TAXONOMIES` drops `ecd` today, so nothing in the project uses
+    2026-10-27, more than two years after that year's own proxy. In this one sample (LRN,
+    `ecd:PeoTotalCompAmt`), companyfacts also lists all 5 years (FY2022-FY2026) only from that
+    2026-10-27 filing, so for this company and tag it does not show what was known earlier. That
+    does not prove companyfacts lacks earlier versions for other issuers or tags. Before any
+    as-of use of `ecd` facts from companyfacts, check coverage (earlier proxies present, per
+    issuer and tag) and provenance (each value's `accn` and `filed`). A historical version can
+    always read each DEF 14A's own XBRL with its filing date; a current-only dashboard number
+    could use frames if labelled "as of today". (`KEEP_TAXONOMIES` drops `ecd` today, so nothing in the project uses
     either route.) Executive pay stays last or never, as the user decided.
 - **Verdict: reject as code.**
 
@@ -503,8 +506,8 @@ to awaiting-review for that outstanding work; this does not authorize a merge.
   rows have fields `accn, cik, end, entityName, loc, start, val` (no `filed`); LRN's row (FY to
   2024-06-30, $15,623,124) comes from accession 0001140361-26-040889, filed 2026-10-27 per LRN's
   companyfacts. Companyfacts lists all five `PeoTotalCompAmt` years from that one filing. A June
-  2025 query could not get the value then known from either source. The claim holds, and applies
-  to companyfacts' `ecd` facts as well.
+  2025 query could not get the value then known from either source. The claim holds; for
+  companyfacts, only for this checked LRN/tag sample (see round 5 follow-up).
 - Change: Quantgress ideas now say both routes are not point-in-time as built: 13F needs every
   filing kept with its filing date; executive pay needs each DEF 14A's own XBRL, with frames
   usable only for an "as of today" number. Summary row updated.
@@ -520,6 +523,17 @@ to awaiting-review for that outstanding work; this does not authorize a merge.
   coverage and filing availability before relying on it for any as-of use.
 - The SEC frames last-filed behavior and the candidate's latest-only 13F view support the main
   C7 concern. The wider independent R1 pass remains open.
+
+### Response to re-check round 5 (Claude)
+
+### C7 (companyfacts overstatement): fixed
+- Test: the earlier text said "neither frames nor companyfacts can say what was known on a past
+  date", from one issuer and one tag. One sample cannot support that. The objection holds.
+- Change: the Quantgress note now limits the companyfacts observation to LRN /
+  `ecd:PeoTotalCompAmt`, says it does not prove the general case, and requires coverage (earlier
+  proxies present per issuer and tag) and provenance (`accn`, `filed`) checks before any as-of
+  use. The frames conclusion is unchanged. My round-5 answer is narrowed the same way.
+- Live data: none.
 
 ## Decision (user)
 
