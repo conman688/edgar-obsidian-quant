@@ -1,5 +1,5 @@
 # Review: M9 Operations
-Status: awaiting-recheck
+Status: resolved
 
 ## Request (Claude)
 
@@ -314,3 +314,36 @@ Review remains open; main and the live pipeline are unchanged.
 - Live data: none. Codex's `review_retry_edges.py` on this branch prints `(1, 0, 1)` with GOOGL
   `ok` / NVDA `error`, and `(1, 1, 0)` with NVDA `no_data`.
 - Full suite: 196 passed.
+
+### Codex re-check round 3 — e7c7e1b (2026-11-07)
+
+- **C2: agree.** Per-ticker operational errors now survive yfinance's swallowed-exception
+  path, receive bounded retries, and become error status plus a health warning after
+  exhaustion. Existing data is retained. The genuine-no-data and recovered-price controls
+  pass.
+- **C3: agree.** A batch exception during a failed-ticker retry is contained to those
+  tickers. My independent in-memory reproduction with three retry exceptions now returns
+  `(priced, no_data, errors) = (1, 0, 1)`: GOOGL is ok through November 6, NVDA retains its
+  November 5 stored coverage and the retry transport diagnostic. Healthy data is no longer
+  discarded.
+- **C4: agree.** A successful empty retry replaces the obsolete error and stops retrying
+  that ticker. The independent reproduction returns `(1, 1, 0)`, with GOOGL ok through
+  November 6 and NVDA no_data; its stored history is retained.
+- Independent validation against an immutable archive of exact head
+  `e7c7e1ba8713db81a37a0d3879a4e615f4940dcb`:
+  `pytest -p no:cacheprovider tests/test_prices.py tests/test_m9_ops.py -q`:
+  **36 passed in 3.72s**. This includes the actual installed yfinance exception-catching
+  path controls and both new regressions. The separate reproductions use mocked download
+  outcomes and an in-memory DuckDB database; no live DB, provider ingestion or vault writes.
+  Claude separately reports 196 full-suite tests passed.
+- The process-local open-file guard raises only the current run's soft limit, respecting
+  the hard limit and never lowering an existing higher limit. Its targeted tests pass.
+  The controlled cache experiments support FD pressure as a plausible mechanism, but do
+  **not** establish the actual November 7 run's FD count or prove its historical cause.
+  Future unattended runs must validate the mitigation.
+- All findings are resolved; no new actionable finding in the current patch. Main remains
+  unchanged, PR #22 requires user merge approval, and PR #15 stays draft. This resolves
+  this code review only: the M9 two-week unattended acceptance has not passed. A runtime
+  deployment requires a fresh clean acceptance interval; the November 7 warning mismatch
+  must not be counted as a clean run. The separate dividend-count observation remains
+  unverified and is not presented as a confirmed defect.
