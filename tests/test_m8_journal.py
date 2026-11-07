@@ -252,3 +252,38 @@ def test_multiple_journals_same_cik_only_affected_interval_breaks(con, tmp_path)
     assert first["price_change"] is None and first["total_return"] is None
     assert second["price_change"] == pytest.approx(150 / 120 - 1)
     assert second["total_return"] == pytest.approx((150 + 6) / 120 - 1)
+
+
+def _revise_snapshot_day(con, close):
+    con.execute("UPDATE prices SET close_raw = ? WHERE cik = ? AND price_date = DATE '2024-08-30'", [close, CIK])
+
+
+def test_revised_snapshot_day_close_cannot_hide_a_break_from_the_frozen_close(con, tmp_path):   # Codex C1
+    # Frozen close 12 on 2024-08-30; the database later revises that day to 1200 and the next close is 1200.
+    # The return divides by the frozen 12, so the first comparison must use it: 1200 / 12 is a 100x break.
+    write_journal(con, tmp_path, "ACME", AS_OF)
+    _revise_snapshot_day(con, 1200.0)
+    con.execute("INSERT INTO prices (cik, ticker, price_date, close_raw, source) "
+                "VALUES (?, 'ACME', DATE '2024-09-03', 1200.0, 't')", [CIK])
+    got = since(con, read_journals(tmp_path / "Journal", LATER), LATER)[0]
+    assert got["price_change"] is None and got["total_return"] is None
+
+
+def test_revised_snapshot_day_close_does_not_fake_a_break_against_the_frozen_close(con, tmp_path):   # Codex C1
+    # The opposite revision: the database now says 1.2 on 2024-08-30, the frozen close is 12 and the next
+    # close is 12. Measured from the frozen close nothing moved, so the return is 0, not unknown.
+    write_journal(con, tmp_path, "ACME", AS_OF)
+    _revise_snapshot_day(con, 1.2)
+    con.execute("INSERT INTO prices (cik, ticker, price_date, close_raw, source) "
+                "VALUES (?, 'ACME', DATE '2024-09-03', 12.0, 't')", [CIK])
+    got = since(con, read_journals(tmp_path / "Journal", LATER), LATER)[0]
+    assert got["price_change"] == pytest.approx(0.0) and got["total_return"] == pytest.approx(0.0)
+
+
+def test_deleted_snapshot_day_close_still_compares_the_first_close_with_the_frozen_one(con, tmp_path):   # Codex C1
+    write_journal(con, tmp_path, "ACME", AS_OF)
+    con.execute("DELETE FROM prices WHERE cik = ? AND price_date = DATE '2024-08-30'", [CIK])
+    con.execute("INSERT INTO prices (cik, ticker, price_date, close_raw, source) VALUES "
+                "(?, 'ACME', DATE '2024-08-29', 120.0, 't'), (?, 'ACME', DATE '2024-09-03', 120.0, 't')", [CIK, CIK])
+    got = since(con, read_journals(tmp_path / "Journal", LATER), LATER)[0]
+    assert got["price_change"] is None and got["total_return"] is None
