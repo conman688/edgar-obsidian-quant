@@ -172,7 +172,7 @@ rules as above: throwaway venv, read-only export of our prices for the three com
 | 6 | yfinance | **keep**; upgrade 1.7.0 -> 1.8.0 after the two-week check | 1.8.0 returns exactly our stored prices; it forces a `curl_cffi` security update |
 | 7 | backtesting.py | **reject** | AGPL-3.0, and it tests one ticker's trading rules, not a cross-sectional screen |
 | 8 | bt | **reject as code; borrow one idea** (a portfolio equity curve with drawdown in the M5 report) | Reproduces our arithmetic exactly, but duplicates M5 and adds scipy, scikit-learn, matplotlib |
-| 9 | obsidian-dataview | **keep for now, but it is not installed in the vault**; consider Obsidian Bases | `Dashboard.md`'s 4 query tables need it; the vault has no community plugins |
+| 9 | obsidian-dataview | **keep for now**; consider Obsidian Bases | `Dashboard.md`'s 4 query tables need it; it was missing from the vault until the user installed it on 2026-11-06 |
 | 10 | obsidian-api | **reject** | TypeScript plugin API; we write plain Markdown from Python |
 | 11 | obsidian-tasks | **reject** | Another community plugin for what `review_date` + a table already do |
 
@@ -226,6 +226,7 @@ rules as above: throwaway venv, read-only export of our prices for the three com
 - **Finding:** the vault has **no community plugins installed** (`.obsidian/community-plugins.json`
   does not exist), so those 4 tables show as code, not tables. Today they would list 3 shortlist
   companies (DINO, GIII, LRN), 50 quarantined, insider buys from 284 event notes, and 0 journals.
+  **Update 2026-11-06:** the user installed and enabled Dataview 0.5.68 the same evening.
 - **Invariants:** Dataview runs when the note is opened, relative to the real today
   (`date(today) - dur(30 days)`), not the sync's `as_of`. Fine for a live dashboard; not
   point-in-time.
