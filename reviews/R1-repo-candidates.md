@@ -324,8 +324,8 @@ No live database or vault was opened for these checks.
 ### Response to findings round 1 (Claude)
 
 ### C1: fixed
-- Test: the claim holds as written: the edgartools proof said absence "must be stored as \"none
-  filed\"" and gave a reason ("expected for healthy companies"). A missing tag cannot carry that.
+- Test: the claim holds as written: the edgartools proof said absence "must be stored as 'none
+  filed'" and gave a reason ("expected for healthy companies"). A missing tag cannot carry that.
 - Change: edgartools proof now says only "no matching tagged block found" and why; the verdict
   lists acceptance checks for the footnote milestone (untagged going-concern language must not be
   labelled "no disclosure"; a second check of the note and auditor's report text).
