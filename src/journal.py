@@ -82,7 +82,9 @@ def since(con: duckdb.DuckDBPyConnection, journals: list[dict], as_of: date) -> 
     the split-adjusted close jumps by PRICE_BREAK (10x) or more in a day inside the window. The
     window's first close is compared with the frozen snapshot close, not the database's close for
     that day: the return divides by the frozen close, and the database may have revised it since.
-    With no close after the snapshot day, the latest close itself is checked against the frozen one."""
+    With no close after the snapshot day, the latest close itself is checked against the frozen one.
+    If the database's close for the snapshot day now differs from the frozen close by PRICE_BREAK
+    or more in either direction, one of them is wrong and both returns are None."""
     if not journals:
         return []
     snaps = [j["snapshot"] for j in journals]
@@ -106,6 +108,8 @@ def since(con: duckdb.DuckDBPyConnection, journals: list[dict], as_of: date) -> 
                                AND adj.a >= {PRICE_BREAK} * CASE WHEN adj.prev_d > j.d0 THEN adj.prev
                                                                  ELSE j.c0 / split_factor(j.cik, j.d0) END)
                      OR (n.d1 <= j.d0 AND n.c1 / split_factor(j.cik, n.d1) >= {PRICE_BREAK} * (j.c0 / split_factor(j.cik, j.d0)))
+                     OR EXISTS (SELECT 1 FROM prices p WHERE p.cik = j.cik AND p.price_date = j.d0
+                                  AND (p.close_raw >= {PRICE_BREAK} * j.c0 OR p.close_raw * {PRICE_BREAK} <= j.c0))
                      AS broke
               FROM j LEFT JOIN n USING (cik))
         SELECT d1, c1,

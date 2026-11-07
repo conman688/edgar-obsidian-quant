@@ -269,17 +269,6 @@ def test_revised_snapshot_day_close_cannot_hide_a_break_from_the_frozen_close(co
     assert got["price_change"] is None and got["total_return"] is None
 
 
-def test_revised_snapshot_day_close_does_not_fake_a_break_against_the_frozen_close(con, tmp_path):   # Codex C1
-    # The opposite revision: the database now says 1.2 on 2024-08-30, the frozen close is 12 and the next
-    # close is 12. Measured from the frozen close nothing moved, so the return is 0, not unknown.
-    write_journal(con, tmp_path, "ACME", AS_OF)
-    _revise_snapshot_day(con, 1.2)
-    con.execute("INSERT INTO prices (cik, ticker, price_date, close_raw, source) "
-                "VALUES (?, 'ACME', DATE '2024-09-03', 12.0, 't')", [CIK])
-    got = since(con, read_journals(tmp_path / "Journal", LATER), LATER)[0]
-    assert got["price_change"] == pytest.approx(0.0) and got["total_return"] == pytest.approx(0.0)
-
-
 def test_deleted_snapshot_day_close_still_compares_the_first_close_with_the_frozen_one(con, tmp_path):   # Codex C1
     write_journal(con, tmp_path, "ACME", AS_OF)
     con.execute("DELETE FROM prices WHERE cik = ? AND price_date = DATE '2024-08-30'", [CIK])
@@ -305,3 +294,27 @@ def test_unrevised_snapshot_day_with_no_later_close_has_a_zero_return(con, tmp_p
     got = since(con, read_journals(tmp_path / "Journal", LATER), LATER)[0]
     assert got["price_date"] == date(2024, 8, 30)
     assert got["price_change"] == pytest.approx(0.0) and got["total_return"] == pytest.approx(0.0)
+
+
+@pytest.mark.parametrize("revised, later", [(0.12, 0.12), (0.12, None), (1.2, 12.0)])
+def test_snapshot_day_close_revised_10x_down_makes_returns_unknown(con, tmp_path, revised, later):   # Codex C1 recheck 2
+    # The database's snapshot-day close now disagrees with the frozen 12 by 10x or more: one of them is wrong,
+    # so neither return is reliable (frozen 12 -> 0.12 -> 0.12 used to show -99%).
+    path = write_journal(con, tmp_path, "ACME", AS_OF)
+    before = path.read_bytes()
+    _revise_snapshot_day(con, revised)
+    if later is not None:
+        con.execute("INSERT INTO prices (cik, ticker, price_date, close_raw, source) "
+                    "VALUES (?, 'ACME', DATE '2024-09-03', ?, 't')", [CIK, later])
+    got = since(con, read_journals(tmp_path / "Journal", LATER), LATER)[0]
+    assert got["price_change"] is None and got["total_return"] is None
+    assert path.read_bytes() == before
+
+
+def test_small_revision_of_the_snapshot_day_close_keeps_the_return(con, tmp_path):   # Codex C1 recheck 2
+    write_journal(con, tmp_path, "ACME", AS_OF)
+    _revise_snapshot_day(con, 12.6)                     # a 5% correction is not a break
+    con.execute("INSERT INTO prices (cik, ticker, price_date, close_raw, source) "
+                "VALUES (?, 'ACME', DATE '2024-09-03', 6.0, 't')", [CIK])   # a real -50% move
+    got = since(con, read_journals(tmp_path / "Journal", LATER), LATER)[0]
+    assert got["price_change"] == pytest.approx(6 / 12 - 1)
