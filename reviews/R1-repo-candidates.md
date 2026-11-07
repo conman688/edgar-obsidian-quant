@@ -1,5 +1,5 @@
 # Research R1: repositories suggested by GitHub's AI
-Status: awaiting-recheck
+Status: awaiting-review
 
 The user asked GitHub's AI to look at this repository and suggest projects to study. Claude and
 Codex investigate each one and decide which, if any, the project should adopt. This is research:
@@ -534,6 +534,63 @@ to awaiting-review for that outstanding work; this does not authorize a merge.
   proxies present per issuer and tag) and provenance (`accn`, `filed`) checks before any as-of
   use. The frames conclusion is unchanged. My round-5 answer is narrowed the same way.
 - Live data: none.
+
+### Codex final recheck of finding C7
+
+- **C7: agree.** The companyfacts claim is now limited to the checked LRN/tag sample and requires
+  historical coverage and filing provenance to be verified. The frames and 13F caveats remain.
+
+### Codex candidate assessments (first pass; not blind)
+
+These are independent checks of specific evidence after seeing Claude's summary, not a blind
+assessment. Where no numerical test is cited, no candidate-to-pipeline parity was established.
+
+1. **edgartools — use as a test reference; defer dependency decision.** MIT. Offline on GIII's
+   2026 10-K, its parser, an ElementTree extraction of the SEC instance and inline text with all
+   continuation segments agreed after whitespace normalization: 1,484 characters related-party,
+   6,777 debt, 2,243 commitments. One filing cannot establish general parser coverage, and an
+   absent tag is not evidence of absent disclosure. Future extraction must preserve filing dates.
+2. **sec-edgar-downloader — do not add for now.** MIT; installed source requests submissions and
+   downloads filings with its own SEC rate limiter. The existing SecClient already owns rate-limited
+   downloads and the ledger. Three downloaded 10-K submissions occupy about 13–17 MiB each; I did
+   not independently rerun its download/accession comparison. Combining clients needs a shared limit.
+3. **sec-cik-mapper — do not add.** The repository is archived; installed 2.1.0 source requests the
+   same SEC exchange mapping and fabricates a timestamp-based email User-Agent. Existing ticker
+   loading covers the basic use case. I did not execute it or measure company-level mapping parity.
+4. **form4lab — borrow the research question, not its implementation.** Apache-2.0. Its routine
+   classifier gave [true, true, true] for one insider's March 2022–24 buys, including 2022; adding
+   future rows changes a historical signal. See C5. Our future experiment needs filing-time
+   cutoffs and a proper backtest; the paper's method and the narrower exploratory statistic differ.
+5. **Quantgress — do not adopt its scripts as-is.** MIT. Its 13F latest-filing view ranks later
+   amendments without an as-of cutoff; a two-filing synthetic example returns July's 200 shares
+   even for a hypothetical June decision that should see May's 100. The executive-pay frames
+   shortcut has the C7 limitation. 13F and pay ideas may be researched later with provenance.
+6. **yfinance — keep the current source.** Apache-2.0. Local runtime and lock are yfinance 1.7.0
+   and curl-cffi 0.17.0. Independently compared the saved 1.8.0 sample with the exported project
+   prices: 484 matching dates for each of DINO, GIII and LRN, zero close differences. This does
+   not verify split corrections or future Yahoo behavior; changing dependencies waits for a later PR.
+7. **backtesting.py — do not add for the current cross-sectional screen.** AGPL-3.0; its core
+   expects OHLC time-series input for a strategy, unlike our thousands-of-companies filing-time
+   screen. I reviewed the source/license but did not install or run it. AGPL permits private use
+   subject to its terms; avoiding a dependency is a project preference, not a blanket prohibition.
+8. **bt — keep as an optional research comparison, not a required dependency.** MIT. Re-ran the
+   saved three-ticker, monthly equal-weight demonstration offline: bt and the supplied hand check
+   both returned 53.948785% (difference 4.44e-15), with zero commissions. This checks arithmetic
+   on a prepared total-return series, not filing-time selection, survivorship or our full M5.
+9. **Dataview — retain for the existing dashboard.** MIT. The vault's community-plugin list
+   includes it and the dashboard has four Dataview blocks. This was a read-only file check, not a
+   UI parity test. Bases documents date arithmetic for the 30-day filter, but a full replacement
+   should be tested against all four views before changing the workflow.
+10. **Obsidian API — no plugin dependency needed now.** The MIT repository supplies TypeScript
+    plugin API definitions; this project writes Markdown from Python and currently has no plugin
+    requirement. No plugin was built or benchmarked; reconsider if an in-app interaction is wanted.
+11. **Obsidian Tasks — do not add for the existing review-date table.** MIT. Its task workflow is
+    useful when users need checkbox/recurrence features, while this vault already has journal
+    `review_date` fields and a dashboard query. No task plugin was installed or UI-tested.
+
+The comparable evidence above is intentionally narrow. In particular, no full historical or
+point-in-time parity run was performed for the rejected alternatives, and no project code, live
+DB, or vault content was modified for this pass.
 
 ## Decision (user)
 
