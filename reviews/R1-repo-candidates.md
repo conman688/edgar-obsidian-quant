@@ -1,5 +1,5 @@
 # Research R1: repositories suggested by GitHub's AI
-Status: in progress (Claude verdicts 1-11 done 2026-11-06; Codex verdicts pending)
+Status: awaiting-response
 
 The user asked GitHub's AI to look at this repository and suggest projects to study. Claude and
 Codex investigate each one and decide which, if any, the project should adopt. This is research:
@@ -254,7 +254,49 @@ rules as above: throwaway venv, read-only export of our prices for the three com
 
 ## Verdicts (Codex)
 
-_Per repository: fit, invariants, cost, proof, verdict._
+This review is **not blind**: Claude's summary was visible before this pass. This is a partial
+review of the priority claims; independent verdicts across all 11 repositories remain pending.
+No live database or vault was opened for these checks.
+
+### C1. Missing tagged text is not proof that no disclosure was filed
+- Severity: high (a future implementation could incorrectly tell the user there was no warning).
+- Where: reviews/R1-repo-candidates.md, edgartools proof ("absence ... none filed").
+- Evidence: absence of one XBRL concept does not rule out another tag or an untagged narrative.
+  Record "no matching tagged block found"; do not infer that a disclosure does not exist.
+- Test: inspect the note and auditor's report separately; a synthetic 10-K with untagged
+  going-concern language must not be labeled "no disclosure filed".
+
+### C2. The routine-buyer statistic is not the paper's main classification
+- Severity: medium (misleading research comparison).
+- Where: reviews/R1-repo-candidates.md, form4lab proof.
+- Evidence: [Cohen, Malloy and Pomorski (2012)](https://onlinelibrary.wiley.com/doi/pdf/10.1111/j.1540-6261.2012.01740.x)
+  classify traders at the start of each year using prior same-month trades across three consecutive
+  years, then apply the classification to subsequent trades. The paper considers buys and sales.
+  Claude's proposed rule instead checks same-month purchases for each current buy; he confirmed
+  that 29,245 counts distinct company/insider/trade-date/filing-date events, not buy-days.
+  Label 1,630/29,245 as this narrower exploratory statistic or remove it, and do not attribute it
+  to the paper's main rule. I have not independently recomputed the counts.
+- Test: an insider with the recurring pattern in March and a subsequent July trade has a different
+  classification under the two rules. The paper and study definitions should be reported separately.
+
+### C3. The cause of the DINO price difference remains unverified
+- Severity: low.
+- Where: reviews/R1-repo-candidates.md, edgartools proof (SEC bulk rounds prices to cents).
+- Evidence: the two observed price differences are consistent with rounding, but the actual SEC
+  2025 Q1 NONDERIV_TRANS.tsv values have not been checked in this review. Treat this as an
+  inference until the raw rows are checked; do not state the data-set behavior as established.
+- Test: compare the exact accession and transaction rows in the SEC TSV with the original XML.
+
+### Additional evidence
+
+- From the downloaded GIII 2026 10-K, ElementTree extraction of the SEC-generated XBRL instance
+  matched whitespace-normalized inline text including continuation pieces: related-party 1,484
+  characters (one part), debt 6,777 (three parts), and commitments 2,243 (two parts). Reading the
+  first inline part alone returned 908 and 556 characters for debt and commitments respectively.
+  This validates one filing, not universal parser equivalence or direct edgartools text parity.
+- [Obsidian Bases documentation](https://obsidian.md/help/bases/syntax) supports date comparisons,
+  today() and duration arithmetic in filters, so a 30-day filed-date window is expressible in
+  principle. An actual view and dashboard parity have not been tested.
 
 ## Decision (user)
 
