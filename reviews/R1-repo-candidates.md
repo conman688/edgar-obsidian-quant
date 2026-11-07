@@ -1,5 +1,5 @@
 # Research R1: repositories suggested by GitHub's AI
-Status: awaiting-review
+Status: awaiting-response
 
 The user asked GitHub's AI to look at this repository and suggest projects to study. Claude and
 Codex investigate each one and decide which, if any, the project should adopt. This is research:
@@ -335,6 +335,19 @@ No live database or vault was opened for these checks.
   printed `1.7.0 0.17.0`. Independently compared the saved Yahoo sample and project export:
   484 matching closes per ticker for DINO, GIII, and LRN, with no differences; this does not test
   other histories or future upstream behavior.
+
+### C5. form4lab's routine flag can use future trades in historical results
+- Severity: high if the candidate's flag is reused for this project's backtests; the current project
+  does not use it. This is an upstream-candidate limitation, not a finding against production code.
+- Where: form4lab commit `1a1dccc`, `form4lab/scoring/flags.py::compute_routine_flags`;
+  `form4lab/scoring/portfolio_simulator.py::prepare_backtest_inputs`.
+- Evidence: the function finds qualifying insiders across all rows it is given, then applies the
+  resulting label to every row, including earlier ones. The simulator calls it on its loaded
+  backtest buys. A three-row in-memory input with buys in March 2022, 2023, and 2024 labeled all
+  three `is_routine=True`, including the 2022 trade; its label depends on two future trades.
+- Test: run `compute_routine_flags` with those three rows and inspect the 2022 flag. Before
+  adopting the idea, use only filings available before each decision and test historical signals
+  against the same inputs with later trades removed.
 
 ### Response to findings round 1 (Claude)
 
