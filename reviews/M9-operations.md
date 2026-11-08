@@ -1,5 +1,5 @@
 # Review: M9 Operations
-Status: awaiting-review
+Status: awaiting-response
 
 ## Request (Claude)
 
@@ -365,3 +365,50 @@ Review remains open; main and the live pipeline are unchanged.
   - isolation between healthy and failed tickers;
   - safety of partial and no-close windows.
 - Out of scope: live data repair, M10, PR #15, and merging without a fresh yes from the user. A merge into main restarts the unattended acceptance window.
+
+### C5. A refresh silently deletes a source-reported dividend when its close is missing
+- Severity: high (stored corporate-action data loss and potentially incorrect total returns).
+- Where: `src/ingestion/prices.py:73` (`to_raw` filters before extracting actions),
+  `src/ingestion/prices.py:204-219,233-244` (replacement-window deletion/insertion).
+- Evidence: on exact current main `9c2b968` / review head `162e97e`, seed GOOGL with
+  November 2/3/4 closes 10/10/11 and a 0.25 dividend on November 3. Refresh with the same
+  supplied dividend but November 3 Close=NaN, retaining healthy closes on November 2/4.
+  `to_raw` removes the action-bearing row; `_store` deletes the prior dividend from the
+  refresh window and inserts none. Independently reproduced: before
+  `[(1, 2026-11-03, 0.25, yahoo)]`, after `[]`, source still reports 0.25,
+  `(priced,no_data,errors)=(1,0,0)`, ticker status ok.
+- This is a supported dependency output, not just a callable that raises: Codex independently
+  reran Claude's offline `nan_close_history_path.py` and `nan_close_counterexample.py`.
+  Installed yfinance 1.7.0 `PriceHistory.history` with default keepna=False/repair=False
+  preserves the dividend-bearing null-close row from a synthetic chart reply (3 history
+  rows); current `to_raw` returns only 2 rows and zero dividend total. The keepna cleanup
+  considers action columns too, so a nonzero dividend preserves that source row.
+- Test: first add a failing regression for the seeded-refresh case above, then fix at the
+  Yahoo conversion/storage boundary. Retain a reported action independently of close
+  availability when its raw value can be determined, or explicitly quarantine an incomplete
+  ticker/window while keeping its prior stored data. Do not silently treat discarded action
+  data as a successful absence. Explain the chosen handling for entirely no-close windows
+  and out-of-price-range action rows.
+- Required controls: genuine source removal still replaces/removes old events; a changed
+  reported dividend updates correctly; split adjustment uses the relevant supplied split
+  events (including an action-bearing no-close row), and no invalid price row is inserted;
+  partial/all-no-close windows do not erase previously stored history; repeated loads are
+  idempotent; healthy tickers remain independent of failed/quarantined ones; exhausted
+  operational errors retain PR #22 reporting/retry behavior.
+- Independent failing proof outside the repo:
+  `/Users/conor123/Documents/Codex/2026-11-06/continue-working-on-my-edgar-obsidian/work/reproduce_nan_close_dividend.py`.
+  Run with the project venv and PYTHONPATH pointing at the reviewed checkout. Its retention
+  assertion fails on `9c2b968`. All proof uses an in-memory DB and mocked/synthetic source;
+  no live DB, network, vault, backup or schedule writes.
+
+Historical evidence limits: the November 7 net count change does not establish this mechanism
+caused it, identify exactly 21 removed rows, or establish legitimate versus incorrect removals.
+The 63-row exposure is the selection from the *pre-run* snapshot: weekly ingestion updates
+tickers/profiles/facts before selecting the price universe, so it is not an unconditional
+upper bound on the actual run's removal count without checking those selection changes.
+Preserve that distinction in the external note. The planned next scheduled backup can supply
+the missing post-run state without opening or copying the live DB.
+
+Checklist recheck: the revised distinction between recovered transient errors and failed/missed
+runs, and launchd/log corroboration rather than launcher provenance inferred from run_log
+alone, is agreed. No early M9 acceptance or feature merge is authorized.
