@@ -74,10 +74,13 @@ def universe(con: duckdb.DuckDBPyConnection, exchanges: tuple[str, ...] = EXCHAN
 def to_raw(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
     """Undo Yahoo's split adjustment for one ticker.
 
-    `df` is indexed by date with Close, Volume, Dividends and Stock Splits columns.
+    `df` is indexed by date with Close, Volume, Dividends and Stock Splits columns. A row may have
+    no Close: yfinance (keepna=False) keeps a row whose quote is null when it carries a dividend or
+    a split, and adds one for an event outside the price range. Splits and dividends are read from
+    every row; close_raw is NaN where the source has no close, and callers store prices only where
+    it is set.
     Returns (frame with close_raw, volume_raw, dividend_raw; split ratios by ex_date).
     """
-    df = df[df["Close"].notna()]
     ratios = df["Stock Splits"].fillna(0.0)
     ratios = ratios[ratios > 0]
     factor = pd.Series(1.0, index=df.index)
@@ -189,32 +192,44 @@ def _store(con: duckdb.DuckDBPyConnection, batch: list[tuple[int, str, date]],
     window (no trading that week, or a batch start earlier than the company's) must
     not delete what is stored. Yahoo's view of the window is authoritative, so a
     split or dividend it no longer reports is removed with the window.
+
+    Source rows without a close (C5): their splits and dividends are stored like any other, and a
+    close already stored for that day is kept, not deleted, since a null quote is not a correction.
+    A window with rows but no close at all is left as stored, with its status and dates unchanged
+    so the next run reads it again; the status message says how many actions were not stored.
     """
     now = datetime.now()
     prices: dict[str, list] = {f.name: [] for f in PRICE_SCHEMA}
-    windows, splits, divs, status, touched = [], [], [], [], []
+    windows, keep, splits, divs, status, touched = [], [], [], [], [], []
     for cik, ticker, start in batch:
         refresh = start != HISTORY_START
         df = frames.get(ticker)
         raw, ratios = to_raw(df) if df is not None else (None, None)
-        if raw is None or raw.empty:
+        closed = raw[raw["close_raw"].notna()] if raw is not None else None
+        if closed is None or closed.empty:
             if refresh and df is not None:
-                touched.append(("no rows in refresh window", now, cik))  # keep status and dates
+                if raw.empty:
+                    touched.append(("no rows in refresh window", now, cik))  # keep status and dates
+                else:
+                    n = int((raw["dividend_raw"] > 0).sum()) + len(ratios)
+                    touched.append((f"no closes in refresh window: stored data kept, "
+                                    f"{n} source action(s) not stored", now, cik))
                 continue
             reason = "no rows from source" if df is None else "no closes"
             status.append((cik, ticker, "no_data", None, None, reason, now))
             stats.no_data += 1
             stats.missing.append(ticker)
             continue
-        days = [d.date() for d in raw.index]
+        days = [d.date() for d in closed.index]
         n = len(days)
         prices["cik"] += [cik] * n
         prices["ticker"] += [ticker] * n
         prices["price_date"] += days
-        prices["close_raw"] += raw["close_raw"].tolist()
-        prices["volume_raw"] += [None if pd.isna(v) else float(v) for v in raw["volume_raw"]]
+        prices["close_raw"] += closed["close_raw"].tolist()
+        prices["volume_raw"] += [None if pd.isna(v) else float(v) for v in closed["volume_raw"]]
         prices["source"] += [SOURCE] * n
         windows.append((cik, start))
+        keep += [(cik, d.date()) for d in raw.index[raw["close_raw"].isna()]]
         splits += [(cik, d.date(), float(r), SOURCE) for d, r in ratios.items()]
         divs += [(cik, d.date(), float(v), SOURCE) for d, v in raw["dividend_raw"].items() if v > 0]
         status.append((cik, ticker, "ok", days[0], days[-1], None, now))
@@ -227,8 +242,14 @@ def _store(con: duckdb.DuckDBPyConnection, batch: list[tuple[int, str, date]],
         if windows:
             con.register("windows", pa.table({"cik": pa.array([c for c, _ in windows], pa.int32()),
                                               "start": pa.array([d for _, d in windows], pa.date32())}))
+            con.register("keep", pa.table({"cik": pa.array([c for c, _ in keep], pa.int32()),
+                                           "price_date": pa.array([d for _, d in keep], pa.date32())}))
             # One set-based delete per table and batch: a DELETE per company would rescan prices.
-            con.execute("DELETE FROM prices USING windows w WHERE prices.cik = w.cik AND prices.price_date >= w.start")
+            # Days the source sent without a close keep their stored close.
+            con.execute("""DELETE FROM prices USING windows w WHERE prices.cik = w.cik AND prices.price_date >= w.start
+                           AND NOT EXISTS (SELECT 1 FROM keep k WHERE k.cik = prices.cik
+                                           AND k.price_date = prices.price_date)""")
+            con.unregister("keep")
             for table in ("splits", "dividends"):
                 con.execute(f"""DELETE FROM {table} USING windows w WHERE {table}.cik = w.cik
                                 AND {table}.ex_date >= w.start AND {table}.source = '{SOURCE}'""")
