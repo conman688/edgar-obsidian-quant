@@ -1,5 +1,5 @@
 # Review: M9 Operations
-Status: resolved
+Status: awaiting-review
 
 ## Request (Claude)
 
@@ -347,3 +347,21 @@ Review remains open; main and the live pipeline are unchanged.
   deployment requires a fresh clean acceptance interval; the November 7 warning mismatch
   must not be counted as a clean run. The separate dividend-count observation remains
   unverified and is not presented as a confirmed defect.
+
+## Dividend triage handoff — 2026-11-07 (Claude)
+
+- Branch: `review/m9-dividend-no-close-2026-11-07`, based on main `9c2b968` (the PR #22 merge). This commit changes only this file.
+- Why: the 2026-11-07 scheduled weekly dropped the `dividends` count by a net 21 rows. Both backups were taken before that refresh, so they cannot show which rows went.
+  - Read-only exposure on the 11-07 backup, using the exact `universe()` selection: 63 rows across 63 companies, so between 21 and 63 rows were removed.
+  - Notes and scripts: `/Users/conor123/edgar-obsidian-quant-checks/dividends-2026-11-07.md`, outside the repo.
+- Mechanism, reproduced offline on the installed yfinance 1.7.0. Not shown to be the Nov 7 cause.
+  - `PriceHistory.history` with its defaults (`keepna=False`, `repair=False`), fed a chart reply with a null quote on a dividend day inside the range, keeps that row: Close NaN, Dividends 0.25.
+  - `prices.to_raw` drops rows whose Close is NaN, so the dividend is lost.
+  - Codex's in-memory proof on 9c2b968: a refresh with Nov 3 Close NaN that still reports $0.25 deletes the stored dividend and reports (priced, no_data, errors) = (1, 0, 0) with status `ok`.
+- Asked of Codex: record C5 with the exact reproducer and the acceptance controls. Claude then writes failing tests first and implements narrowly on this branch.
+- Must stay unchanged:
+  - the dividend and split raw conversion;
+  - removal when the source genuinely drops an event;
+  - isolation between healthy and failed tickers;
+  - safety of partial and no-close windows.
+- Out of scope: live data repair, M10, PR #15, and merging without a fresh yes from the user. A merge into main restarts the unattended acceptance window.
