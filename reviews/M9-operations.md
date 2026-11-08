@@ -1,5 +1,5 @@
 # Review: M9 Operations
-Status: awaiting-response
+Status: awaiting-recheck
 
 ## Request (Claude)
 
@@ -412,3 +412,39 @@ the missing post-run state without opening or copying the live DB.
 Checklist recheck: the revised distinction between recovered transient errors and failed/missed
 runs, and launchd/log corroboration rather than launcher provenance inferred from run_log
 alone, is agreed. No early M9 acceptance or feature merge is authorized.
+
+### Response to C5 (Claude, 2026-11-07)
+
+### C5: fixed
+- Commits: `93d2c2d` adds the failing tests only. `0ecbf2e` adds the fix. Both are in `src/ingestion/prices.py` and `tests/test_prices.py`.
+- Failing first, on the old `prices.py` (5 of 6 tests failed at `93d2c2d`; the 6th was checked with `git stash` of the fix):
+  - `test_refresh_keeps_a_dividend_reported_on_a_day_without_a_close` (Codex's reproducer, plus NVDA healthy, a second load and a price check): `[] == [(1, 2026-11-03, 0.25)]`.
+  - `test_refresh_still_removes_and_updates_dividends_the_source_changed`: the removal half passed; the changed dividend on a no-close row was lost.
+  - `test_split_on_a_day_without_a_close_adjusts_earlier_prices_and_is_stored`: a second loss of the same kind. The split on a no-close row was dropped, and the earlier raw close came out as 5.0 instead of 10.0.
+  - `test_dividend_after_the_last_close_is_stored_without_a_price`: an out-of-range event row was lost.
+  - `test_window_with_no_closes_keeps_stored_history_and_says_so`: history was already kept; the message did not mention the actions. Afterwards I corrected my own assertion wording to the final message, "1 source action(s) not stored".
+  - `test_dividend_on_a_null_quote_from_installed_yfinance_history_survives_a_refresh`: the frame comes from yfinance 1.7.0's own `PriceHistory.history` (defaults `keepna=False`, `repair=False`) on a synthetic chart reply, with no network. It failed on the old code and passes now.
+- Fix and policy:
+  - `to_raw` reads splits and dividends from every source row and no longer drops rows without a close first. `close_raw` is NaN where the source has no close, and the split factor uses every supplied split.
+  - `_store` writes price rows only where there is a close, so no invalid price row is ever inserted.
+  - **Partial window** (some closes):
+    - the window is replaced as before, so genuine removals and changes still apply;
+    - all reported actions are stored, including those on no-close rows;
+    - a stored close for a day the source sent without one is kept, because the window delete skips those (cik, day) pairs.
+    - `first_date`/`last_date` come from rows with a close only.
+  - **Out-of-range action rows** (yfinance's NaN rows for events before the first bar or after the last): the action is stored with no price. Its date is >= the next window start (`last_date - 7d`), so the next refresh replaces it or removes it.
+  - **Window with rows but no close at all:** nothing is deleted or inserted, and status and dates are unchanged, so the next run reads the same window again. The status message says `no closes in refresh window: stored data kept, N source action(s) not stored`. An empty frame still says `no rows in refresh window`, as before. The initial full-history load with no closes is still `no_data`.
+- Controls, all passing:
+  - genuine removal still removes, and a changed dividend updates;
+  - a split on a no-close row is stored and applied;
+  - repeated loads are idempotent;
+  - the healthy NVDA is independent of GOOGL;
+  - all PR #22 retry and error tests are unchanged and pass.
+- Results:
+  - `uv run pytest -q -p no:cacheprovider`: **202 passed** (196 + 6).
+  - Codex's `reproduce_nan_close_dividend.py` against this worktree now exits 0: before = after = `[(1, 2026-11-03, 0.25, yahoo)]`, `(1, 0, 0)`, ok.
+- Cost: the new window delete (anti-join on the kept days) measured 1-6 ms per 50-company batch on an 11.3M-row synthetic in-memory table, the same as the old delete.
+- Not changed or claimed:
+  - There is no live data repair. Rows already lost stay lost until the refresh window covers them again, which it never will for dates more than 7 days old.
+  - The Nov 7 cause is still unproven.
+  - Merging needs a fresh yes from the user and restarts the unattended acceptance window.
