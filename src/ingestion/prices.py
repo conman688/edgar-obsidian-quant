@@ -15,6 +15,10 @@ stays in this module.
 """
 from __future__ import annotations
 
+import ast
+import gc
+import logging
+import re
 import time
 import warnings
 from dataclasses import dataclass, field
@@ -87,35 +91,90 @@ def to_raw(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
     return out, ratios
 
 
-def _download(tickers: list[str], start: date) -> dict[str, pd.DataFrame]:
+TICKER_RETRIES = 3          # a ticker yfinance failed is fetched again this many times, alone
+# yfinance's own words for "this ticker has no prices": not an error, nothing to retry.
+_NO_DATA = ("possibly delisted", "no price data found", "no data found")
+_FAILED = re.compile(r"\[([^\]]*)\]:\s*(.+)$")
+
+
+class TickerError(Exception):
+    """One ticker's download failed (yfinance logged an exception for it and returned no frame)."""
+
+
+class _Failures(logging.Handler):
+    """Collects the per-ticker errors yfinance.download logs (`['A', 'B']: <error>`) instead of
+    raising: without them a failed ticker looks the same as a ticker with no prices."""
+
+    def __init__(self):
+        super().__init__(logging.ERROR)
+        self.errors: dict[str, str] = {}
+
+    def emit(self, record):
+        m = _FAILED.search(record.getMessage())
+        if not m or any(h in m.group(2).lower() for h in _NO_DATA):
+            return
+        try:
+            syms = ast.literal_eval(f"[{m.group(1)}]")
+        except (ValueError, SyntaxError):
+            return
+        for t in syms:
+            self.errors[str(t).upper()] = m.group(2).strip()
+
+
+def _download(tickers: list[str], start: date) -> dict[str, pd.DataFrame | TickerError]:
+    """Frames by ticker; a ticker whose download raised inside yfinance maps to a TickerError."""
     import yfinance as yf
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")   # yfinance trips pandas 3 deprecation warnings
-        df = yf.download(tickers, start=start.isoformat(), auto_adjust=False, actions=True,
-                         group_by="ticker", progress=False, threads=True, multi_level_index=True,
-                         timeout=30)
-    out = {}
+    failures, log = _Failures(), logging.getLogger("yfinance")
+    log.addHandler(failures)
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")   # yfinance trips pandas 3 deprecation warnings
+            df = yf.download(tickers, start=start.isoformat(), auto_adjust=False, actions=True,
+                             group_by="ticker", progress=False, threads=True, multi_level_index=True,
+                             timeout=30)
+    finally:
+        log.removeHandler(failures)
+    out: dict[str, pd.DataFrame | TickerError] = {
+        t: TickerError(failures.errors[t]) for t in tickers if t.upper() in failures.errors}
     if df is None or df.empty:
         return out
     present = set(df.columns.get_level_values(0))
     for t in tickers:
-        if t in present:
+        if t in present and t not in out:
             sub = df[t]
             if sub["Close"].notna().any():
                 out[t] = sub
     return out
 
 
-def _download_with_retry(tickers: list[str], start: date, retries: int = 4) -> dict[str, pd.DataFrame]:
+def _download_with_retry(tickers: list[str], start: date, retries: int = 4) -> dict[str, pd.DataFrame | TickerError]:
     for attempt in range(retries):
         try:
-            return _download(tickers, start)
+            frames = _download(tickers, start)
+            break
         except Exception:
             if attempt == retries - 1:
                 raise
             time.sleep(30 * 2 ** attempt)   # Yahoo rate limits: back off hard
-    return {}
+    else:
+        return {}
+    for attempt in range(TICKER_RETRIES):
+        failed = [t for t, v in frames.items() if isinstance(v, TickerError)]
+        if not failed:
+            break
+        gc.collect()        # yfinance leaves a cache connection open per finished thread
+        time.sleep(5 * 2 ** attempt)
+        try:
+            again = _download(failed, start)
+        except Exception as e:     # the retry failed as a whole: the healthy frames above stand
+            again = {t: TickerError(repr(e)) for t in failed}
+        for t in failed:           # the retry's answer replaces the old one, including "no data"
+            if t in again:
+                frames[t] = again[t]
+            else:
+                del frames[t]
+    return frames
 
 
 PRICE_SCHEMA = pa.schema([("cik", pa.int32()), ("ticker", pa.string()), ("price_date", pa.date32()),
@@ -198,10 +257,20 @@ def _store(con: duckdb.DuckDBPyConnection, batch: list[tuple[int, str, date]],
         raise
 
 
+def _mark_error(con: duckdb.DuckDBPyConnection, failed: list[tuple[int, str, Exception]]) -> None:
+    """status says the last attempt failed; first/last_date keep the stored coverage."""
+    con.executemany("""INSERT INTO price_status VALUES (?, ?, 'error', NULL, NULL, ?, ?)
+                       ON CONFLICT (cik) DO UPDATE SET status = 'error',
+                       message = excluded.message, fetched_at = excluded.fetched_at""",
+                    [(cik, t, (str(e) if isinstance(e, TickerError) else repr(e))[:300], datetime.now())
+                     for cik, t, e in failed])
+
+
 def load(con: duckdb.DuckDBPyConnection, exchanges: tuple[str, ...] = EXCHANGES,
          tickers: list[str] | None = None, batch_size: int = 50, pause_s: float = 1.0,
          progress: Callable[[PriceStats], None] | None = None,
-         download: Callable[[list[str], date], dict[str, pd.DataFrame]] = _download_with_retry) -> PriceStats:
+         download: Callable[[list[str], date], dict[str, pd.DataFrame | TickerError]] = _download_with_retry,
+         ) -> PriceStats:
     """Fetch new companies from HISTORY_START and refresh known ones from their last date.
 
     Each batch commits on its own, so an interrupted run resumes where it stopped.
@@ -217,14 +286,15 @@ def load(con: duckdb.DuckDBPyConnection, exchanges: tuple[str, ...] = EXCHANGES,
             frames = download([t for _, t, _ in batch], start)
         except Exception as e:
             stats.errors += len(batch)
-            # status says the last attempt failed; first/last_date keep the stored coverage.
-            con.executemany("""INSERT INTO price_status VALUES (?, ?, 'error', NULL, NULL, ?, ?)
-                               ON CONFLICT (cik) DO UPDATE SET status = 'error',
-                               message = excluded.message, fetched_at = excluded.fetched_at""",
-                            [(cik, t, repr(e)[:300], datetime.now()) for cik, t, _ in batch])
+            _mark_error(con, [(cik, t, e) for cik, t, _ in batch])
             continue
+        failed = {t: v for t, v in frames.items() if isinstance(v, TickerError)}
+        if failed:
+            _mark_error(con, [(cik, t, failed[t]) for cik, t, _ in batch if t in failed])
+            stats.errors += len(failed)
+            batch = [b for b in batch if b[1] not in failed]
         # A batch downloads from its earliest start; trim each company to its own window.
-        frames = {t: df[df.index >= pd.Timestamp(s)] for t, df in frames.items()
+        frames = {t: df[df.index >= pd.Timestamp(s)] for t, df in frames.items() if t not in failed
                   for _, tk, s in batch if tk == t}
         _store(con, batch, frames, stats)
         if progress:

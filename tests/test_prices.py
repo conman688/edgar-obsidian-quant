@@ -110,3 +110,127 @@ def test_failed_batch_is_recorded_and_others_continue():
     s = prices.load(con, batch_size=1, pause_s=0, download=flaky)
     assert s.errors == 1 and s.priced == 1
     assert dict(con.execute("SELECT ticker, status FROM price_status").fetchall())["GOOGL"] == "error"
+
+
+# --- M9 C2 (2026-11-07): per-ticker errors that yfinance swallows ---------------------------
+# yfinance.download() catches each ticker's exception, logs it and returns no frame for it.
+# These tests go through the installed yfinance download path (no network, no cache): only its
+# Ticker, session and YfData are replaced.
+
+import sqlite3                                          # noqa: E402
+from unittest.mock import patch                         # noqa: E402
+
+from src import ops                                     # noqa: E402
+
+FRESH = yahoo([("2026-10-30", 100.0, 10_000, 0.0, 0.0), ("2026-11-06", 101.0, 11_000, 0.0, 0.0)])
+
+
+def _seeded_refresh():
+    """GOOGL and NVDA priced once, so the next load is a refresh of both."""
+    con = connect(":memory:")
+    seed(con)
+    prices.load(con, tickers=["GOOGL", "NVDA"], pause_s=0, download=lambda ts, start: {t: FRESH for t in ts})
+    return con
+
+
+def _through_yfinance(con, fail: dict[str, int], soft: dict[str, str] | None = None):
+    """Run prices.load with the real _download_with_retry. `fail[t]` = how many calls of ticker t
+    raise sqlite's 'unable to open database file'; `soft[t]` = a yfinance soft error (no data)."""
+    calls: list[str] = []
+    soft = soft or {}
+
+    class History:
+        def __init__(self, err):
+            self._last_error = err
+
+    class FakeTicker:
+        def __init__(self, ticker):
+            self.ticker, self._price_history = ticker, None
+
+        def history(self, **kwargs):
+            calls.append(self.ticker)
+            if fail.get(self.ticker, 0) > 0:
+                fail[self.ticker] -= 1
+                raise sqlite3.OperationalError("unable to open database file")
+            if self.ticker in soft:
+                self._price_history = History(f"${self.ticker}: {soft[self.ticker]}")
+                return FRESH.iloc[0:0]
+            return FRESH
+
+    with patch("yfinance.multi.Ticker", FakeTicker), patch("yfinance.multi.new_session", return_value=object()), \
+            patch("yfinance.multi.YfData"), patch("src.ingestion.prices.time.sleep") as backoff:
+        stats = prices.load(con, tickers=["GOOGL", "NVDA"], pause_s=0)
+    return stats, calls, backoff.call_count
+
+
+def _status(con, ticker):
+    return con.execute("SELECT status, message, last_date FROM price_status WHERE ticker = ?", [ticker]).fetchall()[0]
+
+
+def test_swallowed_ticker_error_is_retried_then_reported_as_error():
+    con = _seeded_refresh()
+    before = con.execute("SELECT count(*) FROM prices WHERE cik = 2").fetchall()[0][0]
+    stats, calls, backoffs = _through_yfinance(con, fail={"NVDA": 99})
+    assert (stats.priced, stats.no_data, stats.errors) == (1, 0, 1)
+    assert calls.count("NVDA") == 1 + prices.TICKER_RETRIES and calls.count("GOOGL") == 1
+    assert backoffs == prices.TICKER_RETRIES
+    status, message, last = _status(con, "NVDA")
+    assert status == "error" and "unable to open database file" in message and last == date(2026, 11, 6)
+    assert con.execute("SELECT count(*) FROM prices WHERE cik = 2").fetchall()[0][0] == before
+    assert _status(con, "GOOGL")[0] == "ok"
+    assert "1 companies failed their price refresh" in ops._warnings(con, date(2026, 11, 7), {}, {}, [], 0, 0, None)
+
+
+def test_swallowed_ticker_error_that_clears_on_retry_is_priced():
+    con = _seeded_refresh()
+    stats, calls, backoffs = _through_yfinance(con, fail={"NVDA": 1})
+    assert (stats.priced, stats.no_data, stats.errors) == (2, 0, 0)
+    assert calls.count("NVDA") == 2 and backoffs == 1
+    assert _status(con, "NVDA")[0] == "ok"
+
+
+def test_yfinance_no_data_stays_no_data_and_is_not_retried():
+    con = connect(":memory:")
+    seed(con)
+    stats, calls, backoffs = _through_yfinance(
+        con, fail={}, soft={"NVDA": "possibly delisted; no price data found  (1d 2010-01-01 -> 2026-11-07)"})
+    assert (stats.priced, stats.no_data, stats.errors) == (1, 1, 0)
+    assert calls.count("NVDA") == 1 and backoffs == 0
+    assert _status(con, "NVDA")[0] == "no_data"
+
+
+def _scripted(con, answers):
+    """prices.load with the real _download_with_retry and `_download` answering from `answers`:
+    each item is a dict to return or an exception to raise, in call order."""
+    answers, calls = list(answers), []
+
+    def fake(tickers, start):
+        calls.append(sorted(tickers))
+        a = answers.pop(0)
+        if isinstance(a, Exception):
+            raise a
+        return {t: v for t, v in a.items() if t in tickers}
+
+    with patch("src.ingestion.prices._download", fake), patch("src.ingestion.prices.time.sleep"):
+        stats = prices.load(con, tickers=["GOOGL", "NVDA"], pause_s=0)
+    return stats, calls
+
+
+def test_retry_that_raises_keeps_the_healthy_tickers_of_the_first_answer():     # Codex, pre-handoff
+    con = _seeded_refresh()
+    err = prices.TickerError("OperationalError('unable to open database file')")
+    stats, calls = _scripted(con, [{"GOOGL": FRESH, "NVDA": err}] + [RuntimeError("Too Many Requests")] * 3)
+    assert calls == [["GOOGL", "NVDA"], ["NVDA"], ["NVDA"], ["NVDA"]]
+    assert (stats.priced, stats.no_data, stats.errors) == (1, 0, 1)
+    assert _status(con, "GOOGL")[0] == "ok" and _status(con, "NVDA")[0] == "error"
+    assert "Too Many Requests" in _status(con, "NVDA")[1]
+
+
+def test_retry_that_finds_no_data_replaces_the_old_error():                    # Codex, pre-handoff
+    con = connect(":memory:")
+    seed(con)
+    err = prices.TickerError("OperationalError('unable to open database file')")
+    stats, calls = _scripted(con, [{"GOOGL": FRESH, "NVDA": err}, {}])
+    assert calls == [["GOOGL", "NVDA"], ["NVDA"]]
+    assert (stats.priced, stats.no_data, stats.errors) == (1, 1, 0)
+    assert _status(con, "NVDA")[0] == "no_data"

@@ -334,6 +334,7 @@ RUN_STEPS = {"weekly": [["ingest", "all"], ["screen"], ["fetch-text"], ["sync-va
 def cmd_run(args) -> None:
     """A scheduled run: lock, backup (weekly), the job's steps on one connection, health report."""
     today = date.today()
+    ops.raise_open_files()
     try:
         with ops.run_lock(config.DATA_DIR / ".run.lock"):
             b = None
