@@ -234,3 +234,91 @@ def test_retry_that_finds_no_data_replaces_the_old_error():                    #
     assert calls == [["GOOGL", "NVDA"], ["NVDA"]]
     assert (stats.priced, stats.no_data, stats.errors) == (1, 1, 0)
     assert _status(con, "NVDA")[0] == "no_data"
+
+
+# --- M9 C5 (2026-11-07): actions on source rows without a close -----------------------------
+# yfinance 1.7.0 (keepna=False) keeps a row whose Close is NaN when it carries a dividend or a
+# split, and appends such rows for events outside the price range. Actions are kept on every
+# source row; prices only where there is a close; a stored close is never deleted by a source
+# row that has none.
+NAN = float("nan")
+DIVS = "SELECT cik, ex_date, amount_raw FROM dividends ORDER BY 1, 2"
+PRICES = "SELECT cik, price_date, close_raw FROM prices ORDER BY 1, 2"
+ORIGINAL = [("2026-11-02", 10.0, 100.0, 0.0, 0.0), ("2026-11-03", 10.0, 100.0, 0.25, 0.0),
+            ("2026-11-04", 11.0, 100.0, 0.0, 0.0)]
+
+
+def _c5_status(con, ticker):
+    return con.execute("SELECT status, first_date, last_date, message FROM price_status WHERE ticker = ?",
+                       [ticker]).fetchall()[0]
+
+
+def _c5_seeded():
+    """GOOGL and NVDA loaded once from healthy frames (Codex's C5 seed)."""
+    con = connect(":memory:")
+    seed(con)
+    healthy = yahoo([("2026-11-02", 50.0, 10.0, 0.0, 0.0), ("2026-11-04", 51.0, 10.0, 0.0, 0.0)])
+    prices.load(con, tickers=["GOOGL", "NVDA"], pause_s=0,
+                download=lambda tickers, start: {"GOOGL": yahoo(ORIGINAL), "NVDA": healthy})
+    return con, healthy
+
+
+def _refresh(con, googl, nvda):
+    return prices.load(con, tickers=["GOOGL", "NVDA"], pause_s=0,
+                       download=lambda tickers, start: {"GOOGL": googl, "NVDA": nvda})
+
+
+def test_refresh_keeps_a_dividend_reported_on_a_day_without_a_close():              # Codex C5
+    con, healthy = _c5_seeded()
+    before_divs, before_prices = con.execute(DIVS).fetchall(), con.execute(PRICES).fetchall()
+    assert before_divs == [(1, date(2026, 11, 3), 0.25)]
+    no_close = yahoo([ORIGINAL[0], ("2026-11-03", NAN, 0.0, 0.25, 0.0), ORIGINAL[2]])
+    for _ in range(2):                                                              # idempotent
+        s = _refresh(con, no_close, healthy)
+        assert (s.priced, s.no_data, s.errors) == (2, 0, 0)
+        assert con.execute(DIVS).fetchall() == before_divs
+        assert con.execute(PRICES).fetchall() == before_prices      # stored Nov 3 close kept, no NaN row
+    assert _c5_status(con, "GOOGL")[:3] == ("ok", date(2026, 11, 2), date(2026, 11, 4))
+    assert _c5_status(con, "NVDA")[:3] == ("ok", date(2026, 11, 2), date(2026, 11, 4))
+
+
+def test_refresh_still_removes_and_updates_dividends_the_source_changed():         # C5 control
+    con, healthy = _c5_seeded()
+    removed = yahoo([ORIGINAL[0], ("2026-11-03", 10.0, 100.0, 0.0, 0.0), ORIGINAL[2]])
+    _refresh(con, removed, healthy)
+    assert con.execute(DIVS).fetchall() == []
+    changed = yahoo([ORIGINAL[0], ("2026-11-03", NAN, 0.0, 0.30, 0.0), ORIGINAL[2]])
+    _refresh(con, changed, healthy)
+    assert con.execute(DIVS).fetchall() == [(1, date(2026, 11, 3), 0.30)]
+
+
+def test_split_on_a_day_without_a_close_adjusts_earlier_prices_and_is_stored():    # C5 control
+    con = connect(":memory:")
+    seed(con)
+    df = yahoo([("2026-11-02", 5.0, 200.0, 0.0, 0.0), ("2026-11-03", NAN, 0.0, 0.0, 2.0),
+                ("2026-11-04", 6.0, 100.0, 0.1, 0.0)])
+    prices.load(con, tickers=["GOOGL"], pause_s=0, download=lambda tickers, start: {"GOOGL": df})
+    assert con.execute(PRICES).fetchall() == [(1, date(2026, 11, 2), 10.0), (1, date(2026, 11, 4), 6.0)]
+    assert con.execute("SELECT cik, ex_date, ratio FROM splits").fetchall() == [(1, date(2026, 11, 3), 2.0)]
+    assert con.execute(DIVS).fetchall() == [(1, date(2026, 11, 4), 0.1)]
+
+
+def test_dividend_after_the_last_close_is_stored_without_a_price():                # C5 out-of-range
+    con, healthy = _c5_seeded()
+    later = yahoo(ORIGINAL + [("2026-11-06", NAN, 0.0, 0.40, 0.0)])     # yfinance's appended event row
+    _refresh(con, later, healthy)
+    assert con.execute(DIVS).fetchall() == [(1, date(2026, 11, 3), 0.25), (1, date(2026, 11, 6), 0.40)]
+    assert con.execute("SELECT max(price_date) FROM prices WHERE cik = 1").fetchall() == [(date(2026, 11, 4),)]
+    assert _c5_status(con, "GOOGL")[:3] == ("ok", date(2026, 11, 2), date(2026, 11, 4))
+
+
+def test_window_with_no_closes_keeps_stored_history_and_says_so():                 # C5 control
+    con, healthy = _c5_seeded()
+    before = con.execute(DIVS).fetchall(), con.execute(PRICES).fetchall()
+    blank = yahoo([("2026-11-03", NAN, 0.0, 0.30, 0.0), ("2026-11-04", NAN, 0.0, 0.0, 0.0)])
+    s = _refresh(con, blank, healthy)
+    assert (s.priced, s.no_data, s.errors) == (1, 0, 0)
+    assert (con.execute(DIVS).fetchall(), con.execute(PRICES).fetchall()) == before
+    status, first, last, message = _c5_status(con, "GOOGL")
+    assert (status, first, last) == ("ok", date(2026, 11, 2), date(2026, 11, 4))   # window re-read next run
+    assert "no closes" in message and "1 action" in message
