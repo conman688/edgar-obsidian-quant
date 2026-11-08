@@ -352,7 +352,7 @@ Review remains open; main and the live pipeline are unchanged.
 
 - Branch: `review/m9-dividend-no-close-2026-11-07`, based on main `9c2b968` (the PR #22 merge). This commit changes only this file.
 - Why: the 2026-11-07 scheduled weekly dropped the `dividends` count by a net 21 rows. Both backups were taken before that refresh, so they cannot show which rows went.
-  - Read-only exposure on the 11-07 backup, using the exact `universe()` selection: 63 rows across 63 companies, so between 21 and 63 rows were removed.
+  - Read-only exposure on the 11-07 backup, using the exact `universe()` selection: 63 rows across 63 companies in the pre-run snapshot. That is not an upper bound, because the weekly updates tickers, profiles and facts before it selects the price universe (Codex). Only R >= 21 is firm.
   - Notes and scripts: `/Users/conor123/edgar-obsidian-quant-checks/dividends-2026-11-07.md`, outside the repo.
 - Mechanism, reproduced offline on the installed yfinance 1.7.0. Not shown to be the Nov 7 cause.
   - `PriceHistory.history` with its defaults (`keepna=False`, `repair=False`), fed a chart reply with a null quote on a dividend day inside the range, keeps that row: Close NaN, Dividends 0.25.
