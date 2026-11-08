@@ -1,4 +1,6 @@
 """M2 prices: raw-price rebuild from Yahoo's split-adjusted data, incremental refresh, coverage."""
+import json
+import warnings
 from datetime import date
 
 import pandas as pd
@@ -321,4 +323,42 @@ def test_window_with_no_closes_keeps_stored_history_and_says_so():              
     assert (con.execute(DIVS).fetchall(), con.execute(PRICES).fetchall()) == before
     status, first, last, message = _c5_status(con, "GOOGL")
     assert (status, first, last) == ("ok", date(2026, 11, 2), date(2026, 11, 4))   # window re-read next run
-    assert "no closes" in message and "1 action" in message
+    assert "no closes" in message and "1 source action(s) not stored" in message
+
+
+def test_dividend_on_a_null_quote_from_installed_yfinance_history_survives_a_refresh():  # C5
+    """The frame comes from yfinance's own PriceHistory.history (defaults keepna=False, repair=False)
+    on a synthetic chart reply whose Nov 3 quote is null but carries a 0.25 dividend. No network."""
+    from yfinance.scrapers.history import PriceHistory
+    ts = [int(pd.Timestamp(f"2026-11-0{d} 14:30", tz="UTC").timestamp()) for d in (2, 3, 4)]
+    reply = {"chart": {"error": None, "result": [{
+        "meta": {"currency": "USD", "symbol": "GOOGL", "exchangeName": "NMS", "instrumentType": "EQUITY",
+                 "exchangeTimezoneName": "America/New_York", "timezone": "EST", "gmtoffset": -18000,
+                 "dataGranularity": "1d", "range": "", "priceHint": 2, "regularMarketPrice": 11.0,
+                 "firstTradeDate": ts[0], "validRanges": ["1d", "max"]},
+        "timestamp": ts,
+        "events": {"dividends": {str(ts[1]): {"amount": 0.25, "date": ts[1]}}},
+        "indicators": {"quote": [{"open": [10, None, 11], "high": [10, None, 11], "low": [10, None, 11],
+                                  "close": [10, None, 11], "volume": [100, None, 100]}],
+                       "adjclose": [{"adjclose": [10, None, 11]}]}}]}}
+
+    class Reply:
+        text = json.dumps(reply)
+        def json(self): return reply
+
+    class Data:
+        def get(self, **kw): return Reply()
+        cache_get = get
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        frame = PriceHistory(Data(), "GOOGL", "America/New_York", session=object()).history(
+            start="2026-11-02", end="2026-11-05", auto_adjust=False, actions=True, raise_errors=True)
+    frame.index = frame.index.tz_localize(None)                 # yf.download's default ignore_tz=True
+    assert frame.loc["2026-11-03", "Dividends"] == 0.25 and pd.isna(frame.loc["2026-11-03", "Close"])
+    con, healthy = _c5_seeded()
+    s = _refresh(con, frame, healthy)
+    assert (s.priced, s.no_data, s.errors) == (2, 0, 0)
+    assert con.execute(DIVS).fetchall() == [(1, date(2026, 11, 3), 0.25)]
+    assert con.execute("SELECT close_raw FROM prices WHERE cik = 1 ORDER BY price_date").fetchall() == \
+        [(10.0,), (10.0,), (11.0,)]                             # Nov 3's stored close kept
