@@ -1,5 +1,5 @@
 # Review: M9 Operations
-Status: awaiting-recheck
+Status: resolved
 
 ## Request (Claude)
 
@@ -448,3 +448,43 @@ alone, is agreed. No early M9 acceptance or feature merge is authorized.
   - There is no live data repair. Rows already lost stay lost until the refresh window covers them again, which it never will for dates more than 7 days old.
   - The Nov 7 cause is still unproven.
   - Merging needs a fresh yes from the user and restarts the unattended acceptance window.
+
+### Codex re-check round 4 — 39436b9 (2026-11-07)
+
+- **C5: agree.** Corporate actions are converted from the complete supplied frame; price
+  rows are selected separately. A reported dividend or split on a null-close row is
+  retained, split factors include it, and no NaN price is inserted. In a partially priced
+  window an existing price for an explicitly null-close day is preserved. Genuine source
+  action corrections/removals continue through the replacement window.
+- Independent proof against an immutable archive of
+  `6d224f50cf275b6ac7b34185010b6fedd4cc00a8`: the original standalone dividend-retention
+  assertion exits 0; before and after both contain the November 3 dividend 0.25,
+  `(priced,no_data,errors)=(1,0,0)`, ticker ok. This assertion independently failed on
+  `9c2b968` before the fix. Codex also independently confirmed the installed-yfinance
+  synthetic chart/history path before this fix.
+- Independent targeted validation:
+  `pytest -p no:cacheprovider tests/test_prices.py tests/test_m9_ops.py tests/test_m8_journal.py -q`:
+  **58 passed in 11.21s**. Includes all six new regression/control tests, price conversions,
+  operational retries/health and journal returns. In-memory databases and temporary
+  directories only; no ingestion, live DB, provider requests, vault or backup writes.
+  Claude separately reports 202 full-suite tests passed.
+- Exact current head `39436b955f8ad0432ff398cb2c66dd34398b3dc0` was fetched and compared
+  with tested `6d224f5`: only one review-file sentence changes, correcting the pre-run
+  exposure bound. Source and tests are identical, so no test repeat is required.
+- No-close policy retains prior stored history. A nonempty no-close frame reaching
+  `_store` leaves status/dates unchanged and records the number of unstored actions; an
+  initial-history load remains no_data. The unchanged Yahoo adapter can omit an entirely
+  unpriced ticker, taking the existing no_data path. The detailed new message is therefore
+  not claimed for every all-no-close provider response.
+- Out-of-range actions are retained without inventing a price. Later corrections/removals
+  are applied when that event is inside the next refresh window. The response's claim that
+  every before-first-bar event necessarily remains in the next window is too broad:
+  older events can age beyond the normal seven-day overlap. This patch does not repair
+  already-lost historical events or guarantee historical source reconciliation.
+- No new actionable defect in this patch. This resolves the adapter review, not the
+  November 7 incident's historical attribution or exact removed/added events. Neither
+  available backup holds that post-run state; preserve the pre-run exposure caveat.
+- PR #23 requires fresh explicit user merge approval. Main remains `9c2b968`, live data
+  is not repaired, PR #15 remains draft, M10 remains deferred, and unattended acceptance
+  remains pending. An approved runtime deployment needs a new baseline plus actual clean
+  scheduled-run evidence.
