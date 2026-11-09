@@ -1,5 +1,5 @@
 # Review: M11 Quarantine checks (plan)
-Status: awaiting-recheck
+Status: awaiting-response
 
 ## Request (Claude)
 
@@ -79,6 +79,12 @@ Scope: documentation only, base e3dd0c5. Independently corroborated the 51 quara
 - Evidence: Phase1 proposes detecting the latest20-F/40-F annual report in loaded_filings. Independently DESCRIBE'd the current migrated schema in memory: only cik,accn,n_facts,fingerprint exist, no form/filed/report date. The ledger alone cannot select an annual report or apply filed<=as_of. Define the actual existing metadata source (e.g. stored xbrl_facts form/filed grouped by accession with the PIT predicates) and an explicit unknown result when its coverage is insufficient. Missing metadata must not be asserted to prove foreign_filer or no_annual_yet. Likewise no DEI fact plus an existing filing is a possible per-class cause, not confirmation of that cause without class evidence.
 - Test: future fixtures for annual metadata present in facts, ledger-only accession with no form/date evidence, and an annual report filed after as_of. Missing metadata stays unknown and future metadata cannot change the historical diagnosis; Phase1 status/rank/shortlist remain identical.
 
+
+### C5. The revised zero-debt proof needs four documents under a three-request cap
+- Severity: medium (unreachable proof / repeated incomplete fetch)
+- Where: ROADMAP.md:420-422, ROADMAP.md:464-472
+- Evidence: 2b needs index.json then the selected instance; revised 2c also needs that instance for values/decimals plus FilingSummary.xml then its balance-sheet R page. A new filing with no cached M10 data therefore needs four distinct responses, but the ledger paragraph still promises at most3 requests per filing. M10 does not keep raw instance files (ROADMAP M10), so an earlier completed M10 ledger alone does not supply M11's required numeric/context/decimals data. Define the per-family request budget/reuse and completion boundary so the proof can complete and one family cannot suppress another.
+- Test: planned offline request-count fixture for a new10-Q needing cover counts and zero-debt evidence: index+instance+summary+R; count the cold-path requests explicitly, reuse a fetched instance in that invocation, and verify retry after a partial failure plus zero requests on a completed second invocation. Increase the documented budget or name an actual existing source that removes a request; no live requests needed for this plan revision.
 
 ## Response (Claude)
 
@@ -161,7 +167,14 @@ Each check becomes a failing test before any code.
 
 ## Re-check (Codex)
 
-_Codex writes agree or disagree per answer here._
+### Round 1 — rechecked 4a50d9a5a4a18e02674013f2a6deab5c2a68f34b
+- C1: **agree** for the plan. Complete equivalent totals only; components are candidates with quarantine retained, and component aggregation is explicitly outside scope. Both the1M+9M negative case and total-plus-component non-double-counting case are planned. No implementation approved.
+- C2: **agree** for the plan. Unpriced/voting-only/unverified classes now create a blocking issue, own-class prices replace the blind sum, conflicting contexts block, and split basis is explicit. The secondary-class branch is explicitly blocked by current price coverage. Future implementation review must verify complete count/symbol coverage, point-in-time dates and duplicate contexts against these proved-mapping requirements.
+- C3: **agree** for the plan. Percentage tolerance removed; source-decimals rounding budget, missing-precision rejection and non-overlapping coverage are specified, including the900k negative case. No claim is made that unbuilt parsing or live examples have passed.
+- C4: **disagree**, partly fixed. Actual metadata source/PIT and possible-class wording are corrected. But the concrete `no_annual_yet` rule at ROADMAP.md:391 still treats one stored10-Q plus no stored annual-form facts as proof no annual has been filed and a TTM cannot yet exist. Counterexample: stored10-Q facts plus an annual ledger accession with no usable facts; the new positive rule fires even though the next bullet says the missing metadata is unknown. An incomplete facts snapshot is not a complete filing inventory. State the observation narrowly (`no_annual_in_stored_facts`, no TTM from the currently stored annual base), explicitly not proof of no annual filing/recent listing; unknown coverage takes precedence. Planned fixture should include the10-Q-plus-ledger-only-annual combination, not just a wholly empty facts ledger.
+- C5: **new finding**, request-budget/completion contract introduced by the expanded instance-based2c proof; see Findings. C1-C3 remain resolved while C4/C5 need a response.
+
+Independent profile recheck also corroborated3shortlist/51quarantine/4135fail, all51pass_insider, all11multi-class names, the14US missing-debt/10US missing-both groups, and12persistently quarantined across all four saved snapshots. No additional live access or tests needed for this documentation round.
 
 ## Outcome (user)
 
