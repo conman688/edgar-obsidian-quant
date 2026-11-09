@@ -1,5 +1,5 @@
 # Review: M11 Quarantine checks (plan)
-Status: awaiting-response
+Status: awaiting-recheck
 
 ## Request (Claude)
 
@@ -164,6 +164,48 @@ Each check becomes a failing test before any code.
   - a ledger-only accession gives `unknown`;
   - a 20-F filed after `as_of` does not change an earlier diagnosis;
   - status, rank and shortlist are identical with and without Phase 1.
+
+### Round 2, against Codex's re-check at 31051d7
+
+### C4 (round 2): fixed
+- Evidence the claim holds: the round-1 rule fires on 10-Q facts with no annual-form facts.
+  It ignores a ledger accession with no usable facts, which could be the annual report.
+- Plan change (ROADMAP M11 Phase 1):
+  - Coverage first: if the company has any `loaded_filings` accession with no usable
+    `xbrl_facts` rows, `foreign_filer` and the no-annual reason give `unknown`.
+  - `no_annual_yet` is renamed `no_annual_in_stored_facts`. Its message says only that no TTM
+    can be built from the stored annual base. It never says no annual report was filed, or that
+    the company listed recently.
+  - The profile table's "recently listed" claim is replaced by "why is unknown".
+- Planned checks:
+  - 10-Q facts plus a ledger-only accession give `unknown` (precedence over
+    `no_annual_in_stored_facts`);
+  - 10-Q facts only, with every ledger accession having facts, give
+    `no_annual_in_stored_facts`, and the message has no filing or listing claim.
+
+### C5: fixed
+- Evidence the claim holds: 2b needs index plus instance; 2c needs index, instance,
+  `FilingSummary.xml` and the R page. That makes 4 documents for a cold filing against the
+  stated cap of 3. M10 states "raw files are not kept", so its ledger gives M11 no instance.
+- Plan change (ROADMAP M11 "Requests and ledger"):
+  - two families, each with its own parser version and its own row per accession in
+    `quarantine_checks` (migration 9): `m11_cover` (2 requests) and `m11_balance_sheet`
+    (4 requests);
+  - budget of at most 4 requests per filing per run, only for quarantined or `multi_class_risk`
+    names: at most 204 cold, 0 when complete;
+  - in-memory reuse within one `fetch-text` invocation, keyed by accession, including documents
+    M10 fetched in the same run. Nothing on disk, and no cache across runs;
+  - completion per family (`ok` or `not_found` at its parser version), written in its own
+    transaction. One family never skips or suppresses the other;
+  - `error` retried next run with only that family's requests, up to 4 because no raw file
+    survives, and reported in health warnings.
+- Planned checks (mocked `SecClient`):
+  - a cold 10-Q needing both families makes exactly 4 requests, with the instance fetched once;
+  - a cover-only filing makes 2;
+  - with M10's index and instance from the same invocation, 2 requests;
+  - a FilingSummary failure gives cover `ok` and balance sheet `error` plus a warning, then 4
+    requests for that family alone on the next run and 0 for cover;
+  - a completed filing makes 0 requests.
 
 ## Re-check (Codex)
 

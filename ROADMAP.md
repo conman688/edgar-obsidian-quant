@@ -362,7 +362,7 @@ groups. The causes are hypotheses, to be confirmed against SEC at build time:
 |---|---|---|
 | Foreign filer | 21 flagged `foreign_filer`. FMX and GRAB are not flagged and may also be 20-F filers (to confirm) | IFRS statements and annual covers; the concept map is us-gaap only. FMX and GRAB have no shares or cash facts at all, and `foreign_filer` reads the form only from those facts |
 | No DEI cover shares (`multi_class_risk`) | 11: CXM, MIR, HRL, TSN, FMX, RSI, LUCK, GRAB, INR, FLOC, GLIBA | Possibly cover counts tagged per share class, which companyfacts drops (comment in `queries.py`). A missing DEI count alone does not confirm this; 8 have `missing_shares` and 3 fall back to a stale balance-sheet count (`stale_shares`) |
-| No EBIT and no FCF, US filer | 10: MFP, NVRI, SBMT, BLSM, CNXU, LTGO, MOBI, LIEN, NSLR, FBDT | TTM needs an annual value (`ttm_flow_sql`): recently listed filers have none yet; others may tag the subtotal or cash flows outside the map |
+| No EBIT and no FCF, US filer | 10: MFP, NVRI, SBMT, BLSM, CNXU, LTGO, MOBI, LIEN, NSLR, FBDT | TTM needs an annual value (`ttm_flow_sql`), and the stored facts may have no annual base (why is unknown: incomplete snapshot, recent listing, or tags outside the map) |
 | `missing_debt`, US filer | 14: BLSM, CAVA, CNXU, EPSN, FBDT, HUBS, LIEN, LTGO, MOBI, NSLR, OFLX, RSI, SEZL, SMID | No debt at all (CAVA, OFLX?), or debt under tags outside the map (convertible notes: HUBS?) |
 | `stale_debt` | 5: AN, IMMR, UPBD, CXM, INR | A debt line reported in the last 400 days is missing at the newest date |
 | `share_jump` | 3: SEZL, RSI, LIEN | Listing, reorganisation or a missed split |
@@ -385,11 +385,18 @@ and each issue, the screen adds a reason. The only filing metadata used comes fr
 `src/db/pit.py` (`filed <= as_of`). `loaded_filings` holds only `cik`, `accn`, `n_facts` and
 `fingerprint`, so it is not a source (C4). When the facts cannot decide, the reason is
 `unknown`, never a guessed cause.
+- Coverage first (C4, round 2). If the company has an accession in `loaded_filings` with no
+  usable rows in `xbrl_facts`, its form and filing date are unknown, and the reasons below that
+  depend on the latest or a missing filing give `unknown` instead. That covers
+  `foreign_filer` and `no_annual_in_stored_facts`. Stored facts describe a snapshot, not
+  a complete filing inventory.
 - `foreign_filer`: the company's latest accession with an annual form filed by `as_of` is a 20-F
   or 40-F. If that holds for FMX and GRAB, their issue list gains `foreign_filer`. Their status is
   already quarantine and stays so.
-- `no_annual_yet`: the facts show at least one 10-Q filed by `as_of` and no annual form filed by
-  `as_of`, so a TTM cannot be built yet. The message gives the first 10-Q's filing date.
+- `no_annual_in_stored_facts`: the stored facts filed by `as_of` include a 10-Q and no
+  annual-form accession, so no TTM can be built from the stored annual base. The message says
+  exactly that. It never says that no annual report was filed, or that the company listed
+  recently.
 - `tag_candidates`: stored us-gaap facts from the same accession and period as the newest
   balance sheet or TTM, under tags outside `concept_map` whose names fit the concept. The
   matching is a fixed pattern per concept. For debt: Debt, Notes, Borrowing, LineOfCredit or
@@ -419,7 +426,8 @@ Phase 2: resolve with evidence.
   scope.
 - 2b, cover shares per class: market cap only from a proved economic mapping (C2). For a
   `no_cover_count` name, take the latest 10-K or 10-Q filed by `as_of` and find the filing's one
-  `*_htm.xml` through `index.json`, using M10's fetcher.
+  `*_htm.xml` through `index.json`, the same lookup as M10. M10 keeps no raw instance, so its
+  ledger supplies nothing here; see "Requests and ledger" below.
   - Read `dei:EntityCommonStockSharesOutstanding` and `dei:TradingSymbol` in contexts with a
     `StatementClassOfStockAxis` member.
   - Store each class's count with its member, symbol, DEI date, accession and filing date in a
@@ -467,9 +475,28 @@ Phase 2: resolve with evidence.
     `balance_sheet_no_debt`.
   - Any debt-like or unlisted row found: the name stays `missing_debt`, and the rows are shown
     as candidates.
-- Ledger, as in M10: `ok`, `not_found` (final) or `error` (retried next run and listed in the
-  health warnings). Each filing is fetched once, with at most 3 requests through `SecClient`,
-  and only for quarantined or `multi_class_risk` names. That was 51 names on 11-07.
+- Requests and ledger (C5). Documents per filing: (1) `index.json`, (2) the one `*_htm.xml`
+  instance, (3) `FilingSummary.xml`, (4) the balance-sheet R page.
+  - Two families, each with its own parser version and ledger row per accession in a table
+    `quarantine_checks` (migration 9, with `cover_shares`):
+    - `m11_cover` (2b) needs (1) and (2): 2 requests.
+    - `m11_balance_sheet` (2c) needs (1) to (4): 4 requests, because the values and `decimals`
+      come from the instance and the rows from the R page.
+  - Budget: at most 4 requests per filing per run, through `SecClient`, and only for quarantined
+    or `multi_class_risk` names (51 on 11-07). That means at most 204 requests on a cold run and
+    0 for filings already complete.
+  - Reuse is in memory, within one `fetch-text` invocation, keyed by accession. A document
+    fetched once (by M10's instance family or by either M11 family) is passed to the others and
+    never fetched twice in that run. Nothing is kept on disk; raw files are not kept, as in
+    M10. A later run has no cache.
+  - Completion: a family is complete for a filing when its row is `ok` or `not_found` at its
+    current parser version. Each family is checked and written on its own, one transaction
+    per family per filing. A complete `m11_cover` never skips an incomplete
+    `m11_balance_sheet`, and the other way round.
+  - Retry: an `error` row (a failed request, zero or several `*_htm.xml`, no balance-sheet R
+    page, malformed XML) is retried on the next run and listed in the health warnings. The
+    retry makes only that family's requests: up to 4 for `m11_balance_sheet`, because no raw
+    file survives the run. It never makes requests for a family already complete.
 - Runs inside `fetch-text`, so the weekly job's steps do not change. Because `fetch-text` runs
   after `screen`, a resolution counts from the next weekly screen: one week of lag (open
   question 1).
@@ -516,8 +543,25 @@ Checks. The facts below are to be confirmed against SEC when the fixtures are ta
     `debt_total` synonym shortlisted it at net cash/mcap 0.417; the true 0.333 fails.)
   - A filer with a total and a convertible line: the total is used and the line is not added
     again.
-- Phase 1 metadata (C4): annual form and date present in the facts gives the reason. A ledger
-  accession with no facts gives `unknown`. A 20-F filed after `as_of` does not change a
+- Phase 1 metadata (C4):
+  - Annual form and date present in the facts give the reason.
+  - A ledger accession with no facts gives `unknown`. So do stored 10-Q facts together with a
+    ledger-only accession that might be the annual: `unknown` takes precedence over
+    `no_annual_in_stored_facts`.
+  - With 10-Q facts only and every ledger accession having facts, the reason is
+    `no_annual_in_stored_facts`. Its message contains no claim that no annual report was filed
+    or that the company listed recently.
+- Requests (C5), against a mocked `SecClient`:
+  - A cold 10-Q needing both families makes exactly 4 requests (index, instance,
+    FilingSummary, R page), with the instance fetched once and used by both, and writes both
+    rows.
+  - A cold filing needing only `m11_cover` makes 2.
+  - If M10 already fetched the index and instance of the same accession in that invocation, M11
+    reuses both and makes only the FilingSummary and R page requests: 2 instead of 4.
+  - If FilingSummary fails, the result is `m11_cover` `ok`, `m11_balance_sheet` `error` and a
+    health warning. The next run makes 4 requests for `m11_balance_sheet` and 0 for
+    `m11_cover`.
+  - A completed filing makes 0 requests on the next invocation. A 20-F filed after `as_of` does not change a
   diagnosis dated before it. Status, rank and shortlist are identical with and without Phase 1.
 - Synthetic: a balance sheet with an extension element `NotesPayableToBank` is never zero. An
   index with zero or two instances, no balance-sheet R page, or malformed XML each gives an
