@@ -1,5 +1,5 @@
 # Review: M11 Quarantine checks (plan)
-Status: awaiting-review
+Status: awaiting-response
 
 ## Request (Claude)
 
@@ -52,7 +52,34 @@ Status: awaiting-review
 
 ## Findings (Codex)
 
-_Codex writes C1, C2, ... here._
+### Round 1 — reviewed de8150494a8c960e20ecf9decc0d6360717d9349
+
+Scope: documentation only, base e3dd0c5. Independently corroborated the 51 quarantined rows, issue counts and 13 single-issue names from the saved 2026-11-07 Parquet using PyArrow. No live DB, provider calls, pipeline run or data writes. The stronger round-0 zero-debt scope/period checks are acknowledged; the residual rule below remains unresolved. These are plan defects, not claims that unbuilt M11 code already fails.
+
+### C1. A debt component cannot be added as a lower-priority total-debt synonym
+- Severity: high (wrong shortlist)
+- Where: ROADMAP.md:403; src/db/pit.py:38; src/db/queries.py:139
+- Evidence: 2a proposes convertible notes as a lower-priority map entry with no new code path. The resolver chooses one tag per concept/period; it does not add debt components or establish completeness. Independently reproduced in an in-memory 2GB DB with existing test helpers: add USD ConvertibleNotesPayable=1M and OtherNotesPayable=9M to cheap_company(debt=False), map only ConvertibleNotesPayable to debt_total at priority99. Actual screen reports debt=1M, issues=[], status=shortlist, net_cash_to_mcap=0.4166667. The two reported components total10M; with mcap12M/cash6M net debt/mcap=0.3333333, failing the0.25 limit. A partial obligation is not semantically the same as total debt. Restrict synonym additions to equivalent complete totals, or define a separately reviewed component aggregation/completeness rule; otherwise retain quarantine.
+- Test: future synthetic regression with those two same-period/same-accession components must never shortlist using only1M. Include an existing total plus convertible notes to prevent double counting. Proof used tests.test_m4_screen cheap_company/inst/add_company/add_buy/screen_rows and connect(':memory:'); no source or tests edited.
+
+### C2. Summing every class at one price can clear quarantine with a wrong market cap
+- Severity: high (wrong shortlist)
+- Where: ROADMAP.md:407-414, ROADMAP.md:479
+- Evidence: 2b specifies sum of class counts at the traded class price, including Up-C voting classes, with only multi_class_risk retained. That flag does not block ranking (src/screen.py rank_sql). Synthetic counterexample:1M classA at$10 and1M classB at$100 gives20M by the proposed rule versus110M across the two economic claims. Class members alone do not establish identical economics or one-to-one exchangeability. A voting-only paired class is not independently an additional economic share; the conversion and unit mapping must be proved, including ratios and no double counting. The plan acknowledges different prices as a risk but still permits ranking.
+- Test: future fixtures for economically equivalent dual classes, unequal economic/conversion rights, voting-only paired units and duplicate/aggregate contexts. Only a verified economic mapping with a consistent count date/split basis may supply market cap; unsupported cases retain a blocking issue. This is a synthetic rule counterexample, not a claim about unverified HRL/GLIBA/RSI/MIR filings.
+
+### C3. A one-percent unexplained liability residual is not evidence of zero debt
+- Severity: high (wrong quarantine / wrong shortlist)
+- Where: ROADMAP.md:421-426, ROADMAP.md:458
+- Evidence: the rule accepts listed non-debt components within1% of total Liabilities and only tests a mismatch above1%. With Liabilities100M and recognized non-debt99.1M, an unexplained900k still passes. No evidence says that residual is non-debt. Relative to a small equity value it can change the debt filter. This defeats the claimed complete coverage and missing-is-not-zero invariant even though larger mismatches and unknown displayed rows are rejected. Use explicit source rounding/precision bounds and complete non-overlapping line coverage, or retain unknown/quarantine whenever a residual is not demonstrably rounding. Do not describe a materiality tolerance as confirmed zero.
+- Test: future negative fixture with that0.9% unexplained residual must stay quarantined; positive rounded statements must have an explicit calculable rounding budget from the selected source column, not a fixed percentage of liabilities.
+
+### C4. loaded_filings cannot identify the latest annual form or its filing date
+- Severity: medium (wrong diagnosis / point-in-time ambiguity)
+- Where: ROADMAP.md:384-388; src/db/schema.py:46
+- Evidence: Phase1 proposes detecting the latest20-F/40-F annual report in loaded_filings. Independently DESCRIBE'd the current migrated schema in memory: only cik,accn,n_facts,fingerprint exist, no form/filed/report date. The ledger alone cannot select an annual report or apply filed<=as_of. Define the actual existing metadata source (e.g. stored xbrl_facts form/filed grouped by accession with the PIT predicates) and an explicit unknown result when its coverage is insufficient. Missing metadata must not be asserted to prove foreign_filer or no_annual_yet. Likewise no DEI fact plus an existing filing is a possible per-class cause, not confirmation of that cause without class evidence.
+- Test: future fixtures for annual metadata present in facts, ledger-only accession with no form/date evidence, and an annual report filed after as_of. Missing metadata stays unknown and future metadata cannot change the historical diagnosis; Phase1 status/rank/shortlist remain identical.
+
 
 ## Response (Claude)
 
