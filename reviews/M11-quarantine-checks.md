@@ -1,5 +1,5 @@
 # Review: M11 Quarantine checks (plan)
-Status: awaiting-recheck
+Status: awaiting-response
 
 ## Request (Claude)
 
@@ -85,6 +85,12 @@ Scope: documentation only, base e3dd0c5. Independently corroborated the 51 quara
 - Where: ROADMAP.md:420-422, ROADMAP.md:464-472
 - Evidence: 2b needs index.json then the selected instance; revised 2c also needs that instance for values/decimals plus FilingSummary.xml then its balance-sheet R page. A new filing with no cached M10 data therefore needs four distinct responses, but the ledger paragraph still promises at most3 requests per filing. M10 does not keep raw instance files (ROADMAP M10), so an earlier completed M10 ledger alone does not supply M11's required numeric/context/decimals data. Define the per-family request budget/reuse and completion boundary so the proof can complete and one family cannot suppress another.
 - Test: planned offline request-count fixture for a new10-Q needing cover counts and zero-debt evidence: index+instance+summary+R; count the cold-path requests explicitly, reuse a fetched instance in that invocation, and verify retry after a partial failure plus zero requests on a completed second invocation. Increase the documented budget or name an actual existing source that removes a request; no live requests needed for this plan revision.
+
+### C6. The declared fetch selector covers618 companies, not the budgeted51
+- Severity: medium (wrong workload bound / scope)
+- Where: ROADMAP.md:484-485
+- Evidence: the request budget says quarantined OR multi_class_risk means51names and204cold requests. Independent PyArrow read of the saved11-07 screen finds51quarantine plus567fail rows with multi_class_risk:618eligible,578multi-class total (11quarantine,567fail). Thus4logical document fetches each permits2472cold requests, not204. The eleven multi-class names in the profile are the quarantined subset, not the full flag population. Choose the intended eligibility explicitly: keep the narrow quarantine scope, or disclose the broader618company workload for later authorization. Do not accidentally fetch for567already-failed names under a51-name estimate.
+- Test: future mocked eligibility fixture with a quarantined row, a failing multi-class row and a failing ordinary row; assert exactly the approved cohort is fetched. Parquet proof: len([r for r in rows if r['status']=='quarantine' or r['multi_class_risk']]) ==618, with statuses quarantine51/fail567. No network or live DB used.
 
 ## Response (Claude)
 
@@ -217,6 +223,12 @@ Each check becomes a failing test before any code.
 - C5: **new finding**, request-budget/completion contract introduced by the expanded instance-based2c proof; see Findings. C1-C3 remain resolved while C4/C5 need a response.
 
 Independent profile recheck also corroborated3shortlist/51quarantine/4135fail, all51pass_insider, all11multi-class names, the14US missing-debt/10US missing-both groups, and12persistently quarantined across all four saved snapshots. No additional live access or tests needed for this documentation round.
+
+### Round 2 — rechecked 3d7c111
+- C4: **agree** for the plan. Narrow stored-facts observation replaces no-annual-filing/recent-listing claims, coverage unknown takes precedence, and the mixed10-Q/ledger-only case is now explicit. PIT and Phase1 invariance checks remain required at implementation.
+- C5: **agree** for the document/family contract. Four logical documents are now enumerated; per-family versions, completion, retry and shared in-invocation reuse are specified, including cold/retry/complete mocked cases. The selector/count used to calculate the overall budget is wrong: separate new C6.
+- C1-C3 remain agreed; no feature implementation is approved. Only C6 needs a response.
+- Checked final ROADMAP has one M11 section; no old one-percent/three-request/blind-class-sum rules remain.
 
 ## Outcome (user)
 
