@@ -412,14 +412,26 @@ Phase 2: resolve with evidence.
   - Market cap uses the sum of the classes, the fully exchanged basis. For Up-C filers (RSI,
     MIR?) the voting-only class pairs one-to-one with exchangeable units.
   - `multi_class_risk` stays as a flag, so a shortlisted name is still checked by hand.
-- 2c, debt confirmed zero. Debt becomes 0 only when the balance sheet of the latest 10-K or 10-Q
-  filed by `as_of` has no line in the debt family. That covers the standard debt tags and the
-  company's own extension elements matching the Phase 1 debt pattern.
-  - The source is `FilingSummary.xml`, then the balance-sheet R page; the element names are in
-    each row's definition reference.
-  - The result is stored with its accession and the method `balance_sheet_no_debt`.
-  - If any debt-like line is found, the name stays `missing_debt` and the line is shown as a
-    candidate.
+- 2c, debt confirmed zero. Debt becomes 0 only when all of these hold for one filing, the latest
+  10-K or 10-Q filed by `as_of` (Codex, 2026-11-08). Otherwise the name stays `missing_debt`.
+  - Same period: the balance-sheet column used is the one dated `bs_date`, the newest balance
+    sheet the screen already uses, from that filing's own accession.
+  - Same entity and scope: consolidated statements only. Contexts with any axis or member
+    (segment, class, VIE, parent-only) are ignored, and parent-only statements are never used.
+  - Complete coverage of obligations: every liability line on that balance sheet is in a fixed
+    list of non-debt elements (payables, accruals, deferred revenue, operating leases, taxes and
+    similar). It sums, within 1%, to the total `Liabilities` reported in the same column. Any
+    other line keeps the quarantine. That includes an aggregate such as "Other liabilities" or
+    "Accrued and other", any extension element, and any line matching the Phase 1 debt pattern.
+    When there is no `Liabilities` total, coverage cannot be shown and the quarantine stays.
+  - Weaker evidence is never enough on its own, alone or combined: no interest expense, a
+    general "no borrowings outstanding" sentence, an empty or missing debt note, or the absence
+    of debt tags. Phase 1 may show such evidence as context for manual review.
+  - The source is `FilingSummary.xml`, then the balance-sheet R page. The element names are in
+    each row's definition reference, and the column dates in the header. The result is stored
+    with its accession, the column date and the method `balance_sheet_no_debt`.
+  - Any debt-like or unlisted line found: the name stays `missing_debt`, and the lines are shown
+    as candidates.
 - Ledger, as in M10: `ok`, `not_found` (final) or `error` (retried next run and listed in the
   health warnings). Each filing is fetched once, with at most 3 requests through `SecClient`,
   and only for quarantined or `multi_class_risk` names. That was 51 names on 11-07.
@@ -437,9 +449,17 @@ Checks. The facts below are to be confirmed against SEC when the fixtures are ta
 - 2b: TSN's latest 10-K instance gives one count per class. Their sum matches the cover page
   text, and market cap follows it. An Up-C filer (RSI or MIR): the sum equals class A plus the
   paired class.
-- 2c: CAVA and OFLX balance sheets list no debt line, so debt is 0 with the accession. HUBS
-  shows a convertible-notes line, so it stays `missing_debt` with that line as a candidate. If
-  SEC shows otherwise, the fixtures change, not the rule.
+- 2c: CAVA and OFLX are expected to have balance sheets whose liability lines are all on the
+  non-debt list and sum to `Liabilities`, giving debt 0 with the accession and column date. HUBS
+  is expected to show a convertible-notes line, so it stays `missing_debt` with that line as a
+  candidate. If SEC shows otherwise, the fixtures change, not the rule.
+- 2c negatives, synthetic: each of these keeps the quarantine:
+  - an "Other liabilities" line;
+  - lines that miss `Liabilities` by more than 1%;
+  - no `Liabilities` total;
+  - a balance-sheet column dated before `bs_date`;
+  - a fact only in a segment or VIE context;
+  - zero interest expense plus "we have no outstanding borrowings" with no qualifying balance sheet.
 - Synthetic: a balance sheet with an extension element `NotesPayableToBank` is never zero. An
   index with zero or two instances, no balance-sheet R page, or malformed XML each gives an
   `error` row that is retried, reported and never zero.

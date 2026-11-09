@@ -37,7 +37,11 @@ Status: awaiting-review
   - the CAVA, OFLX and HUBS balance-sheet lines.
 
 ### Where bugs are most likely
-- 2c: the debt-family pattern missing an extension element. A missed element turns real debt into zero, and that would shortlist a wrong name.
+- 2c: real debt turned into zero, which would shortlist a wrong name. Revised in 2026-11-08 round 0 after Codex's first concern:
+  - zero now needs the same period (`bs_date`, same accession), consolidated scope, and every liability line on a
+    non-debt list summing to `Liabilities` within 1%;
+  - no-interest-expense and no-borrowings sentences are never proof.
+  The 1% tolerance and the non-debt list are the parts to attack.
 - 2b: summing classes that trade at different prices (GLIBA, HRL?). The market cap would then be wrong, which is why the flag stays.
 - Point-in-time: a resolved value used in a screen dated before its filing.
 - Phase 1 or 2 changing status, rank or a frozen journal snapshot where it must not.
