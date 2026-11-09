@@ -360,8 +360,8 @@ groups. The causes are hypotheses, to be confirmed against SEC at build time:
 
 | Group | Names | Likely cause |
 |---|---|---|
-| Foreign filer | 21 flagged `foreign_filer`. FMX and GRAB are 20-F filers too but are not flagged | IFRS statements and annual covers; the concept map is us-gaap only. FMX and GRAB have no shares or cash facts at all, and `foreign_filer` reads the form only from those facts |
-| No DEI cover shares (`multi_class_risk`) | 11: CXM, MIR, HRL, TSN, FMX, RSI, LUCK, GRAB, INR, FLOC, GLIBA | Cover counts tagged per share class, which companyfacts drops (comment in `queries.py`); 8 have `missing_shares` and 3 fall back to a stale balance-sheet count (`stale_shares`) |
+| Foreign filer | 21 flagged `foreign_filer`. FMX and GRAB are not flagged and may also be 20-F filers (to confirm) | IFRS statements and annual covers; the concept map is us-gaap only. FMX and GRAB have no shares or cash facts at all, and `foreign_filer` reads the form only from those facts |
+| No DEI cover shares (`multi_class_risk`) | 11: CXM, MIR, HRL, TSN, FMX, RSI, LUCK, GRAB, INR, FLOC, GLIBA | Possibly cover counts tagged per share class, which companyfacts drops (comment in `queries.py`). A missing DEI count alone does not confirm this; 8 have `missing_shares` and 3 fall back to a stale balance-sheet count (`stale_shares`) |
 | No EBIT and no FCF, US filer | 10: MFP, NVRI, SBMT, BLSM, CNXU, LTGO, MOBI, LIEN, NSLR, FBDT | TTM needs an annual value (`ttm_flow_sql`): recently listed filers have none yet; others may tag the subtotal or cash flows outside the map |
 | `missing_debt`, US filer | 14: BLSM, CAVA, CNXU, EPSN, FBDT, HUBS, LIEN, LTGO, MOBI, NSLR, OFLX, RSI, SEZL, SMID | No debt at all (CAVA, OFLX?), or debt under tags outside the map (convertible notes: HUBS?) |
 | `stale_debt` | 5: AN, IMMR, UPBD, CXM, INR | A debt line reported in the last 400 days is missing at the newest date |
@@ -380,57 +380,92 @@ Ground rules:
   is the status changes, each with the input and the filing that changed it.
 
 Phase 1: diagnose from stored data (no network, informational only). For each quarantined name
-and each issue, the screen adds a reason:
-- `foreign_filer`: the latest annual report in `loaded_filings` is a 20-F or 40-F. This also
-  fixes the flag for FMX and GRAB. Their issue list gains `foreign_filer`; their status is
+and each issue, the screen adds a reason. The only filing metadata used comes from `xbrl_facts`:
+`form` and `filed` grouped by `accn`, under the same point-in-time predicates as
+`src/db/pit.py` (`filed <= as_of`). `loaded_filings` holds only `cik`, `accn`, `n_facts` and
+`fingerprint`, so it is not a source (C4). When the facts cannot decide, the reason is
+`unknown`, never a guessed cause.
+- `foreign_filer`: the company's latest accession with an annual form filed by `as_of` is a 20-F
+  or 40-F. If that holds for FMX and GRAB, their issue list gains `foreign_filer`. Their status is
   already quarantine and stays so.
-- `no_annual_yet`: the flow has no annual value filed by `as_of`, so a TTM cannot be built yet.
-  The message gives the date of the first filing the company has.
+- `no_annual_yet`: the facts show at least one 10-Q filed by `as_of` and no annual form filed by
+  `as_of`, so a TTM cannot be built yet. The message gives the first 10-Q's filing date.
 - `tag_candidates`: stored us-gaap facts from the same accession and period as the newest
   balance sheet or TTM, under tags outside `concept_map` whose names fit the concept. The
   matching is a fixed pattern per concept. For debt: Debt, Notes, Borrowing, LineOfCredit or
   Loan, excluding Lease, Receivable and Asset. Each candidate is shown with its tag, value and
-  accession. These feed the Phase 2a review.
-- `per_class_cover`: no DEI cover count, while a 10-K or 10-Q exists filed by `as_of`. This
-  feeds Phase 2b.
-- `none_found`: nothing found; the name needs manual reading.
+  accession, and marked `total` or `component` (see 2a).
+- `no_cover_count`: no DEI cover count, while a 10-K or 10-Q is filed by `as_of`. Per-class
+  tagging is one possible cause, not a confirmed one; 2b checks it.
+- `unknown`: the facts hold no form or date evidence for the question, for example an accession
+  in the ledger with no facts.
+- `none_found`: the facts were enough, and nothing explains the issue; the name needs manual
+  reading.
 
 The reasons go in a new screen column, `issue_checks`, which is additive and needs no
 migration. They appear in the `screen` CLI quarantine block, in a "Quarantine check" section of
 the company note, and as a group in Dashboard's quarantine table.
 
 Phase 2: resolve with evidence.
-- 2a, concept map. Tags that Phase 1 lists repeatedly and that mean the same thing join
-  `CONCEPT_SEED` at a lower priority than the existing tags. Convertible notes for debt is one
-  likely example. They are added in one reviewed batch, each tag with a fixture, and the live
-  screen diff is reported. No new code path.
-- 2b, cover shares per class. For a `per_class_cover` name, take the latest 10-K or 10-Q filed by
-  `as_of` and find the filing's one `*_htm.xml` through `index.json`, using M10's fetcher. Read
-  `dei:EntityCommonStockSharesOutstanding` in contexts with a `StatementClassOfStockAxis` member.
-  - Store each class's count with its member, the DEI date, the accession and the filing date
-    in a new table, `cover_shares`, added by migration 9.
-  - Market cap uses the sum of the classes, the fully exchanged basis. For Up-C filers (RSI,
-    MIR?) the voting-only class pairs one-to-one with exchangeable units.
-  - `multi_class_risk` stays as a flag, so a shortlisted name is still checked by hand.
+- 2a, concept map: complete totals only (C1). The resolver in `src/db/pit.py` picks one tag per
+  concept and period; it never adds tags up. So a tag joins `CONCEPT_SEED` only when it is a
+  complete total equivalent to the concept it joins. Each tag needs:
+  - the us-gaap definition and calculation-linkbase evidence, quoted in the fixture;
+  - one reviewed batch, with a fixture per tag and the live screen diff reported.
+
+  A component tag never joins the map: a convertible-notes line, a single notes or credit-line
+  balance, or any one obligation. Phase 1 shows it as a `component` candidate, and the name stays
+  `missing_debt`. Adding components up needs its own completeness rule. That is out of M11's
+  scope.
+- 2b, cover shares per class: market cap only from a proved economic mapping (C2). For a
+  `no_cover_count` name, take the latest 10-K or 10-Q filed by `as_of` and find the filing's one
+  `*_htm.xml` through `index.json`, using M10's fetcher.
+  - Read `dei:EntityCommonStockSharesOutstanding` and `dei:TradingSymbol` in contexts with a
+    `StatementClassOfStockAxis` member.
+  - Store each class's count with its member, symbol, DEI date, accession and filing date in a
+    new table, `cover_shares`, added by migration 9.
+  - Market cap is computed only in these two cases, on the existing split basis
+    (`split_factor` from the DEI date to the price date):
+    - Exactly one class has a count, and the filing tags exactly one trading symbol, which is the
+      priced ticker. Then market cap = that count x its close.
+    - Every class with a count has its own symbol with a stored close on the same price date.
+      Then market cap = the sum of count x own close.
+  - A class with no symbol of its own adds no economic count. Up-C voting classes and paired
+    units are such classes, and so are other unpriced classes. Their presence gives the
+    blocking issue `multi_class_unverified`, with the counts shown for manual review.
+  - Today `prices` stores the primary ticker only, so the second case stays blocked until
+    secondary tickers are priced. Duplicate contexts for one class must agree, or the issue is
+    `multi_class_unverified`.
+  - `multi_class_risk` stays as a flag on top.
 - 2c, debt confirmed zero. Debt becomes 0 only when all of these hold for one filing, the latest
   10-K or 10-Q filed by `as_of` (Codex, 2026-11-08). Otherwise the name stays `missing_debt`.
   - Same period: the balance-sheet column used is the one dated `bs_date`, the newest balance
     sheet the screen already uses, from that filing's own accession.
   - Same entity and scope: consolidated statements only. Contexts with any axis or member
     (segment, class, VIE, parent-only) are ignored, and parent-only statements are never used.
-  - Complete coverage of obligations: every liability line on that balance sheet is in a fixed
-    list of non-debt elements (payables, accruals, deferred revenue, operating leases, taxes and
-    similar). It sums, within 1%, to the total `Liabilities` reported in the same column. Any
-    other line keeps the quarantine. That includes an aggregate such as "Other liabilities" or
-    "Accrued and other", any extension element, and any line matching the Phase 1 debt pattern.
-    When there is no `Liabilities` total, coverage cannot be shown and the quarantine stays.
+  - Complete, non-overlapping coverage (C3):
+    - Each liability row of that column is in a fixed list of non-debt elements: payables,
+      accruals, deferred revenue, operating leases, taxes and similar.
+    - Each element counts once. A subtotal (`LiabilitiesCurrent`, `LiabilitiesNoncurrent`) is
+      used only in place of its children, never with them. Where both appear, the children
+      must reconcile to the subtotal under the same budget.
+    - The rows must reconcile to `Liabilities` in the same column within a rounding budget, not
+      a percentage. The budget is the sum of 0.5 x 10^(-decimals) over each row and the total,
+      taken from each fact's `decimals` attribute in the instance (INF counts as 0).
+    - Any residual beyond that budget keeps the quarantine, however small. So does a fact with
+      no `decimals`.
+    - Any other row keeps the quarantine. That includes an aggregate such as "Other
+      liabilities" or "Accrued and other", any extension element, and any row matching the
+      Phase 1 debt pattern. When there is no `Liabilities` total, coverage cannot be shown and
+      the quarantine stays.
   - Weaker evidence is never enough on its own, alone or combined: no interest expense, a
     general "no borrowings outstanding" sentence, an empty or missing debt note, or the absence
     of debt tags. Phase 1 may show such evidence as context for manual review.
-  - The source is `FilingSummary.xml`, then the balance-sheet R page. The element names are in
-    each row's definition reference, and the column dates in the header. The result is stored
-    with its accession, the column date and the method `balance_sheet_no_debt`.
-  - Any debt-like or unlisted line found: the name stays `missing_debt`, and the lines are shown
+  - Sources: `FilingSummary.xml`, then the balance-sheet R page, give the rows and their order
+    (each row's definition reference) and the column dates. The instance gives the values and
+    their `decimals`. The result is stored with its accession, the column date and the method
+    `balance_sheet_no_debt`.
+  - Any debt-like or unlisted row found: the name stays `missing_debt`, and the rows are shown
     as candidates.
 - Ledger, as in M10: `ok`, `not_found` (final) or `error` (retried next run and listed in the
   health warnings). Each filing is fetched once, with at most 3 requests through `SecClient`,
@@ -444,22 +479,46 @@ and `foreign_filer`. Phase 1 still explains each.
 
 Checks. The facts below are to be confirmed against SEC when the fixtures are taken:
 - Phase 1 on the 11-07 live screen: a reason for every issue of all 51 names; counts per
-  reason reported. FMX and GRAB gain `foreign_filer`. Status, rank and shortlist are identical
+  reason reported. FMX and GRAB gain `foreign_filer` only if their facts show a 20-F or 40-F filed by `as_of`; otherwise `unknown`. Status, rank and shortlist are identical
   with and without Phase 1.
-- 2b: TSN's latest 10-K instance gives one count per class. Their sum matches the cover page
-  text, and market cap follows it. An Up-C filer (RSI or MIR): the sum equals class A plus the
-  paired class.
+- 2b: TSN's latest 10-K instance gives one count per class, which matches the cover-page text.
+  Market cap is computed only if one of the two proved cases applies; otherwise
+  `multi_class_unverified`. An Up-C filer (RSI or MIR): the voting class adds no count, so
+  `multi_class_unverified`.
+- 2b synthetic (C2): these give `multi_class_unverified`, never a market cap:
+  - 1M class A at $10 and 1M class B at $100 with no stored class B close (the rule would have
+    given $20M against $110M);
+  - a voting-only paired class;
+  - two disagreeing contexts for one class.
+
+  These give a market cap: one class with one symbol; and two classes, each with its own close
+  on the same date (sum of count x own close).
 - 2c: CAVA and OFLX are expected to have balance sheets whose liability lines are all on the
   non-debt list and sum to `Liabilities`, giving debt 0 with the accession and column date. HUBS
   is expected to show a convertible-notes line, so it stays `missing_debt` with that line as a
   candidate. If SEC shows otherwise, the fixtures change, not the rule.
 - 2c negatives, synthetic: each of these keeps the quarantine:
   - an "Other liabilities" line;
-  - lines that miss `Liabilities` by more than 1%;
+  - rows that miss `Liabilities` by more than the rounding budget, including Liabilities $100M
+    against $99.1M of listed non-debt rows (the $900k residual, C3);
+  - a fact with no `decimals`;
+  - a subtotal counted together with its children;
   - no `Liabilities` total;
   - a balance-sheet column dated before `bs_date`;
   - a fact only in a segment or VIE context;
   - zero interest expense plus "we have no outstanding borrowings" with no qualifying balance sheet.
+- 2c positive: a statement in thousands (`decimals` -3) with 6 rows plus the total reconciles
+  within 7 x $500. Debt is 0 with the method recorded.
+- 2a (C1):
+  - Convertible notes $1M plus other notes $9M in the same accession and period, with only the
+    convertible tag considered: never shortlisted on $1M. The name stays `missing_debt` with both
+    rows as `component` candidates. (Codex's offline proof: mapping convertible notes as a
+    `debt_total` synonym shortlisted it at net cash/mcap 0.417; the true 0.333 fails.)
+  - A filer with a total and a convertible line: the total is used and the line is not added
+    again.
+- Phase 1 metadata (C4): annual form and date present in the facts gives the reason. A ledger
+  accession with no facts gives `unknown`. A 20-F filed after `as_of` does not change a
+  diagnosis dated before it. Status, rank and shortlist are identical with and without Phase 1.
 - Synthetic: a balance sheet with an extension element `NotesPayableToBank` is never zero. An
   index with zero or two instances, no balance-sheet R page, or malformed XML each gives an
   `error` row that is retried, reported and never zero.
@@ -476,8 +535,9 @@ Open questions:
 1. Accept one week of lag, or add a second `screen` after `fetch-text` in the weekly job?
    Recommendation: accept the lag. Quarantine changes slowly (12 names on all four screens), and
    the job's steps stay as they are.
-2. Market cap of a multi-class filer: the sum of the classes at the traded class's price, or
-   the traded class only? Recommendation: the sum, with the flag kept.
+2. Settled by review (C2): a multi-class market cap comes only from a proved per-class
+   mapping (2b). Open: whether to price secondary class tickers later, which would unblock the
+   second case.
 3. Ship Phase 1 on its own first (no network, no screen change)? Recommendation: yes.
 
 ### Research R1: suggested repositories (from 2026-11-06)
