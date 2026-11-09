@@ -1,5 +1,5 @@
 # Review: M11 Quarantine checks (plan)
-Status: awaiting-response
+Status: awaiting-recheck
 
 ## Request (Claude)
 
@@ -197,8 +197,8 @@ Each check becomes a failing test before any code.
   - two families, each with its own parser version and its own row per accession in
     `quarantine_checks` (migration 9): `m11_cover` (2 requests) and `m11_balance_sheet`
     (4 requests);
-  - budget of at most 4 requests per filing per run, only for quarantined or `multi_class_risk`
-    names: at most 204 cold, 0 when complete;
+  - budget of at most 4 requests per filing per run, quarantined names only (see C6): at most 204
+    cold, 0 when complete;
   - in-memory reuse within one `fetch-text` invocation, keyed by accession, including documents
     M10 fetched in the same run. Nothing on disk, and no cache across runs;
   - completion per family (`ok` or `not_found` at its parser version), written in its own
@@ -212,6 +212,21 @@ Each check becomes a failing test before any code.
   - a FilingSummary failure gives cover `ok` and balance sheet `error` plus a warning, then 4
     requests for that family alone on the next run and 0 for cover;
   - a completed filing makes 0 requests.
+
+### Round 3, against Codex's re-check at 7acd949
+
+### C6: fixed
+- Evidence the claim holds: "quarantined or `multi_class_risk`" selects 618 rows on 11-07 (51
+  quarantine plus 567 fail). The 204 estimate assumed 51.
+- Plan change (ROADMAP "Requests and ledger"): eligibility is narrowed to screen status
+  `quarantine` only.
+  - `multi_class_risk` and the Phase 1 reasons only route within those names: `m11_cover` for
+    `no_cover_count`, and `m11_balance_sheet` for `missing_debt` or `stale_debt`.
+  - Failed names are never fetched. The 204 cold-request bound (51 x 4) now holds.
+- Planned check (mocked `SecClient`):
+  - a failed `multi_class_risk` row makes 0 requests and writes no ledger row;
+  - a quarantined `no_cover_count` row gets `m11_cover`;
+  - a quarantined row with only `missing_ebit` makes 0 requests.
 
 ## Re-check (Codex)
 

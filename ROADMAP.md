@@ -482,9 +482,12 @@ Phase 2: resolve with evidence.
     - `m11_cover` (2b) needs (1) and (2): 2 requests.
     - `m11_balance_sheet` (2c) needs (1) to (4): 4 requests, because the values and `decimals`
       come from the instance and the rows from the R page.
-  - Budget: at most 4 requests per filing per run, through `SecClient`, and only for quarantined
-    or `multi_class_risk` names (51 on 11-07). That means at most 204 requests on a cold run and
-    0 for filings already complete.
+  - Eligibility (C6): only names with screen status `quarantine` (51 on 11-07). Within them,
+    `m11_cover` runs only for a `no_cover_count` reason (the 11 `multi_class_risk` names on
+    11-07), and `m11_balance_sheet` only for `missing_debt` or `stale_debt`. A failed name is
+    never fetched, even with `multi_class_risk` (567 on 11-07).
+  - Budget: at most 4 requests per filing per run, through `SecClient`. That means at most 204
+    requests on a cold run (51 x 4) and 0 for filings already complete.
   - Reuse is in memory, within one `fetch-text` invocation, keyed by accession. A document
     fetched once (by M10's instance family or by either M11 family) is passed to the others and
     never fetched twice in that run. Nothing is kept on disk; raw files are not kept, as in
@@ -561,7 +564,10 @@ Checks. The facts below are to be confirmed against SEC when the fixtures are ta
   - If FilingSummary fails, the result is `m11_cover` `ok`, `m11_balance_sheet` `error` and a
     health warning. The next run makes 4 requests for `m11_balance_sheet` and 0 for
     `m11_cover`.
-  - A completed filing makes 0 requests on the next invocation. A 20-F filed after `as_of` does not change a
+  - A completed filing makes 0 requests on the next invocation.
+  - Eligibility (C6): a failed row with `multi_class_risk` makes 0 requests and writes no ledger
+    row. A quarantined row with `no_cover_count` gets `m11_cover`. A quarantined row with only
+    `missing_ebit` makes 0 requests. A 20-F filed after `as_of` does not change a
   diagnosis dated before it. Status, rank and shortlist are identical with and without Phase 1.
 - Synthetic: a balance sheet with an extension element `NotesPayableToBank` is never zero. An
   index with zero or two instances, no balance-sheet R page, or malformed XML each gives an
