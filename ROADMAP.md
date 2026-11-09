@@ -343,6 +343,123 @@ Not in scope: executive pay, 10-Q footnotes, 10-K/A, 20-F/40-F (IFRS) filers, ot
 classifying language automatically, events after the latest balance sheet (8-K deals such as
 GIII's Marc Jacobs purchase).
 
+### M11 Quarantine checks (size: M, planned; starts after M10)
+
+Request (user, 2026-11-08): make the program check the issues that quarantine a company, so that
+fewer of them are left for manual reading. This is a plan only. No code is written before the M9
+two-week check passes (no earlier than 2026-11-22 20:26:59 MST) and M10 is done.
+
+Why. The 2026-11-07 screen (`data/screens/screen-2026-11-07.parquet`) has 3 shortlisted names
+and 51 quarantined ones. A quarantined name fails no filter, and all 51 pass the insider-buying
+filter. These are the candidates nearest to the shortlist. Today the only way to clear one is to
+read its filings by hand. 12 names were quarantined on all four saved screens (11-02, 11-03,
+11-05, 11-07).
+
+What is in the quarantine on 11-07. Counts are from the parquet file; a name can be in several
+groups. The causes are hypotheses, to be confirmed against SEC at build time:
+
+| Group | Names | Likely cause |
+|---|---|---|
+| Foreign filer | 21 flagged `foreign_filer`. FMX and GRAB are 20-F filers too but are not flagged | IFRS statements and annual covers; the concept map is us-gaap only. FMX and GRAB have no shares or cash facts at all, and `foreign_filer` reads the form only from those facts |
+| No DEI cover shares (`multi_class_risk`) | 11: CXM, MIR, HRL, TSN, FMX, RSI, LUCK, GRAB, INR, FLOC, GLIBA | Cover counts tagged per share class, which companyfacts drops (comment in `queries.py`); 8 have `missing_shares` and 3 fall back to a stale balance-sheet count (`stale_shares`) |
+| No EBIT and no FCF, US filer | 10: MFP, NVRI, SBMT, BLSM, CNXU, LTGO, MOBI, LIEN, NSLR, FBDT | TTM needs an annual value (`ttm_flow_sql`): recently listed filers have none yet; others may tag the subtotal or cash flows outside the map |
+| `missing_debt`, US filer | 14: BLSM, CAVA, CNXU, EPSN, FBDT, HUBS, LIEN, LTGO, MOBI, NSLR, OFLX, RSI, SEZL, SMID | No debt at all (CAVA, OFLX?), or debt under tags outside the map (convertible notes: HUBS?) |
+| `stale_debt` | 5: AN, IMMR, UPBD, CXM, INR | A debt line reported in the last 400 days is missing at the newest date |
+| `share_jump` | 3: SEZL, RSI, LIEN | Listing, reorganisation or a missed split |
+| `penny_price` | 3: FBDT, EVGN, SYNX | Correct as it is |
+
+Ground rules:
+- Missing stays missing. A value is filled only from a filing that states it. That filing is
+  filed on or before `as_of`, and its accession and method go in `sources`. Absence of tags is
+  never read as zero.
+- Point-in-time. A historical screen or backtest sees a resolved value only from its filing date.
+  Journal snapshots are never rewritten.
+- Phase 1 changes no status, rank or shortlist. Phase 2 can change status in either direction:
+  a resolved input may fail a filter.
+- Every Phase 2 rule is test-first, and is measured on live data before and after. The measure
+  is the status changes, each with the input and the filing that changed it.
+
+Phase 1: diagnose from stored data (no network, informational only). For each quarantined name
+and each issue, the screen adds a reason:
+- `foreign_filer`: the latest annual report in `loaded_filings` is a 20-F or 40-F. This also
+  fixes the flag for FMX and GRAB. Their issue list gains `foreign_filer`; their status is
+  already quarantine and stays so.
+- `no_annual_yet`: the flow has no annual value filed by `as_of`, so a TTM cannot be built yet.
+  The message gives the date of the first filing the company has.
+- `tag_candidates`: stored us-gaap facts from the same accession and period as the newest
+  balance sheet or TTM, under tags outside `concept_map` whose names fit the concept. The
+  matching is a fixed pattern per concept. For debt: Debt, Notes, Borrowing, LineOfCredit or
+  Loan, excluding Lease, Receivable and Asset. Each candidate is shown with its tag, value and
+  accession. These feed the Phase 2a review.
+- `per_class_cover`: no DEI cover count, while a 10-K or 10-Q exists filed by `as_of`. This
+  feeds Phase 2b.
+- `none_found`: nothing found; the name needs manual reading.
+
+The reasons go in a new screen column, `issue_checks`, which is additive and needs no
+migration. They appear in the `screen` CLI quarantine block, in a "Quarantine check" section of
+the company note, and as a group in Dashboard's quarantine table.
+
+Phase 2: resolve with evidence.
+- 2a, concept map. Tags that Phase 1 lists repeatedly and that mean the same thing join
+  `CONCEPT_SEED` at a lower priority than the existing tags. Convertible notes for debt is one
+  likely example. They are added in one reviewed batch, each tag with a fixture, and the live
+  screen diff is reported. No new code path.
+- 2b, cover shares per class. For a `per_class_cover` name, take the latest 10-K or 10-Q filed by
+  `as_of` and find the filing's one `*_htm.xml` through `index.json`, using M10's fetcher. Read
+  `dei:EntityCommonStockSharesOutstanding` in contexts with a `StatementClassOfStockAxis` member.
+  - Store each class's count with its member, the DEI date, the accession and the filing date
+    in a new table, `cover_shares`, added by migration 9.
+  - Market cap uses the sum of the classes, the fully exchanged basis. For Up-C filers (RSI,
+    MIR?) the voting-only class pairs one-to-one with exchangeable units.
+  - `multi_class_risk` stays as a flag, so a shortlisted name is still checked by hand.
+- 2c, debt confirmed zero. Debt becomes 0 only when the balance sheet of the latest 10-K or 10-Q
+  filed by `as_of` has no line in the debt family. That covers the standard debt tags and the
+  company's own extension elements matching the Phase 1 debt pattern.
+  - The source is `FilingSummary.xml`, then the balance-sheet R page; the element names are in
+    each row's definition reference.
+  - The result is stored with its accession and the method `balance_sheet_no_debt`.
+  - If any debt-like line is found, the name stays `missing_debt` and the line is shown as a
+    candidate.
+- Ledger, as in M10: `ok`, `not_found` (final) or `error` (retried next run and listed in the
+  health warnings). Each filing is fetched once, with at most 3 requests through `SecClient`,
+  and only for quarantined or `multi_class_risk` names. That was 51 names on 11-07.
+- Runs inside `fetch-text`, so the weekly job's steps do not change. Because `fetch-text` runs
+  after `screen`, a resolution counts from the next weekly screen: one week of lag (open
+  question 1).
+
+Left as they are: price issues (`stale_price`, `penny_price`, `price_break`), `share_jump`,
+and `foreign_filer`. Phase 1 still explains each.
+
+Checks. The facts below are to be confirmed against SEC when the fixtures are taken:
+- Phase 1 on the 11-07 live screen: a reason for every issue of all 51 names; counts per
+  reason reported. FMX and GRAB gain `foreign_filer`. Status, rank and shortlist are identical
+  with and without Phase 1.
+- 2b: TSN's latest 10-K instance gives one count per class. Their sum matches the cover page
+  text, and market cap follows it. An Up-C filer (RSI or MIR): the sum equals class A plus the
+  paired class.
+- 2c: CAVA and OFLX balance sheets list no debt line, so debt is 0 with the accession. HUBS
+  shows a convertible-notes line, so it stays `missing_debt` with that line as a candidate. If
+  SEC shows otherwise, the fixtures change, not the rule.
+- Synthetic: a balance sheet with an extension element `NotesPayableToBank` is never zero. An
+  index with zero or two instances, no balance-sheet R page, or malformed XML each gives an
+  `error` row that is retried, reported and never zero.
+- Point-in-time: a 10-Q filed after `as_of` is not used. A screen dated before a resolving
+  filing is unchanged. Earlier journal snapshots are unchanged.
+- A second `fetch-text` makes 0 requests for M11; a second `sync-vault` writes 0 files.
+- Live run, with the database and vault backed up first: requests made, counts per ledger
+  status, and every status change with its input and source. Shortlist before and after.
+
+Not in scope: mapping IFRS (20-F/40-F) statements, resolving price issues or share jumps,
+10-K/A, changing how EBIT or FCF are defined, and language models.
+
+Open questions:
+1. Accept one week of lag, or add a second `screen` after `fetch-text` in the weekly job?
+   Recommendation: accept the lag. Quarantine changes slowly (12 names on all four screens), and
+   the job's steps stay as they are.
+2. Market cap of a multi-class filer: the sum of the classes at the traded class's price, or
+   the traded class only? Recommendation: the sum, with the flag kept.
+3. Ship Phase 1 on its own first (no network, no screen change)? Recommendation: yes.
+
 ### Research R1: suggested repositories (from 2026-11-06)
 
 GitHub's AI suggested 11 repositories to study (SEC/XBRL parsing, Form 4, DuckDB ingestion,
@@ -358,6 +475,7 @@ M1 ──> M2 ──> M4 ──> M5
                        └──> M8
 M9 after M6
 M10 after M7, once the M9 two-week check passes
+M11 after M10 (reuses its instance fetcher and ledger)
 ```
 
 M1 and M3 can run in parallel. M5 (backtest) should finish before trusting M4's defaults.
