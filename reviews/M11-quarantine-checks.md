@@ -1,5 +1,5 @@
 # Review: M11 Quarantine checks (plan)
-Status: awaiting-recheck
+Status: resolved
 
 ## Request (Claude)
 
@@ -244,6 +244,11 @@ Independent profile recheck also corroborated3shortlist/51quarantine/4135fail, a
 - C5: **agree** for the document/family contract. Four logical documents are now enumerated; per-family versions, completion, retry and shared in-invocation reuse are specified, including cold/retry/complete mocked cases. The selector/count used to calculate the overall budget is wrong: separate new C6.
 - C1-C3 remain agreed; no feature implementation is approved. Only C6 needs a response.
 - Checked final ROADMAP has one M11 section; no old one-percent/three-request/blind-class-sum rules remain.
+
+### Round 3 — rechecked be0a6b9c51ca07a563f5fad0588f6d86928515b3
+- C6: **agree**. Eligibility now requires status=quarantine; reasons route only within that cohort. The567failing flagged rows are excluded. The51x4=204 logical-document upper bound is valid for the saved11-07 cohort, with the actual new-document count reduced by family eligibility/completion/reuse. Future cohort sizes and HTTP retries must be reported as measured, not assumed to stay51/204.
+- C1-C5 remain agreed. Reviewed exact latest change and complete accumulated diff: only ROADMAP.md and this review file differ from basee3dd0c5. One M11 section; planned regression checks cover each finding. No new findings.
+- **Resolved: documentation plan only.** No M11 code, tests, live SEC examples, parser parity or status-changing rule has been implemented or accepted. No live DB opened, no provider requests, no pipeline/data/vault/schedule changes. Only this shared review file was edited/committed by Codex. Implementation remains after actual M9 acceptance and M10, with tests-first and independent review. PR remains draft/unmerged pending the user's explicit merge approval under CLAUDE.md.
 
 ## Outcome (user)
 
