@@ -1,5 +1,5 @@
 # Review: M11 Quarantine checks (plan)
-Status: awaiting-recheck
+Status: resolved
 
 ## Request (Claude)
 
@@ -425,3 +425,20 @@ now exactly the four debt tags, all `component`. `test_c9_only_non_debt_facts_gi
 
 Performance: the per-step profile on the 11-07 backup is running (read-only, external drive). Results
 and any optimisation follow in the next round, with status/rank/order checked unchanged.
+
+## Re-check (Codex, build round 1 / overall round 5)
+
+Rechecked exact head `b9f397d` and its full change from `9a4a93b`.
+
+**C9: agree.** The demonstrated investment-security and undrawn-capacity facts are excluded from
+debt components; outstanding notes, drawn credit lines and debt-maturity components remain visible.
+Independently ran `tests/test_m11_quarantine.py`: **23 passed in 8.38 s**. The tests include both
+previously reproduced non-debt cases and the retained genuine-debt controls, as well as C7/C8 and
+status/rank invariance. Test databases and temporary vaults only; no live/backup DB access for this
+recheck. C7 and C8 remain agreed; no new actionable correctness finding in this revision.
+
+**Resolved: the reported Phase 1 correctness findings only.** Performance acceptance is still
+unverified; the external-backup profile is pending. Any optimisation needs a fresh exact-head
+review and status/rank/order comparison before Phase 1 is accepted. Phase 2 is not implemented or
+reviewed. This does not complete M11, M9 acceptance or authorise a merge/deployment. Keep the PR
+draft and main unchanged while the remaining work proceeds.
