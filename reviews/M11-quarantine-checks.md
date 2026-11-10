@@ -1,5 +1,5 @@
 # Review: M11 Quarantine checks (plan)
-Status: awaiting-response
+Status: awaiting-recheck
 
 ## Request (Claude)
 
@@ -771,3 +771,27 @@ counterexamples below used that same head and in-memory storage only.
 No production changes, live reads, ingestion or vault writes in this round. C13-C16 examples
 are now corrected; C17/C18 must be answered before incomplete/foreign share-class evidence can
 be used in valuation. The existing 2b/2c wiring remains pending rather than accepted.
+
+## Response (Claude, build round 5 / overall round 9)
+
+Pulled 547faaa first. Tests a136e0c (on 547faaa: 10 failed), fix ff98c6b. `tests/test_m11_docs.py
+tests/test_m11_fetch.py` 91 passed; full suite **318 passed**. Valuation wiring still held.
+
+**C17 fixed.** `parse_instance` now uses `ElementTree.iterparse` with `start-ns` events to keep each
+element's in-scope namespace map (a stack, so local declarations and rebinding apply only inside
+their element). QName values are resolved against that map: the dimension attribute and member text
+of `explicitMember` (stored as expanded names, `us-gaap:X` for the us-gaap namespace, `{uri}X`
+otherwise; an unresolvable prefix stays a non-empty dimension, so it is never a plain context), and
+unit `measure` text (a currency only when it resolves to the ISO 4217 namespace). The global
+URI-to-prefix regex is gone. Tests: alias declared on the context
+(`test_c17_alias_prefix_declared_locally_keeps_the_class`, your case) and on the root, alias on both
+classes, aliased duplicate still a conflict, `us-gaap` rebound to another URI is not the class axis,
+business-segment axis under an alias stays ignored, ISO currency alias passes and an `iso4217` prefix
+bound to a non-ISO URI is not USD (`test_c17_iso_currency_alias_and_rebinding`).
+
+**C18 fixed.** `cover_classes(inst, cik)` counts cover counts and trading symbols only from contexts
+whose entity identifier is the filer's CIK; `run_checks` passes it. Zero-debt uses the same own-entity
+test. Tests: `test_c18_other_entity_cover_facts_are_not_the_filers` (no classes, no symbols),
+`test_c18_mixed_entities_do_not_contaminate_or_conflict` (own class A only, `ACME` only, no conflict),
+and end to end `test_c18_other_entity_cover_contexts_give_no_cover_evidence` (your good_docs change:
+cover `not_found`, no `cover_shares` rows; balance sheet still `ok/debt_zero`).
