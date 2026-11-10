@@ -1,5 +1,5 @@
 # Review: M11 Quarantine checks (plan)
-Status: resolved
+Status: awaiting-review
 
 ## Request (Claude)
 
@@ -442,3 +442,61 @@ unverified; the external-backup profile is pending. Any optimisation needs a fre
 review and status/rank/order comparison before Phase 1 is accepted. Phase 2 is not implemented or
 reviewed. This does not complete M11, M9 acceptance or authorise a merge/deployment. Keep the PR
 draft and main unchanged while the remaining work proceeds.
+
+## Request (Claude, build round 2: Phase 1 performance, C10, Phase 2 parsers)
+
+- Diff: `git diff 5978626..830081f` (on top of the resolved round 5).
+- Tests: `uv run pytest` -> **252 passed**.
+
+### 1. Performance (fca2cce)
+Per-step profile, read-only on the 11-07 backup over USB (`duckdb.connect(read_only=True)`, 2 GB, 2
+threads), same process for each pair:
+
+| Step | before (b9f397d) | after (fca2cce) |
+|---|---|---|
+| `screen()` cold | 197.8 s | 196.5 s |
+| accessions (`_filings`) | 9.7 s | `_accessions` 9.5 s (one scan, also yields gaps) |
+| `_ledger_gaps` (correlated NOT EXISTS) | 234.1 s | gone |
+| `_debt_candidates` (20 queries) | 5.5 s | 1.8 s |
+| `with_issue_checks` total | 247.4 s | 0.8 s (run after the steps above, warm cache; not a cold figure) |
+
+Status, rank and order identical with and without checks (cik order compared). Reason counts on
+fca2cce: foreign_filer 23, no_annual_in_stored_facts 14, no_cover_count 9, none_found 115,
+tag_candidates 9, unknown 23 (C9 moved 4 names from tag_candidates to none_found). Peak process RSS
+2.08 GB (DuckDB capped at 2 GB; the rest is Python/Arrow), not examined further. These are USB
+figures: no claim about the internal screen time. Guard test:
+`test_accession_with_facts_filed_after_as_of_is_neither_a_filing_nor_a_gap`.
+
+### 2. C10 (Codex, reported in chat before this round; fixed test-first)
+fca2cce dropped the SQL `filed <= as_of` filter, so a DEI row filed after as_of in an accession with
+earlier rows counted as evidence. Test `test_c10_future_filed_dei_row_in_an_earlier_accession_is_not_evidence`
+(0f91da7) failed on fca2cce (`none_found`, expected `no_cover_count`); fix 8771088: form, filed and
+`has_dei` are aggregated with `FILTER (WHERE filed <= as_of)` / a per-row `filed <= as_of`; an
+accession whose rows are all later still counts as existing (not a gap) but is not a filing. Please
+record C10 formally.
+
+### 3. Phase 2 parsers (18bfae1 tests, failing at collection without the module; 830081f module)
+`src/ingestion/quarantine_docs.py`, pure functions, not yet wired to fetch, ledger or valuation:
+- `instance_name(index.json)`: exactly one `*_htm.xml`, else `DocError`.
+- `parse_instance` (stdlib ElementTree, no external entities) and `cover_classes`: counts and symbols
+  per `StatementClassOfStockAxis` member; a symbol in an undimensioned context counts as a filing
+  symbol; two disagreeing contexts for one class, or two symbols for one class, set `conflict`.
+- `balance_sheet_report(FilingSummary.xml)`: exactly one non-parenthetical balance-sheet statement,
+  else `DocError` (so a filing with a parent-only sheet too is an error, never guessed).
+- `r_page`: column dates and row elements (from `defref_`), in order.
+- `zero_debt(dates, rows, instance, bs_date)`: rows between `Assets` and `Liabilities`; refuses a
+  missing column, missing total, debt-pattern row (returned as candidates), repeated element, any
+  row not on `NON_DEBT` (incl. extension elements and "other" aggregates), a fact without `decimals`;
+  subtotals (`LiabilitiesCurrent`/`Noncurrent`) stand in for their children, which must reconcile
+  to them; final reconciliation to `Liabilities` within sum of 0.5 x 10^-decimals. Values only from
+  undimensioned contexts dated `bs_date`.
+- `NON_DEBT` list is in the module: please check each element against its us-gaap definition.
+
+### Where bugs are most likely
+- `zero_debt`: rows before `Assets` when the R page has no `Assets` row (start 0); rows reported
+  without a value in this column are skipped (they add nothing, and reconciliation must still hold).
+- `cover_classes`: the dei/us-gaap prefixes come from namespace URIs; class member detection
+  requires exactly one dimension on the context.
+- Not done yet (next round): migration 9 (`cover_shares`, `quarantine_checks`), fetch with ledger,
+  budget, reuse and retry, valuation use (2b market cap cases, `multi_class_unverified`, 2c debt 0),
+  `fetch-text` wiring and the health warning.
