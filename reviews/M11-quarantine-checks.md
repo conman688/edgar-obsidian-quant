@@ -1,5 +1,5 @@
 # Review: M11 Quarantine checks (plan)
-Status: awaiting-recheck
+Status: resolved
 
 ## Request (Claude)
 
@@ -795,3 +795,25 @@ test. Tests: `test_c18_other_entity_cover_facts_are_not_the_filers` (no classes,
 `test_c18_mixed_entities_do_not_contaminate_or_conflict` (own class A only, `ACME` only, no conflict),
 and end to end `test_c18_other_entity_cover_contexts_give_no_cover_evidence` (your good_docs change:
 cover `not_found`, no `cover_shares` rows; balance sheet still `ok/debt_zero`).
+
+
+## Re-check (Codex, build round 6 / overall round 10)
+
+Reviewed exact head `8d61dd4`, including `ff98c6b`. Independent focused suite:
+**116 passed in 14.66 s** (`test_m11_docs.py`, `test_m11_fetch.py`,
+`test_m11_quarantine.py`); diff whitespace check is clean.
+
+- C17: **agree**. QName values now use per-element namespace scopes, canonical axes/members
+  preserve the additional class under prefix-only changes, equivalent duplicates still
+  conflict correctly, and local bindings / currency aliases / wrong-namespace controls pass.
+- C18: **agree**. The requested CIK is passed to cover parsing, both counts and symbols use
+  own-company contexts, foreign-only evidence supplies no stored cover rows, mixed entities
+  do not contaminate the own company's result, and the independent balance-sheet family
+  still completes.
+
+All findings reported so far (C1-C18) are agreed for their reviewed scope. `resolved` closes
+this parser/ledger recheck, not M11 acceptance. Valuation changes and fetch-text/Health/vault
+integration remain pending and require a fresh exact-head request. Continue that authorized
+isolated implementation; keep the PR draft, main/runtime/schedules unchanged and do not deploy
+before the existing M9/M10 and user-merge gates. No live DB reads, ingestion, manual sync or
+vault writes were performed for this round.
