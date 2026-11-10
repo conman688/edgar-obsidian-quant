@@ -234,6 +234,12 @@ def cover_classes(inst: Instance, cik: int) -> dict:
 
 
 _CONSOLIDATED = re.compile(r"\bconsolidated\b", re.I)
+# The statement itself, not a schedule that mentions it ("Reconciliation of cash ... for consolidated
+# balance sheets", S2): up to six plain qualifier words before the title (no linking words such as
+# of/for/to/in/and, no commas); a parenthetical or "- suffix" may follow. Scope is judged separately.
+_BALANCE_SHEET = re.compile(r"(?:(?!(?:of|for|to|in|and)\b)[\w-]+\s+){0,6}"
+                            r"(?:balance\s+sheets?|statements?\s+of\s+financial\s+(?:position|condition))"
+                            r"\s*(?:\(.*?\)\s*)*(?:[-\u2013\u2014].*)?", re.I)
 # Negated or narrower scopes. "Combined" alone does not prove the issuer's consolidated scope (C13).
 _NOT_CONSOLIDATED = re.compile(r"\b(?:un|non)-?consolidated\b|parent|registrant|guarantor|issuer|subsidiar", re.I)
 
@@ -243,8 +249,8 @@ def balance_sheet_report(filing_summary: bytes) -> dict:
 
     `consolidated` is True only when the statement's name has the whole word "consolidated", is not
     un- or non-consolidated, and names no parent, registrant, guarantor, issuer or subsidiary scope (C13): no dimensions on the facts
-    does not prove consolidated scope. Raises DocError when there is no balance-sheet statement or
-    several consolidated ones.
+    does not prove consolidated scope. Raises DocError when there is no balance-sheet statement;
+    several consolidated ones give `consolidated` False (no proof from this filing).
     """
     try:
         root = ET.fromstring(filing_summary)
@@ -253,15 +259,16 @@ def balance_sheet_report(filing_summary: bytes) -> dict:
     hits = []
     for rep in root.iter("Report"):
         name, cat = (rep.findtext("ShortName") or ""), (rep.findtext("MenuCategory") or "")
-        if (cat == "Statements" and re.search(r"balance sheet|financial position|financial condition", name, re.I)
+        if (cat == "Statements" and _BALANCE_SHEET.fullmatch(name.strip())
                 and not re.search(r"parenthetical", name, re.I) and rep.findtext("HtmlFileName")):
             hits.append({"html": rep.findtext("HtmlFileName"), "name": name,
                          "consolidated": bool(_CONSOLIDATED.search(name)) and not _NOT_CONSOLIDATED.search(name)})
     if not hits:
         raise DocError("no balance-sheet statement in FilingSummary.xml")
     cons = [h for h in hits if h["consolidated"]]
-    if len(cons) > 1:
-        raise DocError(f"{len(cons)} consolidated balance-sheet statements in FilingSummary.xml")
+    if len(cons) > 1:                              # a definite answer for this filing, not a retry (S2)
+        return {"html": None, "consolidated": False,
+                "name": f"{len(cons)} consolidated balance-sheet statements: " + "; ".join(h["name"] for h in cons)}
     return cons[0] if cons else hits[0]
 
 
