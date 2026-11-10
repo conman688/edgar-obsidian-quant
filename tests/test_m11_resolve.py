@@ -313,3 +313,43 @@ def test_c21_zero_never_erases_current_positive_debt_with_a_dropped_line(con):
     zero(con)
     r = row(con, "ACME")
     assert r["debt"] == 1_000_000 and "stale_debt" in r["issues"] and r["status"] == "quarantine"
+
+
+# --- review round 12 ----------------------------------------------------------------------
+
+def test_c20_unmapped_later_filing_still_governs(con):
+    # q3 carries only a revenue fact, outside the valuation's concepts, and refuses the zero.
+    quarantined(con, CIK, "ACME", cheap_company(debt=False))
+    zero(con)
+    load_docs(con, [doc_for(CIK, {(GAAP, "RevenueFromContractWithCustomerExcludingAssessedTax", "USD"): [
+        {"start": "2024-04-01", "end": "2024-06-30", "val": 5_000_000, "filed": "2024-08-25", "accn": "q3",
+         "form": "10-Q", "fy": None, "fp": "Q2"}]})])
+    zero(con, accn="q3", filed=date(2024, 8, 25), result="not_zero")
+    r = row(con, "ACME")
+    assert r["m11_filing"] == "q3" and "missing_debt" in r["issues"]
+
+
+def test_c20_governing_filing_does_not_depend_on_the_numeric_policy(con):
+    quarantined(con, CIK, "ACME", cheap_company(debt=False))
+    zero(con)
+    later_filing(con, tag=(GAAP, "CashAndCashEquivalentsAtCarryingValue", "USD"), value=6_000_000)  # repeats June cash
+    zero(con, accn="q3", filed=date(2024, 8, 25), result="not_zero")
+    for policy in ("as_last_known", "as_first_reported"):
+        r = next(x for x in screen_table(con, AS_OF, policy=policy).to_pylist() if x["ticker"] == "ACME")
+        assert "missing_debt" in r["issues"], policy
+
+
+def test_c20_ledger_gap_means_no_governing_filing_and_no_proof(con):
+    quarantined(con, CIK, "ACME", cheap_company(debt=False))
+    zero(con)
+    con.execute("INSERT INTO loaded_filings (cik, accn) VALUES (?, 'ghost')", [CIK])
+    r = row(con, "ACME")
+    assert r["m11_filing"] is None and "missing_debt" in r["issues"]
+
+
+def test_c23_ledger_rows_filed_after_as_of_are_not_evidence(con):
+    quarantined(con, CIK, "MIR", stale_share_company())
+    cover(con, [(A, 1_000_000, "MIR", D)], ["MIR"], filed=date(2024, 9, 20))      # accession q2 known Aug 1
+    zero(con, filed=date(2024, 9, 20))
+    r = row(con)
+    assert "stale_shares" in r["issues"] and r["shares_period_end"] == date(2023, 12, 31)

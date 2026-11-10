@@ -238,3 +238,11 @@ def test_c20_fetch_uses_the_screens_governing_filing_not_an_amendment(con):
     run_checks(con, sec, rows(con), AS_OF)
     assert sorted(sec.calls) == sorted(URLS.values())                  # q2, the screen's governing 10-Q
     assert {a for (a,) in con.execute("SELECT DISTINCT accn FROM quarantine_checks").fetchall()} == {"q2"}
+
+
+def test_c20_ledger_gap_means_no_fetch(con):
+    both_families(con)
+    con.execute("INSERT INTO loaded_filings (cik, accn) VALUES (?, 'ghost')", [CIK])
+    sec = FakeSec(good_docs())
+    run_checks(con, sec, rows(con), AS_OF)
+    assert sec.calls == []
