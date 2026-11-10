@@ -2,8 +2,8 @@
 
 Eligibility (C6): only rows with screen status `quarantine`. `m11_cover` runs for a share issue
 whose Phase 1 reason is `no_cover_count`; `m11_balance_sheet` for `missing_debt` or `stale_debt`.
-The filing is the screen's governing filing (`m11_filing`: the latest 10-K or 10-Q, no amendments,
-behind the screen's facts filed by as_of), so the ledger row checked is the one valuation reads.
+The filing is the governing filing (`governing_sql`: the latest 10-K or 10-Q, no amendments, in the
+stored filing metadata by as_of; none when ledger coverage is unknown), the one valuation reads.
 
 Requests (C5), all through the caller's SEC client: index.json and the one `*_htm.xml` instance
 (both families), FilingSummary.xml and the balance-sheet R page (`m11_balance_sheet`). At most 4
@@ -26,7 +26,7 @@ import requests
 from src.ingestion.quarantine_docs import (DocError, balance_sheet_report, cover_classes, instance_name,
                                            parse_instance, r_page, zero_debt)
 from src.db.queries import M11_PARSERS
-from src.quarantine import DEBT_ISSUES, _accessions
+from src.quarantine import DEBT_ISSUES, governing_filings
 
 PARSERS = M11_PARSERS
 FETCH_ERRORS = (DocError, requests.RequestException, RuntimeError)   # RuntimeError: SEC throttled to the end
@@ -91,11 +91,11 @@ def run_checks(con: duckdb.DuckDBPyConnection, sec, rows: list[dict], as_of: dat
 
     want = [(r, families(r)) for r in rows]
     want = [(r, f) for r, f in want if f]
-    filings, _ = _accessions(con, sorted({r["cik"] for r, _ in want}), as_of) if want else ({}, {})
+    gov = governing_filings(con, sorted({r["cik"] for r, _ in want}), as_of) if want else {}
     got: Counter = Counter()
     for r, fams in sorted(want, key=lambda x: x[0]["cik"]):
         cik = r["cik"]
-        filing = next((f for f in filings.get(cik, []) if f["accn"] == r.get("m11_filing")), None)
+        filing = gov.get(cik)
         if filing is None:
             continue
         base = _base(cik, filing["accn"])

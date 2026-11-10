@@ -74,6 +74,29 @@ _DEBT_INCL_SHORT_TERM = ("DebtLongtermAndShorttermCombinedAmount", "DebtCurrent"
 _FLOWS = ("ebit", "cfo", "capex")
 
 
+def governing_sql(ciks: str) -> str:
+    """The M11 governing filing per company in `ciks` (SQL yielding a `cik` column), as of $as_of:
+    the latest 10-K or 10-Q (no amendments) in the stored filing metadata, i.e. any xbrl_facts
+    accession, whatever its concepts and whatever the numeric policy. Form and date come only from
+    rows filed by as_of (C10). A ledger accession with no stored facts makes coverage unknown: no
+    governing filing, so no proof (C20). Shared by valuation, fetch and diagnostics."""
+    return f"""
+    WITH c AS ({ciks}),
+    f AS (
+        SELECT cik, accn, min(form) FILTER (WHERE filed <= $as_of) AS form,
+               min(filed) FILTER (WHERE filed <= $as_of) AS filed
+        FROM xbrl_facts WHERE cik IN (SELECT cik FROM c) GROUP BY cik, accn
+    ),
+    gap AS (
+        SELECT DISTINCT l.cik FROM loaded_filings l
+        WHERE l.cik IN (SELECT cik FROM c) AND NOT EXISTS (SELECT 1 FROM f WHERE f.cik = l.cik AND f.accn = l.accn)
+    )
+    SELECT cik, accn, filed FROM f
+    WHERE filed IS NOT NULL AND form IN ('10-K', '10-Q') AND cik NOT IN (SELECT cik FROM gap)
+    QUALIFY row_number() OVER (PARTITION BY cik ORDER BY filed DESC, accn DESC) = 1
+    """
+
+
 def valuation_sql(policy: Policy = "as_last_known") -> str:
     """SQL behind valuation(); binds only $as_of, so other screens can embed it."""
     def one(concept: str) -> str:
@@ -174,20 +197,17 @@ def valuation_sql(policy: Policy = "as_last_known") -> str:
     -- M11 2b: share classes from the latest cover check filed by as_of. A market cap comes only
     -- from a proved mapping: one class with a count and one trading symbol, the priced ticker;
     -- or every class with a count has its own symbol with a stored close on the price date.
-    -- M11: the governing filing is the latest 10-K or 10-Q (no amendments) behind the screen's own
-    -- facts filed by as_of. Its ledger state decides, before any success filter (C20): a newer
-    -- refusal, error, old parser or unprocessed filing never revives an older filing's proof.
-    lf AS (
-        SELECT cik, accn, filed FROM (SELECT DISTINCT cik, accn, filed FROM pit WHERE form IN ('10-K', '10-Q'))
-        QUALIFY row_number() OVER (PARTITION BY cik ORDER BY filed DESC, accn DESC) = 1
-    ),
+    -- M11: the governing filing (governing_sql), for companies with ledger rows only: no other company
+    -- can have a proof. Its ledger state decides, before any success filter (C20): a newer refusal,
+    -- error, old parser or unprocessed filing never revives an older filing's proof.
+    lf AS ({governing_sql("SELECT DISTINCT cik FROM quarantine_checks")}),
     -- 2b: that filing's cover check. A market cap comes only from one class with a positive count
     -- dated like pit.py allows, and exactly one filing symbol equal to the ticker of the as-of quote.
     -- Two or more classes stay blocked: prices hold the primary quote only (C22).
     cvf AS (
         SELECT q.cik, q.accn, q.filed, q.result, q.detail FROM lf
         JOIN quarantine_checks q ON q.cik = lf.cik AND q.accn = lf.accn AND q.family = 'm11_cover'
-        WHERE q.status = 'ok' AND q.parser >= {M11_PARSERS['m11_cover']}
+        WHERE q.status = 'ok' AND q.parser >= {M11_PARSERS['m11_cover']} AND q.filed <= $as_of   -- C23
     ),
     cv AS (
         SELECT f.cik, any_value(f.accn) AS accn, any_value(f.result) AS result,
@@ -199,7 +219,7 @@ def valuation_sql(policy: Policy = "as_last_known") -> str:
                coalesce(bool_and(c.shares > 0 AND c.dei_date IS NOT NULL AND c.dei_date <= f.filed + INTERVAL 7 DAY
                                  AND c.dei_date <= $as_of), FALSE) AS all_usable,
                any_value(px.ticker) AS quote_ticker
-        FROM cvf f LEFT JOIN cover_shares c ON c.cik = f.cik AND c.accn = f.accn
+        FROM cvf f LEFT JOIN cover_shares c ON c.cik = f.cik AND c.accn = f.accn AND c.filed <= $as_of
         LEFT JOIN px ON px.cik = f.cik
         GROUP BY f.cik
     ),
@@ -229,6 +249,7 @@ def valuation_sql(policy: Policy = "as_last_known") -> str:
         SELECT q.cik, q.period_end, q.accn FROM lf
         JOIN quarantine_checks q ON q.cik = lf.cik AND q.accn = lf.accn AND q.family = 'm11_balance_sheet'
         WHERE q.status = 'ok' AND q.result = 'debt_zero' AND q.parser >= {M11_PARSERS['m11_balance_sheet']}
+          AND q.filed <= $as_of                                                                  -- C23
     ),
     -- The filings the screen read the balance sheet from, at bs_date.
     bsa AS (
