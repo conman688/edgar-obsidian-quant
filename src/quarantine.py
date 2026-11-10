@@ -106,18 +106,21 @@ def _debt_candidates(con, want: list[tuple[int, date, list[str]]], as_of: date) 
     return out
 
 
-def _cover(con, ciks: list[int], as_of: date) -> dict[int, dict]:
-    """The latest current-parser cover check filed by as_of, with its classes (M11 2b)."""
+def _cover(con, governing: list[tuple[int, str]]) -> dict[int, dict]:
+    """The governing filing's current-parser cover check and its classes: the same evidence the
+    valuation reads (M11 2b, C20)."""
     from src.db.queries import M11_PARSERS
     out: dict[int, dict] = {}
+    if not governing:
+        return out
     for cik, accn, result, member, shares, symbol in con.execute(f"""
-            WITH f AS (SELECT cik, accn, result FROM quarantine_checks
-                       WHERE list_contains($ciks, cik) AND family = 'm11_cover' AND status = 'ok'
-                         AND filed <= $as_of AND parser >= {M11_PARSERS['m11_cover']}
-                       QUALIFY row_number() OVER (PARTITION BY cik ORDER BY filed DESC, accn DESC) = 1)
+            WITH g AS (SELECT unnest($ciks) AS cik, unnest($accns) AS accn),
+            f AS (SELECT q.cik, q.accn, q.result FROM g JOIN quarantine_checks q USING (cik, accn)
+                  WHERE q.family = 'm11_cover' AND q.status = 'ok' AND q.parser >= {M11_PARSERS['m11_cover']})
             SELECT f.cik, f.accn, f.result, c.member, c.shares, c.symbol
             FROM f LEFT JOIN cover_shares c ON c.cik = f.cik AND c.accn = f.accn
-            ORDER BY f.cik, c.member""", {"ciks": ciks, "as_of": as_of}).fetchall():
+            ORDER BY f.cik, c.member""", {"ciks": [c for c, _ in governing],
+                                          "accns": [a for _, a in governing]}).fetchall():
         d = out.setdefault(cik, {"accn": accn, "result": result, "classes": []})
         if member is not None:
             d["classes"].append((member, shares, symbol))
@@ -223,7 +226,7 @@ def with_issue_checks(con: duckdb.DuckDBPyConnection, table: pa.Table, as_of: da
     want = [(r["cik"], r["bs_date"], _bs_accns(r)) for r in q
             if set(r["issues"]) & set(DEBT_ISSUES) and r["bs_date"] is not None]
     cands = _debt_candidates(con, want, as_of)
-    covers = _cover(con, ciks, as_of) if ciks else {}
+    covers = _cover(con, [(r["cik"], r["m11_filing"]) for r in q if r.get("m11_filing")])
     issues, checks = [], []
     for r in rows:
         if r["status"] != "quarantine":
