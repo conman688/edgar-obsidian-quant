@@ -128,12 +128,15 @@ def test_balance_sheet_report_is_the_one_statement():
                                         "consolidated": True}
 
 
-@pytest.mark.parametrize("reports", [
-    [("Statements of Operations", "R4.htm", "Statements")],
-    [("Consolidated Balance Sheets", "R2.htm", "Statements"), ("Consolidated Balance Sheets - Other", "R9.htm", "Statements")]])
-def test_no_or_two_balance_sheets_is_an_error(reports):
+def test_no_balance_sheet_is_an_error():
     with pytest.raises(DocError):
-        balance_sheet_report(filing_summary(*reports))
+        balance_sheet_report(filing_summary(("Statements of Operations", "R4.htm", "Statements")))
+
+
+def test_s2_two_consolidated_balance_sheets_are_a_definite_no_not_an_error():
+    got = balance_sheet_report(filing_summary(("Consolidated Balance Sheets", "R2.htm", "Statements"),
+                                              ("Consolidated Balance Sheets - Other", "R9.htm", "Statements")))
+    assert got["consolidated"] is False and got["html"] is None and "2 consolidated" in got["name"]
 
 
 LABELS = {"us-gaap_AccruedLiabilitiesCurrent": "Accrued liabilities"}
@@ -556,3 +559,22 @@ def test_integration_non_finite_or_negative_class_count_is_unusable(v):
     doc = instance(ctx("a", "2024-07-25", "us-gaap:CommonClassAMember"), count("a", v), symbol("a", "ACME"))
     got = cover_classes(parse_instance(doc), 1234)
     assert got["conflict"] is True and got["classes"] == []
+
+
+def test_s2_cash_reconciliation_schedule_is_not_a_balance_sheet():
+    # IMMR 10-Q 0001193125-26-389919 FilingSummary statements (real names).
+    fs = filing_summary(("CONSOLIDATED BALANCE SHEETS", "R2.htm", "Statements"),
+                        ("CONSOLIDATED BALANCE SHEETS (Parenthetical)", "R3.htm", "Statements"),
+                        ("CONDENSED CONSOLIDATED STATEMENTS OF OPERATIONS (UNAUDITED)", "R4.htm", "Statements"),
+                        ("RECONCILIATION OF CASH, CASH EQUIVALENTS, AND RESTRICTED CASH FOR CONSOLIDATED BALANCE SHEETS",
+                         "R8.htm", "Statements"))
+    assert balance_sheet_report(fs) == {"html": "R2.htm", "name": "CONSOLIDATED BALANCE SHEETS", "consolidated": True}
+
+
+@pytest.mark.parametrize("name", [  # real names from the 11-07 diagnosis filings
+    "Unaudited Condensed Consolidated Balance Sheets", "UNAUDITED CONDENSED CONSOLIDATED BALANCE SHEETS",
+    "Unaudited Consolidated Balance Sheets", "Condensed Consolidated Balance Sheets (Unaudited)",
+    "Consolidated Balance Sheets (unaudited)", "CONSOLIDATED STATEMENTS OF FINANCIAL POSITION",
+    "Consolidated Condensed Balance Sheets"])
+def test_s2_real_balance_sheet_names_are_recognised(name):
+    assert balance_sheet_report(filing_summary((name, "R2.htm", "Statements")))["consolidated"] is True

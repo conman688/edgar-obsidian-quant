@@ -215,3 +215,14 @@ def test_c18_other_entity_cover_contexts_give_no_cover_evidence(con):
     got = ledger(con)
     assert got["m11_cover"][0] == "not_found" and got["m11_balance_sheet"] == ("ok", "debt_zero")
     assert con.execute("SELECT count(*) FROM cover_shares").fetchone()[0] == 0
+
+
+def test_s2_two_consolidated_balance_sheets_give_a_definite_not_zero(con):
+    both_families(con)
+    docs = good_docs()
+    docs[URLS["fs"]] = filing_summary(("Consolidated Balance Sheets", "R2.htm", "Statements"),
+                                      ("Consolidated Balance Sheets - Other", "R9.htm", "Statements"))
+    sec = FakeSec(docs)
+    run_checks(con, sec, rows(con), AS_OF)
+    assert ledger(con)["m11_balance_sheet"] == ("ok", "not_zero")
+    assert URLS["r"] not in sec.calls
