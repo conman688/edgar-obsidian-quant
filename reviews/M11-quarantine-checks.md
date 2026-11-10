@@ -1,5 +1,5 @@
 # Review: M11 Quarantine checks (plan)
-Status: awaiting-recheck
+Status: resolved
 
 ## Request (Claude)
 
@@ -1054,3 +1054,72 @@ rows): `governing_sql` alone 6.4 s / 5.1 s (28 governing filings for 50 CIKs; wh
 `SELECT count(*) FROM (valuation_sql)` 108.6 s / 103.2 s with those rows, 104.9 s with an empty ledger.
 That is row-count query timing, not full screen materialisation (the optimizer may prune unused
 expressions). USB only: no internal timing claim; that is for your live read-only measurement.
+
+
+## Re-check / computation verification (Codex, build round 8 / overall round 13)
+
+Reviewed implementation at `2025951` / `537e1ad`; latest exact head `78a43f8` changes only
+this review's USB timing label. Independent focused suite **172 passed in 34.26 s**; independent
+full suite **374 passed in 73.77 s**. Diff whitespace check is clean.
+
+- C20: **agree**. The shared governing-filing SQL reads all stored accession metadata,
+  independent of concept mapping and numeric reporting policy. Unmapped later filings and
+  repeated cash prints under first-reported policy supersede the older proof. Ledger-only
+  coverage gaps establish no governing filing, so neither proof nor fetch claims a latest
+  known filing. Valuation, fetching and diagnostics use the same definition; the complete
+  past-filing, future-only and amendment controls retain their intended behavior.
+- C23: **agree**. Ledger rows and stored class rows have their own filed-by-as-of cutoffs.
+  A future cover or zero result under an already known accession no longer resolves the
+  earlier screen, and diagnostics apply the same cutoffs.
+- Scan guard adjustment: **agree**. One concept-resolution scan plus one bounded metadata
+  scan is necessary to preserve the complete metadata source; a concept-only projection
+  cannot supply it. The modified test guards the scan structure. Actual computation cost
+  is separately established below, rather than inferred from the scan count.
+
+### Independent internal-storage computation measurement
+
+Pinned `78a43f895dd8dfd51cbe2b1d6397066d9d7fc9e3`, as-of **2026-11-07**. A separate in-memory
+DuckDB connection attached the production file **READ_ONLY**. Migration 9's two tables were
+created **only in memory**; no production migration, copy, ingestion or vault sync occurred.
+Held the existing advisory run lock after Claude confirmed no competing jobs/readers; 2 GB,
+production 4 threads, 4 GB maximum spill in a private temporary directory. DuckDB 2.0.0.
+
+Each query was fully materialized with `fetchall`, converted to Arrow/Python rows, and the new
+paths included the complete issue diagnostics. Five alternating triples, same inputs:
+
+| Measured path | Five runs, seconds | Median | Range |
+| --- | --- | --- | --- |
+| Main `b8e8c0c` valuation in the same screen wrapper | 8.380, 7.455, 7.487, 7.353, 7.486 | 7.486 | 7.353–8.380 |
+| New screen + diagnostics, empty in-memory M11 tables | 8.016, 7.835, 7.664, 8.829, 7.771 | 7.835 | 7.664–8.829 |
+| New screen + diagnostics, 51-company negative ledger proxy | 7.783, 7.850, 7.700, 7.682, 7.518 | 7.700 | 7.518–7.850 |
+
+The proxy used the 51 saved-screen quarantine CIKs with synthetic `not_found` rows under a
+nonexistent benchmark accession, never a real proof or value override. It exercises the
+bounded metadata-company lookup; it is not real-filing ledger acceptance. Both new paths
+meet the **under-30-second computation target in every measured run** under these conditions.
+This is normal desktop/cache behavior, not a cold-cache, speedup, SEC-fetch, migration or
+CLI/vault-I/O benchmark. The USB author's `count(*)` timing is correctly labeled as a row-count
+query that the optimizer may prune; it is not substituted for this full-result measurement.
+
+Every run returned **4,189 rows / 51 quarantined** with identical status, rank and row order.
+Each quarantined issue had exactly one matching check. The November 7 shortlist remained
+**DINO, GIII, LRN** in every run. No promotion is established by negative proxy evidence.
+
+Measured 2026-11-09 22:50:11.940675–22:52:09.273515 MST. Eight logical CPUs; load averages
+before 2.172/2.769/3.019, after 4.538/3.384/3.223. Connection closed, run lock released,
+temporary directory removed. Production DB size **4,736,167,936 bytes**, mtime and inode
+unchanged; no measured query errors. Claude was explicitly told the reader slot was released.
+
+### Current review conclusion and remaining gates
+
+All reported findings **C1–C23 are agreed for their reviewed scope**. `resolved` closes this
+implementation/recheck cycle and the measured computation target. It does not declare the
+milestone deployed or waive its backed-up real-data acceptance checks. Keep PR #25 draft and
+unmerged until the existing M9/M10 deployment order and user approval gates are satisfied.
+Main and the live runtime remain unchanged; the M9 baseline is unchanged. No manual sync ran.
+
+Freshness clarification: a resolution is visible on the next screen computation. The existing
+weekly `sync-vault` recomputes after `fetch-text`, so the vault can reflect it in that same run.
+The earlier saved Parquet stays unchanged until another screen export; the proposed extra
+export is a separate operations choice. No extra screen, schedule change or approval flow is
+introduced by this review. Existing journal snapshots remain protected.
