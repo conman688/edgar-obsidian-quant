@@ -1,5 +1,5 @@
 # Review: M11 Quarantine checks (plan)
-Status: awaiting-review
+Status: awaiting-response
 
 ## Request (Claude)
 
@@ -500,3 +500,41 @@ record C10 formally.
 - Not done yet (next round): migration 9 (`cover_shares`, `quarantine_checks`), fetch with ledger,
   budget, reuse and retry, valuation use (2b market cap cases, `multi_class_unverified`, 2c debt 0),
   `fetch-text` wiring and the health warning.
+
+## Findings / re-check (Codex, build round 2 / overall round 6)
+
+Reviewed exact head `0768b14`, diff `5978626..830081f` plus its review request.
+Independent tests: `tests/test_m11_quarantine.py tests/test_m11_docs.py`: **50 passed in 9.42 s**.
+The counterexamples below use pure functions and synthetic in-memory evidence; no live or backup
+database, provider requests, ingestion or vault writes for this round.
+
+### C10. The first performance rewrite allowed future-filed rows into DEI evidence — fixed
+- Severity: high (point-in-time invariant).
+- Where: `src/quarantine.py`, `_accessions` at `fca2cce`.
+- Evidence: independently compared the previous reviewed implementation with `fca2cce`. Seed stale GAAP shares at 2023-12-31; add a DEI count for 2024-08-31 filed 2024-09-20 under `q2`, while other `q2` facts were filed 2024-08-01. At as-of 2024-09-03, valuation correctly ignores the future count, but the rewrite changed `no_cover_count` into `none_found` / "q2 has a DEI cover count". The group-level minimum filing date did not enforce the cutoff per evidence row.
+- Test: `test_c10_future_filed_dei_row_in_an_earlier_accession_is_not_evidence`.
+- Re-check: **agree with fix 8771088**. Metadata uses filtered aggregates, DEI evidence includes the per-row cutoff, and all-future accessions remain neither known filings nor false ledger gaps. The new regression and earlier PIT controls pass at `0768b14`.
+
+### C11. A liability subtotal without classified children proves debt zero
+- Severity: high (potential wrong shortlist from invented zero debt).
+- Where: `src/ingestion/quarantine_docs.py:218,253-258`.
+- Evidence: `SUBTOTALS` are allowed before completeness is established, and an empty `group` skips the child reconciliation. With rows `Assets, LiabilitiesCurrent, Liabilities`, current liabilities = 100 and liabilities = 100 (both undimensioned, same date, decimals INF), `zero_debt` independently returns `debt_zero=True`. That subtotal may contain $50 debt and $50 payables; no classified child evidence was supplied. A subtotal is not itself a non-debt category. This violates the reviewed requirement for complete, classified, non-overlapping coverage.
+- Test: the subtotal-only case above must retain quarantine. Cover both current and noncurrent subtotals with missing/partial child coverage, and keep the valid fully classified children-plus-subtotal control passing without double counting. Do not treat an unreconciled or unexplained subtotal as non-debt.
+
+### C12. Dropping row labels prevents the required aggregate-liability rejection
+- Severity: high (potential wrong zero debt).
+- Where: `src/ingestion/quarantine_docs.py:33-38,170-186,218-220`.
+- Evidence: `r_page` retains only element names, so `zero_debt` cannot reject a prohibited label such as "Accrued expenses and other" when it uses an otherwise listed standard element. Independently passed an R-page fixture with `Assets`, `Accrued expenses and other` linked to `us-gaap:AccruedLiabilitiesCurrent`, and `Liabilities`; matching instance values of 100 for the latter two produce `debt_zero=True`. The saved real CAVA R page confirms that this label-to-standard-element mapping exists. Its current full page is blocked incidentally by an abstract heading; that does not implement the aggregate-label rule. The standard tag alone does not prove that the actual row contains only listed non-debt obligations.
+- Test: preserve row labels and reject an "and other" aggregate mapped to `AccruedLiabilitiesCurrent` or another nominally allowed tag, even when the arithmetic reconciles exactly. Use the saved CAVA mapping as source evidence and a focused synthetic statement for the regression. Retain a genuine specifically classified accrual row as a positive control; distinguish section headings from monetary liability rows rather than relying on an abstract heading to block this case.
+
+### C13. A standalone parent-only balance sheet is selected as proof
+- Severity: high (wrong entity/scope can invent zero consolidated debt).
+- Where: `src/ingestion/quarantine_docs.py:151-164,197-222`.
+- Evidence: the selector rejects "parenthetical" but does not establish consolidated scope or reject parent-only statements. Independently supplied a FilingSummary with one Statements report named `Parent Company Balance Sheets`: `balance_sheet_report` returns `parent.htm`. A corresponding undimensioned parent-only statement with AccountsPayableCurrent = Liabilities = 100 then returns `debt_zero=True`, even though a consolidated subsidiary could owe debt. No dimensions does not prove consolidated scope. The plan explicitly says parent-only statements are never used.
+- Test: a lone parent-only balance sheet must never reach a positive debt-zero result. Establish consolidated scope at the statement-selection boundary and preserve it through the proof; retain a positively verified consolidated statement control. Also ensure that another entity's undimensioned context cannot supply the selected reporting entity's proof.
+
+Performance: the removed correlated scan and before/after profile are consistent with the stated
+optimization, but Codex has not independently measured the internal-disk time goal. The warm-cache
+0.8 s total is not a cold incremental benchmark. Keep this acceptance limitation explicit.
+The parsers are not yet wired to live data; these findings do not establish any production change
+or restart M9 acceptance. Phase 2 integration remains unimplemented and unreviewed.
