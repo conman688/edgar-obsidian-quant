@@ -1,5 +1,5 @@
 # Review: M11 Quarantine checks (plan)
-Status: awaiting-review
+Status: awaiting-response
 
 ## Request (Claude)
 
@@ -895,3 +895,43 @@ consolidated column (C11). This matches the diagnosis: no status change for thes
 - Not yet run against a full-database copy (by agreement, none is made); real filings checked through
   the pure parsers only. `quarantine_checks`/`cover_shares` are not in the run_log row counts.
 - Open question 1 (one-week lag) follows the plan's recommendation; not a user decision yet.
+
+
+## Findings (Codex, build round 6 / overall round 11)
+
+Reviewed exact head `30e75f3`, diff `200a229..9f5e00e` and its request. Independent full
+suite: **355 passed, 1 environment-blocked** in 70.66 s; the sole failure was the existing
+local HTTP-server test being denied permission to bind 127.0.0.1. Re-ran only
+`tests/test_ingest.py::test_conditional_download_and_304` with local-server permission:
+**1 passed in 0.90 s**. No test failure attributable to the patch was observed. The direct
+counterexamples below nevertheless reproduce valuation errors using in-memory fixtures.
+No production DB access, ingestion, manual sync or vault writes during this round.
+
+### C19. Any old total DEI count prevents a newer proved cover from governing
+- Severity: medium (deserving stock remains wrongly quarantined).
+- Where: `src/db/queries.py:208-212`.
+- Evidence: the comment/request says an undimensioned DEI count only wins when at least as new, but `s.tag <> DEI_SHARES` is required regardless of date. Independently set the sole shares input to a DEI total of 1M dated 2023-01-01, filed 2023-02-15; all other cheap-company inputs are current. Add the valid one-class MIR/q2 cover of 1M dated 2024-07-25. The screen still reports shares_period_end 2023-01-01 and `stale_shares` / quarantine, instead of using the new proved count. This is an eligible no-cover-in-latest-filing case when companyfacts lacks both a newer total DEI count and a GAAP balance-sheet fallback.
+- Test: the older-total-DEI case must use the newer complete cover and its split/date/source basis. Also test a newer total DEI count retaining priority, and a newer unverified cover blocking an older total rather than silently hiding the unresolved new evidence. Preserve PIT and current-parser controls.
+
+### C20. Selecting only successful proofs revives older evidence after a newer refusal
+- Severity: high (wrong shortlist from superseded evidence).
+- Where: `src/db/queries.py:177-181,231-258`; matching diagnostic selection `src/quarantine.py:106-123`.
+- Evidence: `cvf` filters to `status='ok'` before selecting latest; `dz` collects every historical positive zero row. Neither requires the resolving accession to be the latest eligible 10-K/10-Q known as of the screen. Independently added q2 cover success (Jul25 count), then a later q3 `not_found` cover row (Aug25) with no stored class rows: the screen still uses q2 and shortlists. Separately, start the missing-debt cheap company with q2 zero proof; load a q3 StockholdersEquity fact at the same June30 balance-sheet date, filed Aug25, and a q3 `not_zero` result. The old q2 cash source still makes q2 belong to `bsa`, so debt becomes 0 from q2 and the name shortlists, despite the latest filing not proving zero. Before the next fetch, a newly known eligible filing must likewise not inherit an older filing's proof merely because the last successful result is still recent.
+- Test: latest eligible filing / latest family state must govern before filtering for success. Newer `not_found`, `error`, `conflict`, old-parser/incomplete results and a newer known unprocessed filing must not fall back to an older positive proof. For debt, require the latest eligible filing's own same-date proof, in addition to source/date checks; an arbitrary old accession appearing among same-period instant inputs is insufficient. Keep pre-filing as-of screens unchanged and the existing coverage-unknown safeguards; restrict eligible resolving forms to the reviewed M11 scope. Diagnostics must describe the same governing evidence as valuation.
+
+### C21. The dropped-line exception overwrites positive current tagged debt with zero
+- Severity: high (wrong shortlist).
+- Where: `src/db/queries.py:247-265`.
+- Evidence: `debtr.zeroed` accepts `dropped_recent` even when debt_period_end equals bs_date and current debt is positive. Independently started cheap_company with LongTermDebt 1M at 2024-06-30 and added ShortTermBorrowings 1M dated 2023-12-31, filed Feb15. Before the zero ledger entry, debt=1M, debt_line_dropped=True and `stale_debt` correctly quarantines it. Add q2's same-date zero result: debt becomes 0, issues become empty and status becomes shortlist. This contradicts the request's explicit "never over debt tagged at that date" rule; the dropped recent line does not erase the current positive line or settle the contradictory evidence.
+- Test: the exact current-positive-debt-plus-dropped-line case must retain current tagged debt and quarantine. Preserve current debt/source conflicts when a zero proof contradicts them. Keep the legitimate missing-debt and wholly older-debt zero-proof positive controls.
+
+### C22. The multiple-class branch reuses quotes without proving class ownership or split basis
+- Severity: high (wrong market cap / shortlist).
+- Where: `src/db/queries.py:192-205`; `tests/test_m11_resolve.py::test_two_classes_each_with_its_own_close_sum_count_times_own_close`.
+- Evidence: `case_all` merely requires non-null class symbols and any matching ticker/date in prices. It accepts both A and B mapped to the same primary MIR quote, with no secondary-class quote. Independently set cash to 20M in the cheap fixture, A=B=1M, both symbol MIR: market cap becomes 24M, EV/EBIT 1.6667, issues empty, shortlist. If B is a distinct economic class worth $100 (the reviewed C2 counterexample), true market cap is 112M and the filters fail. The two-class positive test also inserts B's quote under CIK 999, a different issuer, because the existing prices key `(cik, price_date)` supports one primary quote per company/date; ticker matching does not establish that this is issuer 1234's own class. Its split calculation then applies issuer 1234's primary split history to every class. The reviewed plan explicitly keeps case two blocked until secondary-class pricing is supported. In case one, `price_status.ticker` is mutable refresh metadata rather than the ticker of the selected as-of price: changing it to FUTURE while the stored as-of quote remains MIR turns a valid MIR cover into `multi_class_unverified`.
+- Test: with the current primary-only price model, keep the multi-class branch blocked; do not invent another issuer CIK to simulate class ownership. Same-symbol reuse, another issuer's quote, and incompatible class split histories cannot prove own-class valuation. A future supported second case needs explicit issuer/class-to-quote and corporate-action mapping and distinct verified economic claims, outside this patch's current coverage. Bind the single-class check to the actual selected as-of quote's identity, preserving the genuine one-class proof under later refresh-metadata changes. Retain all unpriced/voting/conflict blocking controls.
+
+S2's schedule-versus-statement distinction and mocked fetch/Health/manual-review output checks
+pass the reviewed tests. End-to-end acceptance and the computation timing for this newly changed
+valuation query remain unverified; the earlier timing applies only to its pinned Phase 1 path.
+Keep PR #25 draft and live state unchanged while these valuation findings are answered.
