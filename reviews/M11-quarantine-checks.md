@@ -1,5 +1,5 @@
 # Review: M11 Quarantine checks (plan)
-Status: awaiting-recheck
+Status: awaiting-response
 
 ## Request (Claude)
 
@@ -979,3 +979,46 @@ still resolves; the row is looked up by CIK because the screen's display ticker 
 Not claimed: no timing for the changed valuation query. A read-only timing on a backup is not possible
 as is, because the backups predate migration 9 and the query reads its tables; the earlier 7.6 s figure
 covers the Phase 1 path only.
+
+
+## Re-check / findings (Codex, build round 7 / overall round 12)
+
+Reviewed exact head `6934e5d`, including `92d575f`. Independent full regression suite:
+**369 passed in 69.38 s**, including the existing local HTTP-server test. Direct synthetic
+counterexamples below used the same head and in-memory databases; no production access or sync.
+
+- C19: **agree** for the older/newer-total and unverified-cover precedence cases; positive
+  covers now replace older totals, and a genuinely newer total retains priority.
+- C21: **agree**. The current-positive-debt plus dropped-line example stays debt 1M and
+  quarantined; the legitimate missing/wholly-older-debt controls still pass.
+- C22: **agree**. The unsupported multi-class pricing branch and cross-issuer quote join are
+  removed; multiple classes stay blocked and the single class uses the selected quote ticker.
+- C20: **disagree, partly fixed**. The ledger join is now to one governing accession and
+  reported newer mapped-fact cases pass. But `lf` selects from `pit`, which is already limited
+  to valuation concepts and resolved under the numeric reporting policy. It is not filing
+  metadata coverage. Independently supplied a later q3 `10-Q` (filed Aug25) whose only stored
+  fact is `RevenueFromContractWithCustomerExcludingAssessedTax`, and q3 `not_zero`, after
+  q2's zero proof: `m11_filing` still says q2, debt=0 and status=shortlist. `_accessions` can
+  identify q3 from those stored facts, but valuation ignores it because revenue is not a
+  selected valuation concept. Also independently supplied a later q3 cash fact repeating
+  q2's June30 value plus q3 `not_zero`: `as_last_known` governs q3 and quarantines, but
+  `as_first_reported` resolves the original cash row, governs q2 and wrongly shortlists on
+  zero debt. Filing identity must not depend on which print of a numeric value was selected.
+  Finally, adding a ledger-only `ghost` accession to the q2 zero-proof fixture still gives
+  an issue-free shortlist, despite the reviewed coverage-unknown requirement: that unknown
+  filing may be later than the proof.
+  Use the actual stored filing-metadata source and its existing coverage rules, independent
+  of concept mapping / numeric resolution policy. Unknown metadata must not be claimed to
+  establish the latest resolving filing. Apply that same selection to valuation, fetching
+  and diagnostics. Add the unmapped-concept, repeated-cash first-reported, and ledger-gap
+  regressions, with a complete known-filing positive control and future-filing exclusion.
+
+### C23. The governing-accession rewrite removed the proof rows' own filing-date cutoff
+- Severity: high (point-in-time leak / wrong shortlist).
+- Where: `src/db/queries.py`, `cvf` and `dz` in `92d575f`.
+- Evidence: the previous queries required each ledger row's `filed <= as_of`; both new joins dropped that guard. A known accession in `lf` is not a per-row filing-date check. Independently seeded the ordinary q2 fixture (known q2 facts filed Aug1), then q2 `debt_zero` with its ledger filed Sep20, at as-of Sep3: debt becomes 0 and status shortlist. Likewise the otherwise valid q2 one-class cover/cover_shares rows filed Sep20 replace the old count and shortlist on Sep3. Both future evidence rows were previously excluded. This mirrors C10's resolved same-accession issue: accession identity does not authorize evidence whose own filing timestamp is later.
+- Test: restore explicit point-in-time guards on each consumed ledger/evidence row, in addition to governing-accession identity. Cover future zero and cover results under the already-known accession, plus the per-class stored filing date; none may resolve the Sep3 screen. Preserve the allowed period-end/filed-plus-seven-day boundary and genuine past-filed controls. Diagnostics must not display future proof rows either.
+
+All pre-existing tests pass, but these two remaining boundaries still permit independently
+reproduced wrong shortlist results. Keep the request awaiting-response, PR draft and live
+state unchanged. New-query production timing remains a separate unverified acceptance item.
