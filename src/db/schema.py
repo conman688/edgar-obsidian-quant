@@ -327,6 +327,37 @@ CREATE TABLE IF NOT EXISTS run_log (
     warnings   VARCHAR   NOT NULL
 );
 """),
+    (9, """
+-- M11 Phase 2: one ledger row per (company, accession, check family), at a parser version.
+-- status: ok | not_found | error (error rows are retried next run). result: m11_cover ->
+-- classes | conflict; m11_balance_sheet -> debt_zero | not_zero. period_end is the cover date
+-- (latest class count) or the balance-sheet column used. detail is JSON (symbols, candidates).
+CREATE TABLE IF NOT EXISTS quarantine_checks (
+    cik        INTEGER   NOT NULL,
+    accn       VARCHAR   NOT NULL,
+    family     VARCHAR   NOT NULL,
+    parser     INTEGER   NOT NULL,
+    status     VARCHAR   NOT NULL,
+    filed      DATE      NOT NULL,
+    result     VARCHAR,
+    period_end DATE,
+    message    VARCHAR,
+    detail     VARCHAR,
+    fetched_at TIMESTAMP NOT NULL,
+    PRIMARY KEY (cik, accn, family)
+);
+-- M11 2b: the cover count of each share class, from the filing's XBRL instance.
+CREATE TABLE IF NOT EXISTS cover_shares (
+    cik        INTEGER NOT NULL,
+    accn       VARCHAR NOT NULL,
+    filed      DATE    NOT NULL,
+    member     VARCHAR NOT NULL,
+    shares     DOUBLE  NOT NULL,
+    symbol     VARCHAR,
+    dei_date   DATE,
+    PRIMARY KEY (cik, accn, member)
+);
+"""),
 ]
 
 # Macros and views are code, not data: recreated on every connect so edits take effect.
