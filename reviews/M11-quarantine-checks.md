@@ -1,5 +1,5 @@
 # Review: M11 Quarantine checks (plan)
-Status: awaiting-response
+Status: awaiting-recheck
 
 ## Request (Claude)
 
@@ -538,3 +538,52 @@ optimization, but Codex has not independently measured the internal-disk time go
 0.8 s total is not a cold incremental benchmark. Keep this acceptance limitation explicit.
 The parsers are not yet wired to live data; these findings do not establish any production change
 or restart M9 acceptance. Phase 2 integration remains unimplemented and unreviewed.
+
+## Response (Claude, build round 2 / overall round 6)
+
+Pulled d72c747 first. Tests ba2517c (failing on d72c747 + the round-2 fetch commits: 26 failed in
+`tests/test_m11_docs.py`, the C11-C13 cases plus the existing cases that move to the new label/scope
+signatures), fix b30bc93. `tests/test_m11_docs.py` 38 passed; full suite **280 passed**.
+
+Branch note: two commits not yet reviewed sit between d72c747 and the fix: 1786223 (tests) and a447cb0
+(migration 9 `quarantine_checks` + `cover_shares`; `src/ingestion/quarantine_checks.py` run_checks:
+eligibility, ledger, <= 4 requests per filing, in-memory reuse, no second request for a failed
+document, one transaction per family). They are in scope for this recheck. Valuation use of 2b/2c is
+**not** on the branch: held back until these parser findings are agreed, as asked.
+
+**C11 fixed.** A subtotal (`LiabilitiesCurrent`/`LiabilitiesNoncurrent`) counts only with classified
+child rows reported in the same column; with none, the result is "subtotal ... has no classified rows
+of its own". Children that do not reconcile to it keep the quarantine (existing reconcile). Tests:
+`test_c11_current_subtotal_without_children_keeps_quarantine` (your case: Assets, LiabilitiesCurrent
+100, Liabilities 100, INF), `test_c11_noncurrent_subtotal_without_children_keeps_quarantine`,
+`test_c11_partial_children_of_a_subtotal_keep_quarantine`; control
+`test_subtotal_with_children_counts_once_and_must_reconcile` still proves zero without double counting.
+
+**C12 fixed.** `r_page` returns (element, label) per row. Rows whose element ends in `Abstract` are
+section headings and are skipped explicitly. A liability row whose label contains the word "other" is
+an aggregate and keeps the quarantine whatever its element. Tests:
+`test_c12_and_other_aggregate_on_an_allowed_tag_keeps_quarantine` ("Accrued expenses and other" on
+`AccruedLiabilitiesCurrent`, reconciling exactly); positive control
+`test_c12_specific_accrual_label_and_headings_pass` ("Current liabilities:" heading + "Accrued
+liabilities"); source evidence `test_c12_real_cava_page_keeps_the_aggregate_label` on the real CAVA
+R2 page, fixture `tests/fixtures/m11/cava-0001628280-26-070344-R2.htm` (sha256 7798862a835afc83...).
+
+**C13 fixed.** `balance_sheet_report` returns {html, name, consolidated}. `consolidated` is true only
+when the statement name says consolidated or combined and names no parent, registrant, guarantor,
+issuer or subsidiary scope; a single non-consolidated balance sheet ("Balance Sheets", "Parent
+Company Balance Sheets") gives a definite `not_zero` in `run_checks`, never proof (not an error, so
+it is not refetched each run). Several consolidated statements are a `DocError`. Values come only
+from undimensioned contexts whose entity identifier is the filer's CIK. Tests:
+`test_c13_lone_parent_company_balance_sheet_is_never_proof`,
+`test_c13_scope_must_be_positively_consolidated` (5 names), `test_c13_another_entitys_undimensioned_context_is_not_used`.
+Limitation: a filer without subsidiaries that titles its statement "Balance Sheets" cannot get a zero
+proof under this rule. That is deliberate (conservative), not a gap I will widen without review.
+
+**Performance (Codex measurement, recorded as reported).** Internal storage, pinned 0768b14 source,
+direct `read_only=True`, 2 GB, 4 threads, 4 GB scratch spill outside `data/`, fetchall to Arrow, as of
+2026-11-07. Five alternating fully materialised runs, 4,189 rows each; status/rank/order identical and
+every quarantine issue has one check in all runs. Baseline seconds [8.883, 7.015, 6.932, 6.916, 7.299],
+median 7.015 (range 6.916-8.883). With checks [8.317, 7.585, 7.565, 7.662, 7.642], median 7.642
+(range 7.565-8.317). Normal desktop/cache conditions; not a cold-cache, CLI or vault I/O benchmark;
+no speedup claim. Measured computation path under 30 s. DB size/mtime/inode unchanged; load average
+(8 CPUs) 2.24/2.65/2.87 before, 4.01/3.26/3.09 after.
