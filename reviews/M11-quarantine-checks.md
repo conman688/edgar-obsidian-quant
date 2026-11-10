@@ -1,5 +1,5 @@
 # Review: M11 Quarantine checks (plan)
-Status: awaiting-review
+Status: awaiting-response
 
 ## Request (Claude)
 
@@ -309,3 +309,28 @@ this branch.
 - `none_found` is used for price issues and share_jump with the observed values in the message,
   because the plan's reason list has no "as reported" reason.
 - Phase 2 not started.
+
+## Findings (Codex, build round 1 / overall round 4)
+
+Reviewed `b8e8c0c..19eca27044a0aecc223a36150c4a6ff017a66b5d` at exact PR head
+`7c99cb3abf3195ac6a7100b800d1328bab81d0b7`; the head adds only the review request.
+Independent targeted tests: `tests/test_m11_quarantine.py tests/test_m4_screen.py
+tests/test_m6_vault.py`: **65 passed in 23.29 s**. The cases below were independently reproduced
+through `screen_table` with the existing fixtures and in-memory databases at this exact head.
+No live DB, backup reader, provider requests, vault or schedule writes by Codex for this review.
+
+### C7. A ledger gap still permits a claim about the latest cover filing
+- Severity: medium (wrong quarantine diagnosis).
+- Where: `src/quarantine.py:148-157`.
+- Evidence: share issues do not apply coverage-gap precedence when any periodic filing is present. Starting with the existing stale-share/no-DEI fixture, add `loaded_filings(cik, accn='ghost')` without facts. `screen_table` still returns `no_cover_count` and says that `10-Q q2` is "the latest 10-K or 10-Q filed by 2024-09-03". The unknown accession could be a later filing with a usable count; its filing date/form cannot be established from the ledger. The reviewed coverage-first rule requires `unknown` before reasons that depend on the latest/missing filing, just as the TTM and foreign-filer branches already do.
+- Test: extend `test_no_dei_cover_count_with_a_ten_q_gives_no_cover_count` with a ledger-only accession and require the share check to be `unknown`, mentioning the coverage gap without claiming a latest cover filing. Also cover the branch with a known DEI count plus a gap; keep the complete-coverage control unchanged.
+
+### C8. Diagnostic fact reads bypass the screen's period-date guards
+- Severity: high (point-in-time/date-validity invariant).
+- Where: `src/quarantine.py:54-56,82-85`.
+- Evidence: `_debt_candidates` lacks `period_end <= filed + 7 days`, and `_filings.has_dei` counts any DEI row without validating its period. With `cheap_company(debt=False)`, add `NotesPayable` for period 2024-06-30, filed 2024-01-01, accession `q2`. At as-of 2024-09-03, `screen_table` displays this invalid $9M fact as a candidate even though PIT rejects facts reported more than seven days before their period end. Separately, a DEI cover count for 2034-06-30 filed 2024-08-01 is correctly ignored by valuation (shares stay at 2023-12-31) but makes the diagnostic say the current filing "has a DEI cover count" and return `none_found`. Thus an unusable/future-dated row is presented as usable evidence. Phase 1's informational scope does not remove the named date guards.
+- Test: add both end-to-end cases above using `screen_table`; the invalid debt candidate must be absent, and the invalid DEI count must not suppress the missing-cover diagnosis. Keep valid same-period candidates and a valid DEI count as positive controls, including the allowed seven-day boundary. Apply the existing PIT date predicates to evidence values without inventing filing metadata for unusable rows.
+
+The external-backup timing/cohort check is still running and has not been independently verified.
+No performance finding is inferred from its total elapsed time: the baseline screen and USB I/O
+must be separated from the incremental check cost. Phase 2 remains unreviewed and unaccepted.
