@@ -1,5 +1,5 @@
 # Review: M11 Quarantine checks (plan)
-Status: awaiting-response
+Status: awaiting-recheck
 
 ## Request (Claude)
 
@@ -632,3 +632,42 @@ Those checks do not establish end-to-end integration: valuation, fetch-text/Heal
 and real-filing proof remain pending. Keep PR #25 draft and valuation changes held until the
 proof findings above are answered. The independently recorded screen computation timing remains
 valid for its measured path; no new performance claim is needed for these parser-only changes.
+
+## Response (Claude, build round 3 / overall round 7)
+
+Pulled 1fa8542 first. Tests 19d37cc (on 1fa8542: 13 failed, the two refusal controls already passing),
+fix 5c3ef12. `tests/test_m11_docs.py tests/test_m11_fetch.py` 67 passed; full suite **295 passed**.
+Valuation wiring is still held off the branch.
+
+**C13 fixed.** `consolidated` needs the whole word `consolidated` and no negation
+(`\b(?:un|non)-?consolidated\b`) or parent/registrant/guarantor/issuer/subsidiary scope. "Combined"
+alone is no longer proof. Test `test_c13_scope_must_be_positively_consolidated` now covers
+Consolidated and Condensed Consolidated (true) and Combined, Unconsolidated, Nonconsolidated,
+Non-consolidated, plain, Registrant and Guarantor (false); the first four of the false cases failed on 1fa8542.
+
+**C14 fixed.** `parse_instance` records `xsi:nil`. In `cover_classes` a nil class count is
+unusable: the class is not stored and the result is `conflict` (so the screen gives
+`multi_class_unverified`), never zero shares. A non-numeric count and a bad context date raise
+`DocError` (family error, retried). In `zero_debt` a nil value or unreadable `decimals` keeps the
+quarantine. Tests: `test_c14_nil_class_count_is_unusable_never_zero`,
+`test_c14_non_numeric_class_count_is_a_doc_error`, `test_c14_bad_context_date_is_a_doc_error`,
+`test_c14_bad_decimals_or_nil_value_keeps_quarantine`, and your end-to-end case
+`test_c14_nil_cover_count_does_not_stop_the_balance_sheet_family` (was `ValueError` with an empty
+ledger; now the balance sheet is `ok/debt_zero`, cover is not `classes`, no zero-share row).
+
+**C15 fixed.** `ROLLUPS` lists allowed elements that are us-gaap calculation parents of other allowed
+elements: `AccountsPayableCurrent` (trade, related parties), `EmployeeRelatedLiabilitiesCurrent`
+(salaries, employee benefits), `TaxesPayableCurrent` (accrued income taxes, sales and excise),
+`OperatingLeaseLiability` (current, noncurrent) and `AccountsPayableAndAccruedLiabilitiesCurrent`
+(payables and accruals). With any child on the statement, the rollup's present children must reconcile
+to it and are then replaced by it once, narrower rollups first. `ALTERNATIVES` refuses two elements
+for one concept on one statement (deferred revenue / contract liability, current and noncurrent;
+`DeferredIncomeTaxLiabilitiesNet` / `DeferredTaxLiabilitiesNoncurrent`). Tests: your case
+`test_c15_rollup_counted_with_its_own_children_keeps_quarantine` (AP 50 + accruals 50 + AP&A 100 vs
+200: now refused, residual 100), `test_c15_lease_total_with_children_keeps_quarantine_when_double_counted`,
+controls `test_c15_rollup_replaces_reconciled_children_once` (counted once, proves zero),
+`test_c15_rollup_whose_children_do_not_reconcile_keeps_quarantine`,
+`test_c15_two_tags_for_one_concept_keep_quarantine`; the disjoint six-row proof still passes.
+Open for you: `AccruedLiabilitiesCurrent` is not treated as a parent of the employee or tax elements,
+because I could not confirm that calculation relationship in the us-gaap taxonomy from here. If it is
+one, it belongs in `ROLLUPS` (that changes refusals, never adds proofs it should not).
