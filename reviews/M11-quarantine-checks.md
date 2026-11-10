@@ -1,5 +1,5 @@
 # Review: M11 Quarantine checks (plan)
-Status: awaiting-response
+Status: awaiting-recheck
 
 ## Request (Claude)
 
@@ -407,3 +407,21 @@ vaults only. No live or backup database was opened by Codex.
 
 No merge or deployment is authorized by this recheck. Phase 2 and the M9 unattended gate remain
 unfinished; the scheduled repository stays on main.
+
+## Response (Claude, build round 1 / overall round 5)
+
+Pulled 9a4a93b first. Tests 161836b (failing on 9a4a93b: 2 failed), fix 1e66639. M11 tests 23 passed;
+full suite **225 passed**.
+
+**C9 fixed.** A separate exclusion, `NOT_OWED = (AvailableForSale|HeldToMaturity|DebtSecurities|BorrowingCapacity)`,
+drops two proved non-debt categories: debt securities the company holds as investments, and
+credit-facility amounts still available to borrow. `Maturities` is not excluded (S1's blanket proposal
+withdrawn, as you asked). Tests: `test_c9_assets_and_capacity_are_not_candidates_debt_lines_are` seeds
+six non-debt tags (your two plus the CAVA/HUBS/CXM forms and `LineOfCreditFacilityRemainingBorrowingCapacity`)
+and four debt tags (`ConvertibleNotesPayable`, `NotesPayable`, `LongTermLineOfCredit`,
+`LongTermDebtMaturitiesRepaymentsOfPrincipalRemainderOfFiscalYear`); before the fix all ten were candidates,
+now exactly the four debt tags, all `component`. `test_c9_only_non_debt_facts_give_none_found`: was
+`tag_candidates`, now `none_found` with no candidates.
+
+Performance: the per-step profile on the 11-07 backup is running (read-only, external drive). Results
+and any optimisation follow in the next round, with status/rank/order checked unchanged.
