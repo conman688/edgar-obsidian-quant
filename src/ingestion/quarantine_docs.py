@@ -21,6 +21,7 @@ from html import unescape
 
 XBRLI = "{http://www.xbrl.org/2003/instance}"
 XBRLDI = "{http://xbrl.org/2006/xbrldi}"
+XSI_NIL = "{http://www.w3.org/2001/XMLSchema-instance}nil"
 CLASS_AXIS = "us-gaap:StatementClassOfStockAxis"
 COVER_COUNT = "dei:EntityCommonStockSharesOutstanding"
 TRADING_SYMBOL = "dei:TradingSymbol"
@@ -42,6 +43,23 @@ NON_DEBT = frozenset(f"us-gaap:{t}" for t in (
     "DeferredIncomeTaxLiabilitiesNet", "DeferredTaxLiabilitiesNoncurrent",
     "DividendsPayableCurrent"))
 SUBTOTALS = ("us-gaap:LiabilitiesCurrent", "us-gaap:LiabilitiesNoncurrent")
+# C15: allowed elements that roll up other allowed elements (us-gaap calculation parents). With any
+# of its children on the statement, a rollup stands in once for them, and they must reconcile to it.
+# Ordered so that a narrower rollup is applied before a wider one that contains it.
+ROLLUPS = [(f"us-gaap:{p}", frozenset(f"us-gaap:{c}" for c in cs)) for p, cs in (
+    ("AccountsPayableCurrent", ("AccountsPayableTradeCurrent", "AccountsPayableRelatedPartiesCurrent")),
+    ("EmployeeRelatedLiabilitiesCurrent", ("AccruedSalariesCurrent", "AccruedEmployeeBenefitsCurrent")),
+    ("TaxesPayableCurrent", ("AccruedIncomeTaxesCurrent", "SalesAndExciseTaxPayableCurrent")),
+    ("OperatingLeaseLiability", ("OperatingLeaseLiabilityCurrent", "OperatingLeaseLiabilityNoncurrent")),
+    ("AccountsPayableAndAccruedLiabilitiesCurrent", (
+        "AccountsPayableCurrent", "AccountsPayableTradeCurrent", "AccountsPayableRelatedPartiesCurrent",
+        "AccruedLiabilitiesCurrent", "EmployeeRelatedLiabilitiesCurrent", "AccruedSalariesCurrent",
+        "AccruedEmployeeBenefitsCurrent")))]
+# Alternative elements for one concept: both on one statement cannot be told apart, so refused.
+ALTERNATIVES = [frozenset(f"us-gaap:{t}" for t in pair) for pair in (
+    ("DeferredRevenueCurrent", "ContractWithCustomerLiabilityCurrent"),
+    ("DeferredRevenueNoncurrent", "ContractWithCustomerLiabilityNoncurrent"),
+    ("DeferredIncomeTaxLiabilitiesNet", "DeferredTaxLiabilitiesNoncurrent"))]
 TOTAL = "us-gaap:Liabilities"
 ASSETS = "us-gaap:Assets"
 DEBT_ROW = re.compile(r"(Debt|Notes|Borrowing|LineOfCredit|Loan)")
@@ -102,7 +120,10 @@ def parse_instance(xml: bytes) -> Instance:
         typed = any(True for _ in c.iter(f"{XBRLDI}typedMember"))
         if typed:
             dims += (("typed", "typed"),)
-        day = date.fromisoformat(instant.text.strip()) if instant is not None and instant.text else None
+        try:
+            day = date.fromisoformat(instant.text.strip()) if instant is not None and instant.text else None
+        except ValueError as e:
+            raise DocError(f"bad context date in instance: {e}") from None
         ident = c.find(f"{XBRLI}entity/{XBRLI}identifier")
         inst.contexts[c.get("id")] = (day, dims, (ident.text or "").strip() if ident is not None else "")
     for el in root:
@@ -114,7 +135,7 @@ def parse_instance(xml: bytes) -> Instance:
         if name.startswith("ext:"):
             name = f"{ext.get(ns, 'ext')}:{local}"
         inst.facts.append({"name": name, "context": ctx, "value": (el.text or "").strip(),
-                           "decimals": el.get("decimals")})
+                           "decimals": el.get("decimals"), "nil": el.get(XSI_NIL) == "true"})
     return inst
 
 
@@ -130,15 +151,22 @@ def cover_classes(inst: Instance) -> dict:
 
     counts: dict[str, set] = {}
     syms: dict[str | None, set] = {}
+    nil = False
     for f in inst.facts:
         if f["name"] == COVER_COUNT:
             m = member(f["context"])
-            if m:
-                counts.setdefault(m, set()).add((float(f["value"]), inst.contexts[f["context"]][0]))
+            if m and f["nil"]:
+                nil = True                         # C14: a nil count is unusable, never zero shares
+            elif m:
+                try:
+                    n = float(f["value"])
+                except ValueError:
+                    raise DocError(f"non-numeric cover count {f['value']!r} for {m}") from None
+                counts.setdefault(m, set()).add((n, inst.contexts[f["context"]][0]))
         elif f["name"] == TRADING_SYMBOL and f["value"]:
             dims = inst.contexts.get(f["context"], (None, (), ""))[1]
             syms.setdefault(member(f["context"]) if dims else None, set()).add(f["value"].upper())
-    conflict = any(len(v) > 1 for v in counts.values())
+    conflict = nil or any(len(v) > 1 for v in counts.values())
     classes = []
     for m in sorted(counts):
         (shares, day), *_ = sorted(counts[m], key=lambda x: (x[1] or date.min, x[0]))
@@ -150,15 +178,16 @@ def cover_classes(inst: Instance) -> dict:
     return {"classes": classes, "symbols": symbols, "conflict": conflict}
 
 
-_CONSOLIDATED = re.compile(r"consolidated|combined", re.I)
-_NOT_CONSOLIDATED = re.compile(r"parent|registrant|guarantor|issuer|subsidiar", re.I)
+_CONSOLIDATED = re.compile(r"\bconsolidated\b", re.I)
+# Negated or narrower scopes. "Combined" alone does not prove the issuer's consolidated scope (C13).
+_NOT_CONSOLIDATED = re.compile(r"\b(?:un|non)-?consolidated\b|parent|registrant|guarantor|issuer|subsidiar", re.I)
 
 
 def balance_sheet_report(filing_summary: bytes) -> dict:
     """The filing's balance-sheet statement: {html, name, consolidated}.
 
-    `consolidated` is True only when the statement's name says consolidated or combined and names
-    no parent, registrant, guarantor, issuer or subsidiary scope (C13): no dimensions on the facts
+    `consolidated` is True only when the statement's name has the whole word "consolidated", is not
+    un- or non-consolidated, and names no parent, registrant, guarantor, issuer or subsidiary scope (C13): no dimensions on the facts
     does not prove consolidated scope. Raises DocError when there is no balance-sheet statement or
     several consolidated ones.
     """
@@ -204,11 +233,15 @@ def r_page(html: bytes) -> tuple[list[date], list[tuple[str, str]]]:
 
 
 def _half_unit(decimals: str | None) -> float | None:
+    """Half a unit of the reported precision; None when missing or unreadable (C14)."""
     if decimals is None:
         return None
     if decimals.upper() == "INF":
         return 0.0
-    return 0.5 * 10 ** (-int(decimals))
+    try:
+        return 0.5 * 10 ** (-int(decimals))
+    except ValueError:
+        return None
 
 
 def zero_debt(dates: list[date], rows: list[tuple[str, str]], inst: Instance, column: date, cik: int) -> dict:
@@ -248,6 +281,8 @@ def zero_debt(dates: list[date], rows: list[tuple[str, str]], inst: Instance, co
     vals: dict[str, tuple[float, float | None]] = {}
     for f in inst.facts:
         if f["context"] in plain and (f["name"] in liab or f["name"] == TOTAL):
+            if f["nil"]:
+                return no(f"{f['name']} is nil at {column}")
             try:
                 v = float(f["value"])
             except ValueError:
@@ -260,7 +295,7 @@ def zero_debt(dates: list[date], rows: list[tuple[str, str]], inst: Instance, co
         return no(f"no Liabilities value at {column}")
     used = [r for r in liab if r in vals] + [TOTAL]
     if any(vals[r][1] is None for r in used):
-        return no("a fact has no decimals attribute: " + ", ".join(r for r in used if vals[r][1] is None))
+        return no("a fact has no readable decimals attribute: " + ", ".join(r for r in used if vals[r][1] is None))
 
     def reconcile(children: list[str], total: str) -> str | None:
         got = sum(vals[c][0] for c in children)
@@ -270,11 +305,24 @@ def zero_debt(dates: list[date], rows: list[tuple[str, str]], inst: Instance, co
             f"residual {residual:,.0f} between {total} {vals[total][0]:,.0f} and its rows {got:,.0f} "
             f"exceeds the rounding budget {budget:,.0f}")
 
+    for alt in ALTERNATIVES:
+        if alt <= set(liab):
+            return no("two elements for one concept: " + ", ".join(sorted(alt)))
+    consumed: set[str] = set()                     # children replaced by their rollup (C15)
+    for parent, children in ROLLUPS:
+        if parent not in vals:
+            continue
+        kids = [r for r in liab if r in children and r in vals and r not in consumed]
+        if kids:
+            err = reconcile(kids, parent)
+            if err:
+                return no(err)
+            consumed.update(kids)
     top: list[str] = []
     group: list[str] = []
     for r in liab:
-        if r not in vals:
-            continue                               # not reported in this column
+        if r not in vals or r in consumed:
+            continue                               # not reported in this column, or counted in a rollup
         if r in SUBTOTALS:
             if not group:                          # C11: a subtotal is not itself a non-debt category
                 return no(f"subtotal {r} has no classified rows of its own")
