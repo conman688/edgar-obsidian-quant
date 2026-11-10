@@ -187,3 +187,17 @@ def test_a_failed_document_is_not_requested_again_by_the_other_family(con):
     run_checks(con, sec, rows(con), AS_OF)
     assert sec.calls == [URLS["index"]]                                 # budget: one try per document per run
     assert ledger(con) == {"m11_balance_sheet": ("error", None), "m11_cover": ("error", None)}
+
+
+def test_c14_nil_cover_count_does_not_stop_the_balance_sheet_family(con):
+    both_families(con)
+    docs = good_docs()
+    docs[URLS["instance"]] = docs[URLS["instance"]].replace(
+        b'<dei:EntityCommonStockSharesOutstanding contextRef="a" unitRef="shares" decimals="INF">1000000</dei:EntityCommonStockSharesOutstanding>',
+        b'<dei:EntityCommonStockSharesOutstanding contextRef="a" unitRef="shares" decimals="INF" xsi:nil="true" '
+        b'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"/>')
+    run_checks(con, FakeSec(docs), rows(con), AS_OF)
+    got = ledger(con)
+    assert got["m11_balance_sheet"] == ("ok", "debt_zero")
+    assert got["m11_cover"][1] != "classes"                          # unusable, never a resolved count
+    assert con.execute("SELECT count(*) FROM cover_shares WHERE shares = 0").fetchone()[0] == 0

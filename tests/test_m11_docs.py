@@ -310,7 +310,10 @@ def test_c13_lone_parent_company_balance_sheet_is_never_proof():
     assert got["consolidated"] is False
 
 
-@pytest.mark.parametrize("name, ok", [("Consolidated Balance Sheets", True), ("Combined Balance Sheets", True),
+@pytest.mark.parametrize("name, ok", [("Consolidated Balance Sheets", True), ("Condensed Consolidated Balance Sheets", True),
+                                      ("Combined Balance Sheets", False),              # C13: combined scope not proved
+                                      ("Unconsolidated Balance Sheets", False), ("Nonconsolidated Balance Sheets", False),
+                                      ("Non-consolidated Balance Sheets", False),
                                       ("Balance Sheets", False), ("Condensed Balance Sheets - Registrant", False),
                                       ("Consolidated Balance Sheets - Guarantor Subsidiaries", False)])
 def test_c13_scope_must_be_positively_consolidated(name, ok):
@@ -321,3 +324,79 @@ def test_c13_another_entitys_undimensioned_context_is_not_used():
     rows, facts = six_rows()
     got = bs_case(rows, facts, contexts=[ctx("c", "2024-06-30", cik="0000009999")])
     assert got["debt_zero"] is False
+
+
+# --- review round 7 ----------------------------------------------------------------------
+
+def nil_count(cid):
+    return (f'<dei:EntityCommonStockSharesOutstanding contextRef="{cid}" unitRef="shares" decimals="INF" '
+            f'xsi:nil="true" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"/>')
+
+
+def test_c14_nil_class_count_is_unusable_never_zero():
+    doc = instance(ctx("a", "2024-07-25", "us-gaap:CommonClassAMember"), ctx("b", "2024-07-25", "us-gaap:CommonClassBMember"),
+                   nil_count("a"), count("b", 1_000_000), symbol("b", "ACME"))
+    got = cover_classes(parse_instance(doc))
+    assert got["conflict"] is True
+    assert all(c["shares"] != 0 for c in got["classes"]) and "us-gaap:CommonClassAMember" not in [c["member"] for c in got["classes"]]
+
+
+def test_c14_non_numeric_class_count_is_a_doc_error():
+    doc = instance(ctx("a", "2024-07-25", "us-gaap:CommonClassAMember"), count("a", "lots"))
+    with pytest.raises(DocError):
+        cover_classes(parse_instance(doc))
+
+
+def test_c14_bad_context_date_is_a_doc_error():
+    with pytest.raises(DocError):
+        parse_instance(instance(ctx("a", "2024-13-45")))
+
+
+def test_c14_bad_decimals_or_nil_value_keeps_quarantine():
+    rows, facts = six_rows()
+    facts[0] = usd(SIX[0], "c", 1_000_000, decimals="three")
+    assert bs_case(rows, facts)["debt_zero"] is False
+    rows, facts = six_rows()
+    facts[0] = (f'<us-gaap:{SIX[0]} contextRef="c" unitRef="usd" decimals="-3" xsi:nil="true" '
+                f'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"/>')
+    assert bs_case(rows, facts)["debt_zero"] is False
+
+
+def test_c15_rollup_counted_with_its_own_children_keeps_quarantine():
+    rows = ["us-gaap_AccountsPayableCurrent", "us-gaap_AccruedLiabilitiesCurrent",
+            "us-gaap_AccountsPayableAndAccruedLiabilitiesCurrent", "us-gaap_Liabilities"]
+    facts = [usd("AccountsPayableCurrent", "c", 50, "INF"), usd("AccruedLiabilitiesCurrent", "c", 50, "INF"),
+             usd("AccountsPayableAndAccruedLiabilitiesCurrent", "c", 100, "INF"), usd("Liabilities", "c", 200, "INF")]
+    assert bs_case(rows, facts)["debt_zero"] is False
+
+
+def test_c15_lease_total_with_children_keeps_quarantine_when_double_counted():
+    rows = ["us-gaap_OperatingLeaseLiabilityCurrent", "us-gaap_OperatingLeaseLiabilityNoncurrent",
+            "us-gaap_OperatingLeaseLiability", "us-gaap_Liabilities"]
+    facts = [usd("OperatingLeaseLiabilityCurrent", "c", 20, "INF"), usd("OperatingLeaseLiabilityNoncurrent", "c", 80, "INF"),
+             usd("OperatingLeaseLiability", "c", 100, "INF"), usd("Liabilities", "c", 200, "INF")]
+    assert bs_case(rows, facts)["debt_zero"] is False
+
+
+def test_c15_rollup_replaces_reconciled_children_once():
+    rows = ["us-gaap_AccountsPayableCurrent", "us-gaap_AccruedLiabilitiesCurrent",
+            "us-gaap_AccountsPayableAndAccruedLiabilitiesCurrent", "us-gaap_OperatingLeaseLiabilityNoncurrent",
+            "us-gaap_Liabilities"]
+    facts = [usd("AccountsPayableCurrent", "c", 50, "INF"), usd("AccruedLiabilitiesCurrent", "c", 50, "INF"),
+             usd("AccountsPayableAndAccruedLiabilitiesCurrent", "c", 100, "INF"),
+             usd("OperatingLeaseLiabilityNoncurrent", "c", 30, "INF"), usd("Liabilities", "c", 130, "INF")]
+    assert bs_case(rows, facts)["debt_zero"] is True
+
+
+def test_c15_rollup_whose_children_do_not_reconcile_keeps_quarantine():
+    rows = ["us-gaap_AccountsPayableCurrent", "us-gaap_AccountsPayableAndAccruedLiabilitiesCurrent", "us-gaap_Liabilities"]
+    facts = [usd("AccountsPayableCurrent", "c", 50, "INF"),
+             usd("AccountsPayableAndAccruedLiabilitiesCurrent", "c", 100, "INF"), usd("Liabilities", "c", 100, "INF")]
+    assert bs_case(rows, facts)["debt_zero"] is False
+
+
+def test_c15_two_tags_for_one_concept_keep_quarantine():
+    rows = ["us-gaap_DeferredRevenueCurrent", "us-gaap_ContractWithCustomerLiabilityCurrent", "us-gaap_Liabilities"]
+    facts = [usd("DeferredRevenueCurrent", "c", 50, "INF"), usd("ContractWithCustomerLiabilityCurrent", "c", 50, "INF"),
+             usd("Liabilities", "c", 100, "INF")]
+    assert bs_case(rows, facts)["debt_zero"] is False
