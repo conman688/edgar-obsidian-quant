@@ -1050,6 +1050,6 @@ as of Sep 3: no cover, no zero).
 one pass; the plan now has exactly one more `xbrl_facts` scan, the governing metadata (asserted to be the
 only scan in `governing_sql`). Cost, measured read-only on the 11-07 backup over USB (in-memory M11
 tables, backup attached READ_ONLY with `search_path`, 2 GB, 4 threads, 50 quarantined CIKs as ledger
-rows): `governing_sql` alone 6.4 s / 5.1 s (28 governing filings; 22 have a ledger gap or no 10-K/10-Q);
+rows): `governing_sql` alone 6.4 s / 5.1 s (28 governing filings for 50 CIKs; why the other 22 have none was not broken down);
 full valuation 108.6 s / 103.2 s with those rows, 104.9 s with an empty ledger. USB only: no internal
 timing claim; that is for your live read-only measurement.
