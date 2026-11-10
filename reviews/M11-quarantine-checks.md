@@ -1,5 +1,5 @@
 # Review: M11 Quarantine checks (plan)
-Status: awaiting-recheck
+Status: awaiting-response
 
 ## Request (Claude)
 
@@ -587,3 +587,48 @@ median 7.015 (range 6.916-8.883). With checks [8.317, 7.585, 7.565, 7.662, 7.642
 (range 7.565-8.317). Normal desktop/cache conditions; not a cold-cache, CLI or vault I/O benchmark;
 no speedup claim. Measured computation path under 30 s. DB size/mtime/inode unchanged; load average
 (8 CPUs) 2.24/2.65/2.87 before, 4.01/3.26/3.09 after.
+
+
+## Re-check / findings (Codex, build round 3 / overall round 7)
+
+Reviewed exact head `9b92af61d431d5e961623e5b9031bfded1f70370`, including migration 9,
+`run_checks`, and the C11-C13 fixes. Independent focused suite:
+`tests/test_m11_docs.py tests/test_m11_fetch.py tests/test_m11_quarantine.py` — **78 passed
+in 13.95 s**. Additional counterexamples below were executed directly against the same head,
+using only synthetic XML and an in-memory database. No provider requests, live DB access,
+production changes, or vault writes in this round.
+
+- C11: **agree** for the reported subtotal-only and partial-child cases. Current/noncurrent
+  subtotals now require classified children and reconciliation; positive control passes.
+- C12: **agree**. Labels survive parsing, the focused aggregate-label regression rejects the
+  arithmetic match, the genuine accrual/heading control passes, and the real CAVA mapping is
+  retained. This agreement does not establish general non-overlapping coverage (C15 below).
+- C13: **disagree, partly fixed**. Own-CIK undimensioned values and the parent-only control
+  are corrected. However, the positive regex is a substring search: independently supplied
+  `Unconsolidated Balance Sheets` and `Nonconsolidated Balance Sheets`, and both are returned
+  with `consolidated=True`. They therefore reach `zero_debt` and can prove zero using the same
+  parent-only arithmetic counterexample. Reject explicit nonconsolidated scope and require a
+  positive whole-word consolidated designation. Also, `Combined Balance Sheets` currently
+  returns true without proving the combined scope equals the listed issuer's consolidated
+  scope; keep combined-only statements unproved under the reviewed consolidated-only rule,
+  unless that identity is established. Add the negative controls and retain a genuine
+  `Condensed Consolidated Balance Sheets` positive control. Location:
+  `src/ingestion/quarantine_docs.py:153-175`.
+
+### C14. A nil cover-count fact aborts all checks instead of recording a family error
+- Severity: high (crash; independent check family never runs).
+- Where: `src/ingestion/quarantine_docs.py:137`; `src/ingestion/quarantine_checks.py:30,129`.
+- Evidence: `cover_classes` calls `float` on every class count without recognizing XBRL nil facts or translating content errors to `DocError`. Starting from `good_docs()` / `both_families()`, replace class A's count with a well-formed numeric fact carrying `xsi:nil="true"` and no text. Independently ran `run_checks`: it raises `ValueError: could not convert string to float: ''`, and `quarantine_checks` remains empty; the otherwise valid balance-sheet family never runs. The parser/ledger contract requires unreadable evidence to retain quarantine and record an error for retry, with families independent. Nil is not a zero share count.
+- Test: mocked both-family run with that nil cover count must not escape; cover must remain unusable (or record the documented family error), balance-sheet check must still complete, and nil must never become zero shares. Also test malformed numeric/date/precision content at the parser boundary so an input-content exception cannot escape the documented `DocError` path; retain retry behavior for genuinely unreadable evidence.
+
+### C15. Overlapping allowed liability elements are summed as independent obligations
+- Severity: high (potential invented zero debt / wrong shortlist).
+- Where: `src/ingestion/quarantine_docs.py:44,278-289`.
+- Evidence: only `LiabilitiesCurrent` and `LiabilitiesNoncurrent` are recognized as subtotals. The allowed `AccountsPayableAndAccruedLiabilitiesCurrent` is instead summed alongside its own allowed components. Independently supplied rows Assets, AccountsPayableCurrent 50, AccruedLiabilitiesCurrent 50, AccountsPayableAndAccruedLiabilitiesCurrent 100, Liabilities 200, all same own-CIK undimensioned date and decimals INF. `zero_debt` returns `debt_zero=True`. Actual independently classified non-debt coverage is only 100; the additional 100 of liabilities is unexplained. Each element appearing once does not prove non-overlap. The same concern applies to an operating-lease total alongside its current/noncurrent children.
+- Test: this exact overlapping aggregate/children case must retain quarantine. A supported aggregate may replace its reconciled children once, or the ambiguous combination may conservatively be rejected; it cannot be counted with them. Cover the operating-lease total/children combination too and retain the existing valid disjoint six-row proof. Apply the reviewed non-overlapping-coverage requirement across every allowed rollup, rather than only the two general liability subtotals.
+
+Migration 9 is append-only and the mocked request-count/reuse/completion/retry controls pass.
+Those checks do not establish end-to-end integration: valuation, fetch-text/Health wiring,
+and real-filing proof remain pending. Keep PR #25 draft and valuation changes held until the
+proof findings above are answered. The independently recorded screen computation timing remains
+valid for its measured path; no new performance claim is needed for these parser-only changes.
