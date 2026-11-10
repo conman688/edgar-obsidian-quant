@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import io
 import json
+import math
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
@@ -213,6 +214,9 @@ def cover_classes(inst: Instance, cik: int) -> dict:
                     n = float(f["value"])
                 except ValueError:
                     raise DocError(f"non-numeric cover count {f['value']!r} for {m}") from None
+                if not math.isfinite(n) or n < 0:
+                    nil = True                     # unusable like nil: never a share count
+                    continue
                 counts.setdefault(m, set()).add((n, inst.contexts[f["context"]][0]))
         elif f["name"] == TRADING_SYMBOL and f["value"]:
             dims = inst.contexts.get(f["context"], (None, (), ""))[1]

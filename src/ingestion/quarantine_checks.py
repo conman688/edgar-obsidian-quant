@@ -24,9 +24,10 @@ import requests
 
 from src.ingestion.quarantine_docs import (DocError, balance_sheet_report, cover_classes, instance_name,
                                            parse_instance, r_page, zero_debt)
+from src.db.queries import M11_PARSERS
 from src.quarantine import DEBT_ISSUES, PERIODIC_FORMS, _accessions
 
-PARSERS = {"m11_cover": 1, "m11_balance_sheet": 1}
+PARSERS = M11_PARSERS
 FETCH_ERRORS = (DocError, requests.RequestException, RuntimeError)   # RuntimeError: SEC throttled to the end
 
 
