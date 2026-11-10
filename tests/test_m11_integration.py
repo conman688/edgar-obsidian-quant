@@ -54,14 +54,17 @@ def test_second_fetch_text_makes_no_m11_requests(con, monkeypatch, tmp_path):
 
 def test_fetch_text_with_cik_checks_only_those(con, monkeypatch, tmp_path):
     both_families(con)
-    sec = FakeSec(docs_with_submissions())
+    docs = docs_with_submissions()
+    docs["https://data.sec.gov/submissions/CIK0000000999.json"] = EMPTY_SUBMISSIONS
+    sec = FakeSec(docs)
     fetch_text(con, sec, monkeypatch, tmp_path, cik=[999])
     assert not set(URLS.values()) & set(sec.calls)
     assert con.execute("SELECT count(*) FROM quarantine_checks").fetchone()[0] == 0
 
 
 def test_resolution_counts_from_the_next_screen(con, monkeypatch, tmp_path):
-    # Open question 1 settled as "accept the lag": fetch-text runs after screen in the weekly job.
+    # Open question 1, as the plan recommends: fetch-text runs after screen, so a resolution counts
+    # from the next screen (one week of lag in the weekly job). Not yet decided by the user.
     both_families(con)
     before = {r["ticker"]: r["status"] for r in screen_table(con, AS_OF).to_pylist()}
     fetch_text(con, FakeSec(docs_with_submissions()), monkeypatch, tmp_path)

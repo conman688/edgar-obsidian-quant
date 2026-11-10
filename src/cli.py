@@ -33,6 +33,7 @@ from src.ingestion.filing_text import fetch_sections
 from src.journal import REVIEW_DAYS
 from src.obsidian.sync import sync_vault, vault_ciks, write_journal
 from src.obsidian.writer import upsert_note
+from src.ingestion.quarantine_checks import run_checks
 from src.screen import Filters, screen_table, write_parquet
 
 
@@ -297,13 +298,22 @@ def cmd_backtest(args, con=None) -> None:
 
 
 def cmd_fetch_text(args, con=None) -> None:
+    """10-K risk factors for the vault's companies, then the M11 quarantine checks (documents that
+    can resolve a quarantine issue). Both use one screen; a resolution counts from the next screen."""
     vault = Path(args.vault) if args.vault else config.VAULT_DIR
     con = _db(con)
-    ciks = args.cik or vault_ciks(con, vault, args.as_of)
+    rows = screen_table(con, args.as_of).to_pylist()
+    ciks = args.cik or vault_ciks(con, vault, args.as_of, rows=rows)
+    client, cache = _client(), {}
     t0 = time.perf_counter()
-    got = fetch_sections(con, _client(), ciks, args.as_of)
+    got = fetch_sections(con, client, ciks, args.as_of)
     print(f"10-K risk factors for {len(ciks)} companies as of {args.as_of}: "
           f"{got['ok']} found, {got['not_found']} not found, in {time.perf_counter() - t0:.0f}s")
+    t0 = time.perf_counter()
+    q = [r for r in rows if not args.cik or r["cik"] in args.cik]
+    got = run_checks(con, client, q, args.as_of, cache=cache)
+    print(f"quarantine checks as of {args.as_of}: {got['ok']} ok, {got['not_found']} not found, "
+          f"{got['error']} errors, in {time.perf_counter() - t0:.0f}s")
 
 
 def cmd_sync_vault(args, con=None) -> None:

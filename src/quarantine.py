@@ -9,6 +9,8 @@ For each issue of a quarantined row, one check with a reason:
   date, whose tag fits the debt pattern. Shown for manual review, never used as debt.
 - no_cover_count: the latest 10-K or 10-Q filed by as_of has no undimensioned DEI cover count.
   Per-class tagging is one possible cause, not a confirmed one.
+- cover_classes (M11 2b, for multi_class_unverified): the share classes the cover check found, with
+  counts and symbols, for manual review; no market cap is proved from them.
 - unknown: the facts hold no form or date evidence for the question. An accession in the
   ledger with no stored facts makes the latest-filing and missing-filing reasons unknown.
 - none_found: the facts were enough, and nothing explains the issue; read the filing.
@@ -26,8 +28,8 @@ import pyarrow as pa
 
 from src.db.queries import MIN_PRICE
 
-REASONS = ("foreign_filer", "no_annual_in_stored_facts", "tag_candidates", "no_cover_count", "unknown",
-           "none_found")
+REASONS = ("foreign_filer", "no_annual_in_stored_facts", "tag_candidates", "no_cover_count", "cover_classes",
+           "unknown", "none_found")
 ANNUAL_FORMS = ("10-K", "10-K/A", "10-KT", "10-KT/A", "20-F", "20-F/A", "40-F", "40-F/A")
 FOREIGN_FORMS = ("20-F", "20-F/A", "40-F", "40-F/A")
 PERIODIC_FORMS = ("10-K", "10-K/A", "10-Q", "10-Q/A")
@@ -104,6 +106,24 @@ def _debt_candidates(con, want: list[tuple[int, date, list[str]]], as_of: date) 
     return out
 
 
+def _cover(con, ciks: list[int], as_of: date) -> dict[int, dict]:
+    """The latest current-parser cover check filed by as_of, with its classes (M11 2b)."""
+    from src.db.queries import M11_PARSERS
+    out: dict[int, dict] = {}
+    for cik, accn, result, member, shares, symbol in con.execute(f"""
+            WITH f AS (SELECT cik, accn, result FROM quarantine_checks
+                       WHERE list_contains($ciks, cik) AND family = 'm11_cover' AND status = 'ok'
+                         AND filed <= $as_of AND parser >= {M11_PARSERS['m11_cover']}
+                       QUALIFY row_number() OVER (PARTITION BY cik ORDER BY filed DESC, accn DESC) = 1)
+            SELECT f.cik, f.accn, f.result, c.member, c.shares, c.symbol
+            FROM f LEFT JOIN cover_shares c ON c.cik = f.cik AND c.accn = f.accn
+            ORDER BY f.cik, c.member""", {"ciks": ciks, "as_of": as_of}).fetchall():
+        d = out.setdefault(cik, {"accn": accn, "result": result, "classes": []})
+        if member is not None:
+            d["classes"].append((member, shares, symbol))
+    return out
+
+
 def _bs_accns(row: dict) -> list[str]:
     """Accessions of the inputs the screen read at the balance-sheet date."""
     return sorted({a for s in row["sources"] or [] if s["period_end"] == row["bs_date"] for a in s["accns"]})
@@ -113,7 +133,8 @@ def _describe(f: dict) -> str:
     return f"{f['form']} {f['accn']} (filed {f['filed']})"
 
 
-def checks_for(row: dict, filings: list[dict], gaps: list[str], candidates: list[dict], as_of: date) -> list[dict]:
+def checks_for(row: dict, filings: list[dict], gaps: list[str], candidates: list[dict], as_of: date,
+               cover: dict | None = None) -> list[dict]:
     """One check per issue of a quarantined row, in issue order."""
     annual = next((f for f in filings if f["form"] in ANNUAL_FORMS), None)
     periodic = next((f for f in filings if f["form"] in PERIODIC_FORMS), None)
@@ -168,6 +189,12 @@ def checks_for(row: dict, filings: list[dict], gaps: list[str], candidates: list
                                   f"{_describe(periodic)} has a DEI cover count; read the cover page"))
             else:
                 out.append(_check(issue, "unknown", f"the stored facts hold no 10-K or 10-Q filed by {as_of}"))
+        elif issue == "multi_class_unverified" and cover:
+            shown = "; ".join(f"{m.split(':')[-1].split('}')[-1]} {n:,.0f} ({s or 'no symbol'})"
+                              for m, n, s in cover["classes"]) or "no usable class counts"
+            out.append(_check(issue, "cover_classes",
+                              f"cover check of {cover['accn']} ({cover['result']}): {shown}; no market cap is "
+                              f"proved from these classes, read the cover page"))
         elif issue == "penny_price":
             out.append(_check(issue, "none_found",
                               f"close {row['close_raw']:.2f} on {row['price_date']} is below {MIN_PRICE:.2f}"))
@@ -196,6 +223,7 @@ def with_issue_checks(con: duckdb.DuckDBPyConnection, table: pa.Table, as_of: da
     want = [(r["cik"], r["bs_date"], _bs_accns(r)) for r in q
             if set(r["issues"]) & set(DEBT_ISSUES) and r["bs_date"] is not None]
     cands = _debt_candidates(con, want, as_of)
+    covers = _cover(con, ciks, as_of) if ciks else {}
     issues, checks = [], []
     for r in rows:
         if r["status"] != "quarantine":
@@ -210,7 +238,7 @@ def with_issue_checks(con: duckdb.DuckDBPyConnection, table: pa.Table, as_of: da
             row_issues.append("foreign_filer")
         issues.append(row_issues)
         checks.append(checks_for({**r, "issues": row_issues}, mine, gaps.get(r["cik"], []),
-                                 cands.get(r["cik"], []), as_of))
+                                 cands.get(r["cik"], []), as_of, covers.get(r["cik"])))
     i = table.schema.get_field_index("issues")
     table = table.set_column(i, "issues", pa.array(issues, table.schema.field("issues").type))
     return table.append_column("issue_checks", pa.array(checks, pa.list_(CHECK)))

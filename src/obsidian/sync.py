@@ -136,9 +136,11 @@ def _targets(rows: list[dict], companies_idx: dict, journals: list[dict]) -> lis
 
 
 def vault_ciks(con: duckdb.DuckDBPyConnection, vault: Path | None, as_of: date, filters: Filters = Filters(),
-               policy: Policy = "as_last_known") -> list[int]:
-    """The companies a sync on as_of would write: for fetching their 10-K text first."""
-    rows = screen(con, as_of, filters, policy).to_arrow_table().to_pylist()
+               policy: Policy = "as_last_known", rows: list[dict] | None = None) -> list[int]:
+    """The companies a sync on as_of would write: for fetching their 10-K text first. `rows`: a screen
+    already computed for as_of, so fetch-text screens once."""
+    if rows is None:
+        rows = screen(con, as_of, filters, policy).to_arrow_table().to_pylist()
     idx = _index(vault / "Companies", "cik") if vault and (vault / "Companies").is_dir() else {}
     journals = read_journals(vault / "Journal", as_of) if vault else []
     return sorted(r["cik"] for r in _targets(rows, idx, journals))
