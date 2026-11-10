@@ -276,3 +276,35 @@ def test_c8_valid_dei_count_at_the_boundary_is_used_by_the_screen(con):
     quarantined(con, CIK, "MIR", tags)
     r = rows_by_ticker(con)["MIR"]
     assert "stale_shares" not in r["issues"] and "missing_shares" not in r["issues"]
+
+
+# --- review round 5: C9, assets and undrawn capacity are not debt candidates -----------
+
+NON_DEBT = ["AvailableForSaleSecuritiesDebtSecurities",                       # Codex's case: securities owned
+            "LineOfCreditFacilityCurrentBorrowingCapacity",                   # Codex's case: still available to borrow
+            "AvailableForSaleSecuritiesDebtMaturitiesWithinOneYearFairValue",  # CAVA, 11-07 backup
+            "DebtSecuritiesAvailableForSaleExcludingAccruedInterest",         # CAVA
+            "AvailableForSaleDebtSecuritiesAmortizedCostBasis",               # HUBS, CXM
+            "LineOfCreditFacilityRemainingBorrowingCapacity"]
+DEBT = ["ConvertibleNotesPayable", "NotesPayable", "LongTermLineOfCredit",
+        "LongTermDebtMaturitiesRepaymentsOfPrincipalRemainderOfFiscalYear"]   # maturities stay: real debt evidence
+
+
+def test_c9_assets_and_capacity_are_not_candidates_debt_lines_are(con):
+    tags = cheap_company(debt=False)
+    for t in NON_DEBT + DEBT:
+        tags[(GAAP, t, "USD")] = [inst("2024-06-30", 1_000_000)]
+    quarantined(con, CIK, "ACME", tags)
+    c = checks(rows_by_ticker(con)["ACME"])["missing_debt"]
+    assert c["reason"] == "tag_candidates"
+    assert sorted(x["tag"] for x in c["candidates"]) == sorted(DEBT)
+    assert all(x["kind"] == "component" for x in c["candidates"])
+
+
+def test_c9_only_non_debt_facts_give_none_found(con):
+    tags = cheap_company(debt=False)
+    for t in NON_DEBT:
+        tags[(GAAP, t, "USD")] = [inst("2024-06-30", 1_000_000)]
+    quarantined(con, CIK, "ACME", tags)
+    c = checks(rows_by_ticker(con)["ACME"])["missing_debt"]
+    assert c["reason"] == "none_found" and c["candidates"] == []
