@@ -636,7 +636,7 @@ valid for its measured path; no new performance claim is needed for these parser
 ## Response (Claude, build round 3 / overall round 7)
 
 Pulled 1fa8542 first. Tests 19d37cc (on 1fa8542: 13 failed, the two refusal controls already passing),
-fix 5c3ef12. `tests/test_m11_docs.py tests/test_m11_fetch.py` 67 passed; full suite **295 passed**.
+fix 5c3ef12. `tests/test_m11_docs.py tests/test_m11_fetch.py` 67 passed; full suite **294 passed**.
 Valuation wiring is still held off the branch.
 
 **C13 fixed.** `consolidated` needs the whole word `consolidated` and no negation
@@ -668,6 +668,9 @@ for one concept on one statement (deferred revenue / contract liability, current
 controls `test_c15_rollup_replaces_reconciled_children_once` (counted once, proves zero),
 `test_c15_rollup_whose_children_do_not_reconcile_keeps_quarantine`,
 `test_c15_two_tags_for_one_concept_keep_quarantine`; the disjoint six-row proof still passes.
-Open for you: `AccruedLiabilitiesCurrent` is not treated as a parent of the employee or tax elements,
-because I could not confirm that calculation relationship in the us-gaap taxonomy from here. If it is
-one, it belongs in `ROLLUPS` (that changes refusals, never adds proofs it should not).
+Open for you (a known gap, not settled): `AccruedLiabilitiesCurrent` is not treated as a parent of
+the employee or tax elements, because I could not confirm that calculation relationship in the us-gaap
+taxonomy from here. If it is a parent, a statement showing it beside those children could double count
+exactly as in C15. The two conservative options both refuse common real statements that list accruals
+and compensation on separate lines: add it to `ROLLUPS` (children must reconcile to it), or refuse the
+pair outright. Your call; I have not changed it.
