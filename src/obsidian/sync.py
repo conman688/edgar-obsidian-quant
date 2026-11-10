@@ -29,7 +29,7 @@ from src.obsidian.writer import PersonRegistry, create_note, slug, split_note, u
 from src.redline import risk_factor_redline
 from src.tone import load_lists
 from src import config
-from src.screen import Filters, screen
+from src.screen import Filters, screen, screen_table
 
 FOLDERS = ("Companies", "Executives", "Filings", "Events", "Journal")
 SYNCED = ("shortlist", "quarantine")     # statuses that get a note; existing notes are always updated
@@ -150,7 +150,7 @@ def sync_vault(con: duckdb.DuckDBPyConnection, vault: Path, as_of: date, filters
     env = _env()
     for f in FOLDERS:
         (vault / f).mkdir(parents=True, exist_ok=True)
-    rows = screen(con, as_of, filters, policy).to_arrow_table().to_pylist()
+    rows = screen_table(con, as_of, filters, policy).to_pylist()
     companies_idx = _index(vault / "Companies", "cik")
     journals = read_journals(vault / "Journal", as_of)
     targets = _targets(rows, companies_idx, journals)
@@ -279,6 +279,7 @@ def sync_vault(con: duckdb.DuckDBPyConnection, vault: Path, as_of: date, filters
             "fcf_yield": _r(r["fcf_yield"]), "share_cagr_3y": _r(r["share_cagr_3y"]),
             "insider_buy_90d_usd": _r(r["insider_buy_90d_usd"], 0), "drawdown_52w": _r(r["drawdown_52w"]),
             "mcap": _r(r["mcap"], 0), "as_of": as_of, "issues": list(r["issues"]), "flags": list(r["flags"]),
+            "issue_checks": [f"{c['issue']}: {c['reason']}" for c in r["issue_checks"]],
             "rf_new_sentences": len(rl["new"]) if rl and rl["status"] == "ok" else None,
             "forensic_flags": fa["flags"] if fa else [],
             "forensic_unknown": fa["unknown"] if fa else [],

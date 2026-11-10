@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import functools
 import shutil
 import sys
@@ -32,7 +33,7 @@ from src.ingestion.filing_text import fetch_sections
 from src.journal import REVIEW_DAYS
 from src.obsidian.sync import sync_vault, vault_ciks, write_journal
 from src.obsidian.writer import upsert_note
-from src.screen import Filters, screen, write_parquet
+from src.screen import Filters, screen_table, write_parquet
 
 
 @functools.cache
@@ -242,7 +243,7 @@ def cmd_screen(args, con=None) -> None:
     filters = Filters(min_drawdown=args.min_drawdown, max_ev_ebit=args.max_ev_ebit,
                       max_net_debt_to_mcap=args.max_net_debt, insider_window_days=args.insider_days)
     t0 = time.perf_counter()
-    table = screen(con, args.as_of, filters, args.policy).to_arrow_table()
+    table = screen_table(con, args.as_of, filters, args.policy)
     seconds = time.perf_counter() - t0
     path = write_parquet(table, args.as_of, filters, Path(args.out), args.policy)
     rows = table.to_pylist()
@@ -270,6 +271,12 @@ def cmd_screen(args, con=None) -> None:
     for r in q[:args.limit]:
         print(f"    {r['ticker']:<7} {(r['name'] or '')[:26]:<26} {_num(r['ev_ebit'], '7.1f')} "
               f"{_num(r['drawdown_52w'], '6.0%')} {_usd(r['insider_buy_90d_usd']):>7}  {','.join(r['issues'] + r['flags'])}")
+        for c in r["issue_checks"]:
+            print(f"        {c['issue']}: {c['reason']}: {c['message']}")
+            for x in c["candidates"]:
+                print(f"          {x['kind']:<9} {x['tag']} {_usd(x['value'])} {x['period_end']} {x['accn']}")
+    reasons = Counter(c["reason"] for r in q for c in r["issue_checks"])
+    print("Quarantine checks: " + (", ".join(f"{k} {n}" for k, n in sorted(reasons.items())) or "none"))
     print(f"\nwrote {path}")
 
 

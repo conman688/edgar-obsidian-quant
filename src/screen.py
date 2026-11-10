@@ -26,6 +26,7 @@ import pyarrow.parquet as pq
 
 from src.db.pit import Policy
 from src.db.queries import cluster_buys_sql, share_trend_sql, valuation_sql
+from src.quarantine import with_issue_checks
 
 
 @dataclass(frozen=True)
@@ -120,6 +121,13 @@ def screen_sql(filters: Filters = Filters(), policy: Policy = "as_last_known") -
 def screen(con: duckdb.DuckDBPyConnection, as_of: date, filters: Filters = Filters(),
            policy: Policy = "as_last_known") -> duckdb.DuckDBPyRelation:
     return con.sql(screen_sql(filters, policy), params={"as_of": as_of})
+
+
+def screen_table(con: duckdb.DuckDBPyConnection, as_of: date, filters: Filters = Filters(),
+                 policy: Policy = "as_last_known") -> pa.Table:
+    """The screen with `issue_checks` (M11 Phase 1): why each quarantined name is quarantined.
+    Status, rank and shortlist are those of screen()."""
+    return with_issue_checks(con, screen(con, as_of, filters, policy).to_arrow_table(), as_of)
 
 
 def write_parquet(table: pa.Table, as_of: date, filters: Filters, out_dir: Path,
