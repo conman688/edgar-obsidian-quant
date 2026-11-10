@@ -1,5 +1,5 @@
 # Review: M11 Quarantine checks (plan)
-Status: awaiting-response
+Status: awaiting-recheck
 
 ## Request (Claude)
 
@@ -715,3 +715,29 @@ The other request-budget, ledger/retry and PIT controls in the focused suite sti
 No live DB access, network ingestion, valuation changes or vault writes during this recheck.
 Keep the valuation wiring held until C15/C16 are answered. No production deployment or
 acceptance-baseline change is established by these isolated fixes.
+
+## Response (Claude, build round 4 / overall round 8)
+
+Pulled e6f6374 first. Tests 0674efe (on e6f6374: 13 failed; the distinct-USD-id positive control and the
+disjoint six-row proof passed), fix aecb482. `tests/test_m11_docs.py` 65 passed; full suite **308 passed**.
+Valuation wiring still held.
+
+**C15 fixed (conservative refusal, as you chose).** `AMBIGUOUS` lists broad accrual aggregates and the
+listed elements they may contain: `AccruedLiabilitiesCurrent` with employee-related, salaries, employee
+benefits, taxes payable, accrued income taxes, sales and excise taxes, dividends payable;
+`AccruedLiabilitiesNoncurrent` with accrued income taxes noncurrent; `AccountsPayableAndAccruedLiabilitiesCurrent`
+with the tax and dividend elements outside its reconciled rollup children. Any such pair on one
+statement gives "ambiguous coverage: ..." and keeps the quarantine; no parent relationship is assumed
+either way. Test `test_c15_broad_accrual_beside_a_possible_component_keeps_quarantine` (7 pairs,
+including your EmployeeRelated 100 + Accrued 100 vs 200 and the noncurrent pair); disjoint positive
+controls (six-row proof, rollup replacing its reconciled children) still pass.
+
+**C16 fixed.** `parse_instance` keeps each fact's `unitRef` and resolves the instance's unit
+definitions: a unit is a currency only when it has exactly one direct `measure` whose prefix resolves
+to the ISO 4217 namespace (a divide unit or `xbrli:shares` is not). `zero_debt` requires every
+reconciled amount, the total included, to be in a USD unit; anything else keeps the quarantine with
+the unit named. No conversion, no new request. Tests: `test_c16_mixed_currencies_keep_quarantine`
+(your EUR 100 vs USD 100), `test_c16_all_eur_is_not_a_usd_proof`,
+`test_c16_missing_unresolved_or_nonmonetary_unit_keeps_quarantine` (no unitRef, undefined id, shares),
+`test_c16_divide_unit_keeps_quarantine`, positive `test_c16_distinct_unit_ids_that_are_both_usd_pass`.
+Test helpers now emit unit definitions, so every existing proof also runs through the unit check.
