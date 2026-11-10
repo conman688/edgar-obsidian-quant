@@ -59,15 +59,19 @@ def _accessions(con, ciks: list[int], as_of: date) -> tuple[dict[int, list[dict]
     filings: dict[int, list[dict]] = defaultdict(list)
     have: set[tuple[int, str]] = set()
     for cik, accn, form, filed, has_dei in con.execute("""
-            SELECT cik, accn, min(form), min(filed),
-                   -- Only a count the screen could use: the same date guards as pit.py.
-                   bool_or(taxonomy = 'dei' AND tag = 'EntityCommonStockSharesOutstanding'
-                           AND period_end <= filed + INTERVAL 7 DAY AND period_end <= $as_of)
+            SELECT cik, accn,
+                   -- Metadata and evidence come only from rows filed by as_of (C10); rows filed
+                   -- later still show the accession exists, so it is not a ledger gap.
+                   min(form) FILTER (WHERE filed <= $as_of), min(filed) FILTER (WHERE filed <= $as_of),
+                   -- Only a count the screen could use: the same guards as pit.py.
+                   coalesce(bool_or(taxonomy = 'dei' AND tag = 'EntityCommonStockSharesOutstanding'
+                                    AND filed <= $as_of AND period_end <= filed + INTERVAL 7 DAY
+                                    AND period_end <= $as_of), FALSE)
             FROM xbrl_facts WHERE list_contains($ciks, cik)
-            GROUP BY cik, accn ORDER BY cik, min(filed) DESC, accn DESC""",
+            GROUP BY cik, accn ORDER BY cik, 4 DESC NULLS LAST, accn DESC""",
             {"ciks": ciks, "as_of": as_of}).fetchall():
         have.add((cik, accn))
-        if filed <= as_of:
+        if filed is not None:
             filings[cik].append({"accn": accn, "form": form, "filed": filed, "has_dei": has_dei})
     gaps: dict[int, list[str]] = defaultdict(list)
     for cik, accn in con.execute("SELECT cik, accn FROM loaded_filings WHERE list_contains($ciks, cik) "
