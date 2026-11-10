@@ -2,6 +2,8 @@
 
 Status on {{ c.as_of }}: **{{ c.status }}**{% if c.rank %}, rank {{ c.rank }}{% endif %}.
 {% if c.issues %}Issues (why it is not ranked): {{ c.issues | join(", ") }}.
+{% endif %}{% if c.flags %}Check by hand: {{ c.flags | join(", ") }}.
+{% endif %}{% if c.failed_filters %}Failed filters: {{ c.failed_filters | join(", ") }}.
 {% endif %}{% if c.issue_checks %}
 ## Quarantine check
 
@@ -9,10 +11,7 @@ What the stored facts say about each issue (M11). Nothing here is used as a valu
 
 {% for k in c.issue_checks %}- {{ k.issue }}: {{ k.reason }}. {{ k.message }}
 {% for x in k.candidates %}  - {{ x.kind }}: {{ x.tag }} {{ x.value | usd }} at {{ x.period_end }} ({{ x.accn }})
-{% endfor %}{% endfor %}
-{% endif %}{% if c.flags %}Check by hand: {{ c.flags | join(", ") }}.
-{% endif %}{% if c.failed_filters %}Failed filters: {{ c.failed_filters | join(", ") }}.
-{% endif %}
+{% endfor %}{% endfor %}{% endif %}
 
 | | |
 |---|---|
