@@ -115,9 +115,14 @@ def run_checks(con: duckdb.DuckDBPyConnection, sec, rows: list[dict], as_of: dat
                            f"{len(cov['classes'])} classes, symbols {', '.join(cov['symbols']) or 'none'}",
                            {"symbols": cov["symbols"]}, cov["classes"])
                 else:
-                    page = get(base + balance_sheet_report(get(base + "FilingSummary.xml")))
-                    dates, elems = r_page(page)
-                    z = zero_debt(dates, elems, inst, r["bs_date"])
+                    stmt = balance_sheet_report(get(base + "FilingSummary.xml"))
+                    if not stmt["consolidated"]:
+                        # C13: never proof from a statement not positively consolidated; a definite answer.
+                        z = {"debt_zero": False, "column": r["bs_date"], "method": None, "candidates": [],
+                             "reason": f"the balance-sheet statement '{stmt['name']}' is not named consolidated"}
+                    else:
+                        dates, elems = r_page(get(base + stmt["html"]))
+                        z = zero_debt(dates, elems, inst, r["bs_date"], cik)
                     _write(con, cik, filing, fam, "ok", "debt_zero" if z["debt_zero"] else "not_zero",
                            z["column"], z["reason"], {"candidates": z["candidates"], "method": z["method"]})
                 got["ok"] += 1

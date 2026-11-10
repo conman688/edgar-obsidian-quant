@@ -57,7 +57,8 @@ class DocError(Exception):
 
 @dataclass
 class Instance:
-    contexts: dict[str, tuple[date | None, tuple[tuple[str, str], ...]]] = field(default_factory=dict)
+    # id -> (instant, dimensions, entity identifier)
+    contexts: dict[str, tuple[date | None, tuple[tuple[str, str], ...], str]] = field(default_factory=dict)
     facts: list[dict] = field(default_factory=list)       # name, context, value (str), decimals
 
 
@@ -102,7 +103,8 @@ def parse_instance(xml: bytes) -> Instance:
         if typed:
             dims += (("typed", "typed"),)
         day = date.fromisoformat(instant.text.strip()) if instant is not None and instant.text else None
-        inst.contexts[c.get("id")] = (day, dims)
+        ident = c.find(f"{XBRLI}entity/{XBRLI}identifier")
+        inst.contexts[c.get("id")] = (day, dims, (ident.text or "").strip() if ident is not None else "")
     for el in root:
         ctx = el.get("contextRef")
         if ctx is None or not el.tag.startswith("{"):
@@ -123,7 +125,7 @@ def cover_classes(inst: Instance) -> dict:
     the share-class axis, alone, are not a class.
     """
     def member(ctx: str) -> str | None:
-        dims = inst.contexts.get(ctx, (None, ()))[1]
+        dims = inst.contexts.get(ctx, (None, (), ""))[1]
         return dims[0][1] if len(dims) == 1 and dims[0][0] == CLASS_AXIS else None
 
     counts: dict[str, set] = {}
@@ -134,7 +136,7 @@ def cover_classes(inst: Instance) -> dict:
             if m:
                 counts.setdefault(m, set()).add((float(f["value"]), inst.contexts[f["context"]][0]))
         elif f["name"] == TRADING_SYMBOL and f["value"]:
-            dims = inst.contexts.get(f["context"], (None, ()))[1]
+            dims = inst.contexts.get(f["context"], (None, (), ""))[1]
             syms.setdefault(member(f["context"]) if dims else None, set()).add(f["value"].upper())
     conflict = any(len(v) > 1 for v in counts.values())
     classes = []
@@ -148,27 +150,42 @@ def cover_classes(inst: Instance) -> dict:
     return {"classes": classes, "symbols": symbols, "conflict": conflict}
 
 
-def balance_sheet_report(filing_summary: bytes) -> str:
+_CONSOLIDATED = re.compile(r"consolidated|combined", re.I)
+_NOT_CONSOLIDATED = re.compile(r"parent|registrant|guarantor|issuer|subsidiar", re.I)
+
+
+def balance_sheet_report(filing_summary: bytes) -> dict:
+    """The filing's balance-sheet statement: {html, name, consolidated}.
+
+    `consolidated` is True only when the statement's name says consolidated or combined and names
+    no parent, registrant, guarantor, issuer or subsidiary scope (C13): no dimensions on the facts
+    does not prove consolidated scope. Raises DocError when there is no balance-sheet statement or
+    several consolidated ones.
+    """
     try:
         root = ET.fromstring(filing_summary)
     except ET.ParseError as e:
         raise DocError(f"malformed FilingSummary.xml: {e}") from None
     hits = []
-    for r in root.iter("Report"):
-        name, cat = (r.findtext("ShortName") or ""), (r.findtext("MenuCategory") or "")
+    for rep in root.iter("Report"):
+        name, cat = (rep.findtext("ShortName") or ""), (rep.findtext("MenuCategory") or "")
         if (cat == "Statements" and re.search(r"balance sheet|financial position|financial condition", name, re.I)
-                and not re.search(r"parenthetical", name, re.I)):
-            hits.append(r.findtext("HtmlFileName"))
-    if len(hits) != 1 or not hits[0]:
-        raise DocError(f"{len(hits)} balance-sheet statements in FilingSummary.xml")
-    return hits[0]
+                and not re.search(r"parenthetical", name, re.I) and rep.findtext("HtmlFileName")):
+            hits.append({"html": rep.findtext("HtmlFileName"), "name": name,
+                         "consolidated": bool(_CONSOLIDATED.search(name)) and not _NOT_CONSOLIDATED.search(name)})
+    if not hits:
+        raise DocError("no balance-sheet statement in FilingSummary.xml")
+    cons = [h for h in hits if h["consolidated"]]
+    if len(cons) > 1:
+        raise DocError(f"{len(cons)} consolidated balance-sheet statements in FilingSummary.xml")
+    return cons[0] if cons else hits[0]
 
 
 _DATE = re.compile(r"([A-Z][a-z]{2})\.? (\d{1,2}), (\d{4})")
 
 
-def r_page(html: bytes) -> tuple[list[date], list[str]]:
-    """Column dates (header order) and row elements (statement order) of an R page."""
+def r_page(html: bytes) -> tuple[list[date], list[tuple[str, str]]]:
+    """Column dates (header order) and rows as (element, label) in statement order."""
     text = html.decode("utf-8", "replace")
     table = re.search(r"<table[^>]*class=\"report\"[^>]*>(.*?)</table>", text, re.S)
     if not table:
@@ -179,8 +196,8 @@ def r_page(html: bytes) -> tuple[list[date], list[str]]:
         if m:
             dates.append(datetime.strptime(f"{m.group(1)} {m.group(2)} {m.group(3)}", "%b %d %Y").date())
     rows = []
-    for ref in re.findall(r"defref_([\w-]+?)_(\w+)'", table.group(1)):
-        rows.append(f"{ref[0]}:{ref[1]}")          # repeated rows are kept, so they can be refused
+    for prefix, local, label in re.findall(r"defref_([\w-]+?)_(\w+)'[^>]*>(.*?)</a>", table.group(1), re.S):
+        rows.append((f"{prefix}:{local}", " ".join(unescape(re.sub(r"<[^>]+>", " ", label)).split())))
     if not dates or not rows:
         raise DocError("balance-sheet R page has no dated column or no rows")
     return dates, rows
@@ -194,7 +211,7 @@ def _half_unit(decimals: str | None) -> float | None:
     return 0.5 * 10 ** (-int(decimals))
 
 
-def zero_debt(dates: list[date], rows: list[str], inst: Instance, column: date) -> dict:
+def zero_debt(dates: list[date], rows: list[tuple[str, str]], inst: Instance, column: date, cik: int) -> dict:
     """Whether the balance sheet's `column` proves debt is zero (M11 2c). Never raises on content.
 
     Liability rows are those between `Assets` and `Liabilities` in statement order. Values and
@@ -204,6 +221,8 @@ def zero_debt(dates: list[date], rows: list[str], inst: Instance, column: date) 
         return {"debt_zero": False, "reason": reason, "column": column, "method": None,
                 "candidates": list(candidates)}
 
+    labels = {e: lab for e, lab in rows}
+    rows = [e for e, _ in rows if not e.endswith("Abstract")]          # section headings carry no value
     if column not in dates:
         return no(f"no balance-sheet column dated {column} (columns: {', '.join(map(str, dates))})")
     if TOTAL not in rows:
@@ -218,8 +237,14 @@ def zero_debt(dates: list[date], rows: list[str], inst: Instance, column: date) 
     unlisted = [r for r in liab if r not in NON_DEBT and r not in SUBTOTALS]
     if unlisted:
         return no("rows not on the non-debt list: " + ", ".join(unlisted))
+    # C12: an allowed element on a row whose label says it also holds "other" items is an aggregate.
+    aggregates = [f"{labels[r]} ({r})" for r in liab if re.search(r"\bother\b", labels[r], re.I)]
+    if aggregates:
+        return no("aggregate rows: " + ", ".join(aggregates))
 
-    plain = {c for c, (d, dims) in inst.contexts.items() if d == column and not dims}
+    # Only the reporting entity's own undimensioned contexts (C13).
+    plain = {c for c, (d, dims, ident) in inst.contexts.items()
+             if d == column and not dims and ident.isdigit() and int(ident) == cik}
     vals: dict[str, tuple[float, float | None]] = {}
     for f in inst.facts:
         if f["context"] in plain and (f["name"] in liab or f["name"] == TOTAL):
@@ -251,10 +276,11 @@ def zero_debt(dates: list[date], rows: list[str], inst: Instance, column: date) 
         if r not in vals:
             continue                               # not reported in this column
         if r in SUBTOTALS:
-            if group:
-                err = reconcile(group, r)
-                if err:
-                    return no(err)
+            if not group:                          # C11: a subtotal is not itself a non-debt category
+                return no(f"subtotal {r} has no classified rows of its own")
+            err = reconcile(group, r)
+            if err:
+                return no(err)
             top.append(r)                          # the subtotal stands in for its children
             group = []
         else:
