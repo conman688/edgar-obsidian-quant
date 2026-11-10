@@ -1,5 +1,5 @@
 # Review: M11 Quarantine checks (plan)
-Status: resolved
+Status: awaiting-review
 
 ## Request (Claude)
 
@@ -817,3 +817,81 @@ integration remain pending and require a fresh exact-head request. Continue that
 isolated implementation; keep the PR draft, main/runtime/schedules unchanged and do not deploy
 before the existing M9/M10 and user-merge gates. No live DB reads, ingestion, manual sync or
 vault writes were performed for this round.
+
+## Request (Claude, build round 6: 2b/2c in the screen, fetch-text/Health/vault wiring, S2)
+
+- Diff: `git diff 200a229..9f5e00e`. Tests: `uv run pytest` -> **356 passed**.
+- Commits, tests first each time: resolve/acceptance tests
+  (failing: 14) -> valuation (c7747bf); integration tests (failing: 5) -> wiring (0d0cfd3); S2 tests
+  (failing: 3) -> fix (9f5e00e).
+
+### What changed
+1. **Valuation (`src/db/queries.py`, c7747bf).** New CTEs before `base`:
+   - 2b: `cvf` latest `m11_cover` row `ok`, `filed <= as_of`, `parser >= M11_PARSERS['m11_cover']`;
+     `cvc`/`cv` classes from `cover_shares` with `all_usable` (every count > 0, dated
+     `<= filed + 7 days` and `<= as_of`), `case_one` (exactly one class, exactly one filing symbol, equal
+     to the priced ticker) and `case_all` (two or more classes, each with its own symbol and a stored close
+     on the screen's price date). `sh2`/`shr`: the cover check governs only when the screen has no
+     undimensioned DEI count at least as new; then `case_one` gives shares and the count date (the
+     existing split basis `split_factor(count date)/split_factor(price date)` applies), `case_all` gives
+     `mcap_override = sum(count x own close x split ratio)`, anything else sets `multi_class_unverified`
+     (blocking issue; `multi_class_risk` stays a flag). A nil, non-finite or negative count is already
+     unusable in the parser (conflict).
+   - 2c: `dz` current-parser `debt_zero` rows filed by as_of; `bsa` the accessions the screen read at
+     `bs_date`; `debtr`/`debt2` set debt 0 at `bs_date` only when the zero row's period is `bs_date`,
+     its accession is one of `bsa`, and the screen's debt is missing, older or dropped; never over debt
+     tagged at that date. Source item `debt` = `balance_sheet_no_debt` with that accession.
+   - `M11_PARSERS` lives in `queries.py` (the ledger imports it), avoiding a cycle.
+2. **Wiring (0d0cfd3).** `cmd_fetch_text` computes `screen_table` once, uses it for the vault
+   companies (`vault_ciks(rows=...)`) and for `run_checks` (filtered by `--cik` when given), sharing
+   one in-memory document cache. `ops._warnings` adds "N quarantine checks failed (retried next run)".
+   Phase 1 gains reason `cover_classes` for `multi_class_unverified`, listing each class's count and
+   symbol and the accession, shown in the CLI, the company note and the Dashboard column.
+3. **S2 (Claude, self-raised from real filings; 9f5e00e).** IMMR's FilingSummary has "RECONCILIATION OF
+   CASH ... FOR CONSOLIDATED BALANCE SHEETS", which the old title search took for a second balance
+   sheet: a `DocError` retried and warned about every week, never recovering. The title must now be
+   the statement itself (up to six qualifier words without of/for/to/in/and or commas, then balance
+   sheet(s) / statement(s) of financial position or condition, optional parenthetical or "- suffix";
+   scope is still judged by C13). Several consolidated balance sheets are now a definite `not_zero`,
+   not an error. Tests: `test_s2_cash_reconciliation_schedule_is_not_a_balance_sheet` (IMMR's real
+   names), `test_s2_real_balance_sheet_names_are_recognised` (7 real names from the diagnosis filings),
+   `test_s2_two_consolidated_balance_sheets_are_a_definite_no_not_an_error`, and end to end
+   `test_s2_two_consolidated_balance_sheets_give_a_definite_not_zero`.
+
+### Integration acceptance (your round 10 list) and where it is tested
+- Positive, finite, own-company counts: parser `test_integration_non_finite_or_negative_class_count_is_unusable`,
+  C14/C18 tests; valuation `test_non_positive_single_class_count_is_unverified`.
+- Complete class/symbol coverage, conflicts, nil, unpriced: `test_c2_unpriced_second_class_is_unverified_never_summed`,
+  `test_voting_only_class_without_symbol_is_unverified`, `test_disagreeing_contexts_are_unverified`,
+  `test_single_class_symbol_not_the_priced_ticker_is_unverified`; positive
+  `test_two_classes_each_with_its_own_close_sum_count_times_own_close`.
+- PIT, count date, split, price basis: `test_cover_filed_after_as_of_is_not_used`,
+  `test_cover_count_dated_after_its_filing_plus_seven_days_is_not_used`,
+  `test_split_between_cover_date_and_price_date_scales_the_count`.
+- Current completed parser ledger: `test_cover_row_from_an_older_parser_is_not_used`.
+- Same filing and bs_date for 2c: `test_zero_for_an_older_column_than_bs_date_is_not_used`,
+  `test_zero_from_an_accession_the_balance_sheet_did_not_come_from_is_not_used`,
+  `test_zero_filed_after_as_of_is_not_used`, `test_zero_never_overrides_current_tagged_debt`.
+- Status either way: `test_resolved_input_can_fail_a_filter`.
+
+### Real filings (read-only; pure parsers on the as-of documents, no DB; 55 + 4 requests)
+Cover classes match the cover pages: TSN A 281,792,507 / B 70,009,005; MIR A 239,732,572 / B 5,759,555;
+HRL common 550,350,800 / nonvoting 0; LUCK A 80,807,758 / B 55,519,437; FLOC A 44,989,672 / B 45,439,646;
+GLIBA A 3,650,938 (GLIBA) / B 400,806 / C 35,853,250 (GLIBK); CXM A 131,087,011 / B 101,084,329;
+INR A 18,642,028 / B 44,780,230. All multi-class, so all `multi_class_unverified` under 2b. Zero debt is
+proved for none: debt rows (SMID notes, UPBD `upbd:SecuredDebtNet`/`SeniorNotesNet`, SEZL and INR
+`LongTermLineOfCredit`, EPSN `DebtInstrumentCarryingAmount`, all shown as candidates), no Liabilities
+total (AN), aggregate label (CAVA "Accrued expenses and other"), unlisted rows (HUBS, OFLX, CXM:
+`AccruedSalesCommissionCurrent`, `AccruedLiabilitiesAndOtherLiabilities`, `Other...`), IMMR subtotal-only
+consolidated column (C11). This matches the diagnosis: no status change for these names on 11-07.
+
+### Where bugs are most likely
+- `sh2.governs`: the cover check replaces the screen's count only when it has no newer undimensioned DEI
+  count; a cover dated before a BS fallback count does not govern.
+- `bsa`: accessions of the instants at `bs_date` (cash, sti, debt lines, equity).
+- `cmd_fetch_text` with `--cik`: risk factors and M11 both limited to those CIKs.
+
+### Known gaps
+- Not yet run against a full-database copy (by agreement, none is made); real filings checked through
+  the pure parsers only. `quarantine_checks`/`cover_shares` are not in the run_log row counts.
+- Open question 1 (one-week lag) follows the plan's recommendation; not a user decision yet.
