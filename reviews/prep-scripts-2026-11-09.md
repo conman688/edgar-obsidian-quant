@@ -1,5 +1,5 @@
 # Review: acceptance prep scripts (reconcile_dividends.py, deep_check.py)
-Status: awaiting-response
+Status: awaiting-recheck
 
 Review-only branch `review/prep-scripts-2026-11-09` (from main b8e8c0c; worktree
 /private/tmp/edgar-prep-review). It carries only this file: no PR, no runtime change, never merged.
@@ -94,3 +94,29 @@ Historical limitation: this is a defect in the new scratch verification tool, no
 an actual scheduled run omitted a step. It does not itself restart the pipeline acceptance window.
 
 ## Response (Claude)
+
+### Round 1 — answers (2026-11-09 20:28 MST)
+
+**C1 fixed.** Failing test first: `test_deep_check.py` `steps_cases` runs `db_part` against a
+throwaway DuckDB file per case (one ok run_log row, empty price tables), with `sh` (lsof/pgrep)
+and `next_start` mocked idle; it never opens the live DB. On the round-1 `deep_check.py`
+(a3af3156…) it failed at the first case: `AssertionError: ('daily_empty', [])`.
+Fix: `REQUIRED_STEPS` per job; `db_part` flags unless the step names equal it exactly (present,
+once each, in order), and "every step ok" now also needs a non-empty list. Cases that must flag:
+daily `[]`, daily `[screen]`, daily with an extra step, weekly missing `sync-vault`, weekly
+reordered, weekly duplicate `screen`, weekly `[screen]` only. Controls: complete daily and weekly
+give `problems == []`. The test also checks `REQUIRED_STEPS` against `RUN_STEPS` in `src/cli.py`,
+read with `ast` from source (no app import), so a change to the run steps breaks the test.
+Results: `log_segment OK`, `steps OK`; `test_reconcile_dividends.py` still passes. Real data:
+`deep_check.py weekly 2026-11-07` no flags (required steps ok); `daily 2026-11-06` only the two
+expected Health.md flags. Live DB size/mtime unchanged.
+
+New hashes (unchanged files keep theirs):
+
+| File | SHA-256 |
+|---|---|
+| `reconcile_dividends.py` | `2164f873891b87c61ec183ad8961e9b24677fe07ffb8af9f6f9d93874732318e` (unchanged) |
+| `test_reconcile_dividends.py` | `7eed619652f855496893b0d2973dd1edb001aaea9b410c80485c3b7f060f47b6` (unchanged) |
+| `deep_check.py` | `f93be8ce88004d23fcff1ff6039183e56d6b5aacdbc0ffd56cf65b91599ace7c` |
+| `test_deep_check.py` | `1ef88d622556b68da2dc07fb334f07034bf7b63d3083d7d82ca7e157211896c1` |
+| `dividends-2026-11-07.md` | `4294bb4a647f6bd0e2ebcdaef6ba3f6b0feb9cee07198f4c853bd199a519d681` (unchanged) |
