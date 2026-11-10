@@ -52,7 +52,9 @@ def _filings(con, ciks: list[int], as_of: date) -> dict[int, list[dict]]:
     out: dict[int, list[dict]] = defaultdict(list)
     for cik, accn, form, filed, has_dei in con.execute("""
             SELECT cik, accn, min(form), min(filed),
-                   bool_or(taxonomy = 'dei' AND tag = 'EntityCommonStockSharesOutstanding')
+                   -- Only a count the screen could use: the same date guards as pit.py.
+                   bool_or(taxonomy = 'dei' AND tag = 'EntityCommonStockSharesOutstanding'
+                           AND period_end <= filed + INTERVAL 7 DAY AND period_end <= $as_of)
             FROM xbrl_facts WHERE list_contains($ciks, cik) AND filed <= $as_of
             GROUP BY cik, accn ORDER BY cik, min(filed) DESC, accn DESC""",
             {"ciks": ciks, "as_of": as_of}).fetchall():
@@ -82,6 +84,7 @@ def _debt_candidates(con, want: list[tuple[int, date, list[str]]], as_of: date) 
                 SELECT f.tag, f.value, f.accn, f.period_end FROM xbrl_facts f
                 WHERE f.cik = $cik AND f.taxonomy = 'us-gaap' AND f.unit = 'USD' AND f.period_kind = 'instant'
                   AND f.filed <= $as_of AND f.period_end = $bs_date AND list_contains($accns, f.accn)
+                  AND f.period_end <= f.filed + INTERVAL 7 DAY AND f.period_end <= $as_of   -- pit.py guards
                   AND regexp_matches(f.tag, '{DEBT_PATTERN}') AND NOT regexp_matches(f.tag, '{DEBT_EXCLUDE}')
                   AND NOT EXISTS (SELECT 1 FROM concept_map m WHERE m.taxonomy = f.taxonomy AND m.tag = f.tag)
                 ORDER BY f.tag, f.accn""",
@@ -146,7 +149,9 @@ def checks_for(row: dict, filings: list[dict], gaps: list[str], candidates: list
                                   f"no stored us-gaap fact outside the concept map fits the debt pattern at "
                                   f"{row['bs_date']}; read the balance sheet"))
         elif issue in SHARE_ISSUES:
-            if periodic and not periodic["has_dei"]:
+            if gaps:
+                out.append(_check(issue, "unknown", gap_msg))
+            elif periodic and not periodic["has_dei"]:
                 out.append(_check(issue, "no_cover_count",
                                   f"the latest 10-K or 10-Q filed by {as_of}, {_describe(periodic)}, has no "
                                   f"undimensioned DEI cover count; per-class cover tagging is one possible cause"))
@@ -154,8 +159,7 @@ def checks_for(row: dict, filings: list[dict], gaps: list[str], candidates: list
                 out.append(_check(issue, "none_found",
                                   f"{_describe(periodic)} has a DEI cover count; read the cover page"))
             else:
-                out.append(_check(issue, "unknown", gap_msg if gaps else
-                                  f"the stored facts hold no 10-K or 10-Q filed by {as_of}"))
+                out.append(_check(issue, "unknown", f"the stored facts hold no 10-K or 10-Q filed by {as_of}"))
         elif issue == "penny_price":
             out.append(_check(issue, "none_found",
                               f"close {row['close_raw']:.2f} on {row['price_date']} is below {MIN_PRICE:.2f}"))
