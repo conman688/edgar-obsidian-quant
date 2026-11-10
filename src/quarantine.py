@@ -33,6 +33,10 @@ FOREIGN_FORMS = ("20-F", "20-F/A", "40-F", "40-F/A")
 PERIODIC_FORMS = ("10-K", "10-K/A", "10-Q", "10-Q/A")
 DEBT_PATTERN = "(Debt|Notes|Borrowing|LineOfCredit|Loan)"
 DEBT_EXCLUDE = "(Lease|Receivable|Asset)"
+# Matched by the debt pattern but not owed (C9): debt securities the company holds as investments
+# (available-for-sale, held-to-maturity), and credit-facility amounts still available to borrow.
+# Maturity schedules are not excluded: they can describe real outstanding debt.
+NOT_OWED = "(AvailableForSale|HeldToMaturity|DebtSecurities|BorrowingCapacity)"
 DEBT_ISSUES = ("missing_debt", "stale_debt")
 TTM_ISSUES = ("missing_ebit", "missing_fcf")
 SHARE_ISSUES = ("missing_shares", "stale_shares")
@@ -86,6 +90,7 @@ def _debt_candidates(con, want: list[tuple[int, date, list[str]]], as_of: date) 
                   AND f.filed <= $as_of AND f.period_end = $bs_date AND list_contains($accns, f.accn)
                   AND f.period_end <= f.filed + INTERVAL 7 DAY AND f.period_end <= $as_of   -- pit.py guards
                   AND regexp_matches(f.tag, '{DEBT_PATTERN}') AND NOT regexp_matches(f.tag, '{DEBT_EXCLUDE}')
+                  AND NOT regexp_matches(f.tag, '{NOT_OWED}')
                   AND NOT EXISTS (SELECT 1 FROM concept_map m WHERE m.taxonomy = f.taxonomy AND m.tag = f.tag)
                 ORDER BY f.tag, f.accn""",
                 {"cik": cik, "as_of": as_of, "bs_date": bs_date, "accns": accns}).fetchall():
