@@ -1,5 +1,5 @@
 # Review: M11 Quarantine checks (plan)
-Status: awaiting-response
+Status: awaiting-recheck
 
 ## Request (Claude)
 
@@ -935,3 +935,47 @@ S2's schedule-versus-statement distinction and mocked fetch/Health/manual-review
 pass the reviewed tests. End-to-end acceptance and the computation timing for this newly changed
 valuation query remain unverified; the earlier timing applies only to its pinned Phase 1 path.
 Keep PR #25 draft and live state unchanged while these valuation findings are answered.
+
+## Response (Claude, build round 6 / overall round 11)
+
+Pulled b0d57cb first. Tests first: `test_m11_resolve.py` additions (on b0d57cb: 11 failed; the
+newer-DEI-priority and amendment controls passed) and `test_c20_fetch_uses_the_screens_governing_filing_not_an_amendment`
+(failed); fix 92d575f. `tests/test_m11_resolve.py` 32 passed; full suite **369 passed**.
+
+**C20 fixed (the root of the four).** Valuation defines the governing filing `lf`: the latest `10-K` or
+`10-Q` (no amendments, per the plan's scope) among the screen's own resolved facts (`pit`, so filed by
+as_of), one per company, exposed as the new screen column `m11_filing`. The cover and zero-debt
+evidence is that filing's own ledger row, joined on (cik, accn, family) *before* the `status = 'ok'` /
+result / parser filter. A newer `not_found`, `error`, `conflict`, old-parser row, or a newer filing with
+no row yet, therefore gives no proof and never revives an older one. Zero debt additionally keeps the
+same-date (`bs_date`) and source checks (`bsa`). `run_checks` fetches exactly `m11_filing` and
+Phase 1's `cover_classes` diagnostic reads exactly that row, so fetch, diagnostics and valuation describe
+the same evidence. Tests: `test_c20_newer_not_found_cover_does_not_revive_the_older_proof`,
+`test_c20_newer_unprocessed_filing_does_not_inherit_the_older_proof`,
+`test_c20_newer_not_zero_does_not_revive_an_older_zero` (your q3 equity case),
+`test_c20_newer_unprocessed_filing_does_not_inherit_an_older_zero`,
+`test_c20_amendment_is_not_an_eligible_resolving_filing` (control),
+`test_c20_diagnostic_names_the_same_governing_filing`,
+`test_c20_fetch_uses_the_screens_governing_filing_not_an_amendment`.
+
+**C19 fixed.** The cover governs when its date (latest class count date, or the filing date when no
+usable class is stored) is at least as new as the screen's share count, whatever that count's tag.
+Tests: `test_c19_old_total_dei_count_yields_to_a_newer_proved_cover` (your 2023 DEI total case),
+`test_c19_newer_total_dei_count_keeps_priority` (control), `test_c19_newer_unverified_cover_blocks_an_older_total`.
+
+**C21 fixed.** A zero applies only where the screen's debt is missing or wholly older than `bs_date`;
+the dropped-line clause is gone, so current tagged debt is never replaced. Test:
+`test_c21_zero_never_erases_current_positive_debt_with_a_dropped_line` (your LTD 1M + dropped STB case:
+debt 1M, `stale_debt`, quarantine). Missing-debt and wholly-older-debt positives still pass.
+
+**C22 fixed.** Under the primary-only price model the multi-class branch is removed: two or more classes
+always give `multi_class_unverified` (`case_all`, `mcap_override` and the cross-issuer ticker join are
+gone). The single-class match compares the filing's one symbol with the ticker of the as-of quote row
+(`px.ticker`), not `price_status`. Tests: `test_c22_two_classes_stay_blocked_under_primary_only_prices`
+(replaces the old positive test that borrowed CIK 999's quote), `test_c22_two_classes_on_the_same_primary_quote_are_blocked`,
+`test_c22_single_class_binds_to_the_as_of_quote_not_refresh_metadata` (price_status ticker FUTURE, quote MIR:
+still resolves; the row is looked up by CIK because the screen's display ticker comes from price_status).
+
+Not claimed: no timing for the changed valuation query. A read-only timing on a backup is not possible
+as is, because the backups predate migration 9 and the query reads its tables; the earlier 7.6 s figure
+covers the Phase 1 path only.
