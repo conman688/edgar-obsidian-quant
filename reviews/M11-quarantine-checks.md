@@ -1,5 +1,5 @@
 # Review: M11 Quarantine checks (plan)
-Status: resolved
+Status: awaiting-review
 
 ## Request (Claude)
 
@@ -253,3 +253,59 @@ Independent profile recheck also corroborated3shortlist/51quarantine/4135fail, a
 ## Outcome (user)
 
 _Only for findings still disputed after two rounds._
+
+---
+
+# Build round: Phase 1 (stored-fact reasons)
+
+Scope decision (Conor, 2026-11-09, relayed by Codex): build the reviewed M11 rules only. Build and
+review now in isolation; deploy only after M9 acceptance passes, with the user's merge yes. No
+NCI, entity-axis, registration-statement or zero-class exceptions. Phase 1 ships first (plan's
+open question 3); Phase 2 (2b cover classes, 2c zero debt, ledger and fetch) is a later round on
+this branch.
+
+## Request (Claude, build round 1)
+
+- Branch: `feat/m11-quarantine-checks` (worktree /private/tmp/edgar-m11-build). Draft PR: see the
+  PR list. Never merge before acceptance passes and the user says yes.
+- Diff: `git diff b8e8c0c..19eca27044a0aecc223a36150c4a6ff017a66b5d`. Commits: c677797 (tests, failing first: `src.quarantine` did not
+  exist), 7aa12de (implementation), 19eca27 (note layout).
+- Tests: `uv run pytest` -> 217 passed (202 before + 15 in `tests/test_m11_quarantine.py`).
+
+### What changed
+- `src/quarantine.py` (new): `with_issue_checks(con, table, as_of)` adds `issue_checks` (list of
+  issue, reason, message, candidates) to a screen table. One check per issue of each quarantined
+  row; non-quarantined rows get `[]`. Reasons: foreign_filer, no_annual_in_stored_facts,
+  tag_candidates, no_cover_count, unknown, none_found. A quarantined row whose latest annual-form
+  accession filed by as_of is a 20-F/40-F gains the `foreign_filer` issue (FMX/GRAB case), unless
+  the ledger has an accession without facts.
+- Inputs: `xbrl_facts` grouped by accession (`filed <= as_of`), and `loaded_filings` accessions
+  with no facts (coverage gap, C4). Debt candidates: us-gaap USD instants outside `concept_map`, at
+  `bs_date` and in the accessions the screen read at `bs_date`, tag ~ Debt|Notes|Borrowing|
+  LineOfCredit|Loan, not Lease|Receivable|Asset. Every candidate is `kind = component`: a tag
+  outside the map is a component until a reviewed 2a batch adds it to `CONCEPT_SEED`.
+- `src/screen.py`: `screen_table()` = `screen()` + `with_issue_checks`. Used by `cmd_screen`
+  (CLI block prints each check and a reason count; parquet keeps the column) and `sync_vault`
+  (company note "Quarantine check" section, frontmatter `issue_checks`, Dashboard column).
+  `vault_ciks`, `write_journal` and the backtest are unchanged (journals stay as they were).
+
+### How to verify
+- `uv run pytest tests/test_m11_quarantine.py -q` -> 15 passed.
+- Real data, read-only on the 11-07 backup (not the live DB; `duckdb.connect(read_only=True)`,
+  2 GB, 2 threads, not `schema.connect`): status/rank identical with and without checks, one check
+  per issue on every quarantined row, reason counts. Running now; numbers follow in this file.
+
+### Where bugs are most likely
+- `checks_for` precedence between coverage gaps and the other reasons (only TTM and
+  foreign_filer use the gap today; share issues use it only when no periodic filing exists).
+- `_debt_candidates`: point-in-time predicates (it uses `filed <= as_of` and the bs date, not the
+  `period_end <= filed + 7 days` guard of `pit.py`).
+- The `foreign_filer` addition changes `issues` of quarantined rows only; check it can never touch
+  a shortlisted or failed row.
+- Messages: no claim that no annual report was filed, that a company listed recently, or that
+  per-class tagging is confirmed.
+
+### Known gaps
+- `none_found` is used for price issues and share_jump with the observed values in the message,
+  because the plan's reason list has no "as reported" reason.
+- Phase 2 not started.
