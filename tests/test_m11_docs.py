@@ -549,3 +549,10 @@ def test_c18_mixed_entities_do_not_contaminate_or_conflict():
     got, full = members(doc)
     assert got == [("us-gaap:CommonClassAMember", 1_000_000.0)]
     assert full["conflict"] is False and full["symbols"] == ["ACME"]
+
+
+@pytest.mark.parametrize("v", ["INF", "NaN", "-1000"])
+def test_integration_non_finite_or_negative_class_count_is_unusable(v):
+    doc = instance(ctx("a", "2024-07-25", "us-gaap:CommonClassAMember"), count("a", v), symbol("a", "ACME"))
+    got = cover_classes(parse_instance(doc), 1234)
+    assert got["conflict"] is True and got["classes"] == []
