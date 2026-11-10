@@ -4,7 +4,7 @@ from datetime import date
 import duckdb
 import pytest
 
-from src.db.queries import valuation
+from src.db.queries import governing_sql, valuation
 from src.db.schema import connect
 from src.ingestion.companyfacts import load_docs
 from src.ingestion.form4_insider import parse_form4, store
@@ -199,10 +199,16 @@ def test_cover_date_a_few_days_after_filing_still_counts(con):
     assert val_row(con)["shares_period_end"] == date(2024, 8, 3)
 
 
-def test_valuation_is_one_pass_over_facts(con):
+def test_valuation_is_one_pass_over_facts_for_concepts_plus_one_metadata_pass(con):
     add_company(con, CIK, "ACME", cheap_company())   # an empty table is optimised away
     plan = con.execute("EXPLAIN (FORMAT JSON) " + valuation(con, AS_OF).sql_query(), {"as_of": AS_OF}).fetchall()[0][-1]
-    assert plan.count("main.xbrl_facts") == 1        # was one scan per concept (11)
+    # Was one scan per concept (11). The second scan is M11's governing filing metadata (governing_sql),
+    # which must read actual stored filing metadata, not the concept subset (review C20), and covers only
+    # companies with ledger rows.
+    assert plan.count("main.xbrl_facts") == 2
+    gov = con.execute("EXPLAIN (FORMAT JSON) " + governing_sql("SELECT DISTINCT cik FROM quarantine_checks"),
+                      {"as_of": AS_OF}).fetchall()[0][-1]
+    assert gov.count("main.xbrl_facts") == 1
 
 
 # --- screen ------------------------------------------------------------------

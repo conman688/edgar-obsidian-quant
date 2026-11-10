@@ -63,6 +63,8 @@ MIN_PRICE = 1.0               # below $1 a quote moves a tick at a time and cann
 # shares replaced under the same ticker, an unadjusted reverse split), not a market move.
 PRICE_BREAK = 10.0
 DEI_SHARES = "EntityCommonStockSharesOutstanding"
+# M11 ledger parser versions: the screen uses a check only at the current version.
+M11_PARSERS = {"m11_cover": 1, "m11_balance_sheet": 1}
 
 _INSTANTS = {"sh": "shares_outstanding", "cash": "cash", "sti": "st_investments", "dt": "debt_total",
              "dc": "debt_current", "dn": "debt_noncurrent", "stb": "short_term_debt",
@@ -70,6 +72,29 @@ _INSTANTS = {"sh": "shares_outstanding", "cash": "cash", "sti": "st_investments"
 # Debt tags that already include short-term borrowings, so those are not added again.
 _DEBT_INCL_SHORT_TERM = ("DebtLongtermAndShorttermCombinedAmount", "DebtCurrent")
 _FLOWS = ("ebit", "cfo", "capex")
+
+
+def governing_sql(ciks: str) -> str:
+    """The M11 governing filing per company in `ciks` (SQL yielding a `cik` column), as of $as_of:
+    the latest 10-K or 10-Q (no amendments) in the stored filing metadata, i.e. any xbrl_facts
+    accession, whatever its concepts and whatever the numeric policy. Form and date come only from
+    rows filed by as_of (C10). A ledger accession with no stored facts makes coverage unknown: no
+    governing filing, so no proof (C20). Shared by valuation, fetch and diagnostics."""
+    return f"""
+    WITH c AS ({ciks}),
+    f AS (
+        SELECT cik, accn, min(form) FILTER (WHERE filed <= $as_of) AS form,
+               min(filed) FILTER (WHERE filed <= $as_of) AS filed
+        FROM xbrl_facts WHERE cik IN (SELECT cik FROM c) GROUP BY cik, accn
+    ),
+    gap AS (
+        SELECT DISTINCT l.cik FROM loaded_filings l
+        WHERE l.cik IN (SELECT cik FROM c) AND NOT EXISTS (SELECT 1 FROM f WHERE f.cik = l.cik AND f.accn = l.accn)
+    )
+    SELECT cik, accn, filed FROM f
+    WHERE filed IS NOT NULL AND form IN ('10-K', '10-Q') AND cik NOT IN (SELECT cik FROM gap)
+    QUALIFY row_number() OVER (PARTITION BY cik ORDER BY filed DESC, accn DESC) = 1
+    """
 
 
 def valuation_sql(policy: Policy = "as_last_known") -> str:
@@ -84,7 +109,7 @@ def valuation_sql(policy: Policy = "as_last_known") -> str:
     WITH pit AS MATERIALIZED ({concepts_sql(policy, tuple(_INSTANTS.values()) + _FLOWS)}),
     {ctes},
     px AS (
-        SELECT cik, close_raw, price_date FROM prices WHERE price_date <= $as_of
+        SELECT cik, close_raw, price_date, ticker FROM prices WHERE price_date <= $as_of
         QUALIFY row_number() OVER (PARTITION BY cik ORDER BY price_date DESC) = 1
     ),
     hi AS (
@@ -169,6 +194,92 @@ def valuation_sql(policy: Policy = "as_last_known") -> str:
                                          lambda a: a IS NOT NULL)) AS debt_accns
         FROM debt_sums
     ),
+    -- M11 2b: share classes from the latest cover check filed by as_of. A market cap comes only
+    -- from a proved mapping: one class with a count and one trading symbol, the priced ticker;
+    -- or every class with a count has its own symbol with a stored close on the price date.
+    -- M11: the governing filing (governing_sql), for companies with ledger rows only: no other company
+    -- can have a proof. Its ledger state decides, before any success filter (C20): a newer refusal,
+    -- error, old parser or unprocessed filing never revives an older filing's proof.
+    lf AS ({governing_sql("SELECT DISTINCT cik FROM quarantine_checks")}),
+    -- 2b: that filing's cover check. A market cap comes only from one class with a positive count
+    -- dated like pit.py allows, and exactly one filing symbol equal to the ticker of the as-of quote.
+    -- Two or more classes stay blocked: prices hold the primary quote only (C22).
+    cvf AS (
+        SELECT q.cik, q.accn, q.filed, q.result, q.detail FROM lf
+        JOIN quarantine_checks q ON q.cik = lf.cik AND q.accn = lf.accn AND q.family = 'm11_cover'
+        WHERE q.status = 'ok' AND q.parser >= {M11_PARSERS['m11_cover']} AND q.filed <= $as_of   -- C23
+    ),
+    cv AS (
+        SELECT f.cik, any_value(f.accn) AS accn, any_value(f.result) AS result,
+               any_value(json_array_length(f.detail, '$.symbols')) AS n_symbols,
+               any_value(json_extract_string(f.detail, '$.symbols[0]')) AS first_symbol,
+               count(c.member) AS n_classes,
+               coalesce(max(c.dei_date), any_value(f.filed)) AS cover_date,
+               any_value(c.shares) AS one_shares, any_value(c.member) AS one_member,
+               coalesce(bool_and(c.shares > 0 AND c.dei_date IS NOT NULL AND c.dei_date <= f.filed + INTERVAL 7 DAY
+                                 AND c.dei_date <= $as_of), FALSE) AS all_usable,
+               any_value(px.ticker) AS quote_ticker
+        FROM cvf f LEFT JOIN cover_shares c ON c.cik = f.cik AND c.accn = f.accn AND c.filed <= $as_of
+        LEFT JOIN px ON px.cik = f.cik
+        GROUP BY f.cik
+    ),
+    sh2 AS (
+        -- The cover check governs when it is at least as new as the screen's count, whatever its tag (C19).
+        SELECT coalesce(s.cik, v.cik) AS cik,
+               v.cik IS NOT NULL AND (s.cik IS NULL OR v.cover_date >= s.period_end) AS governs,
+               coalesce(v.result = 'classes' AND v.all_usable AND v.n_classes = 1 AND v.n_symbols = 1
+                        AND upper(v.first_symbol) = upper(v.quote_ticker), FALSE) AS case_one,
+               v.accn AS cv_accn, v.cover_date, v.one_shares, v.one_member,
+               s.value, s.period_end, s.tag, s.accn, s.form
+        FROM sh s FULL JOIN cv v ON v.cik = s.cik
+    ),
+    shr AS (
+        SELECT cik,
+               CASE WHEN governs AND case_one THEN one_shares ELSE value END AS value,
+               CASE WHEN governs AND case_one THEN cover_date ELSE period_end END AS period_end,
+               CASE WHEN governs AND case_one THEN '{DEI_SHARES}[' || one_member || ']' ELSE tag END AS tag,
+               CASE WHEN governs AND case_one THEN cv_accn ELSE accn END AS accn,
+               form,
+               coalesce(governs AND NOT case_one, FALSE) AS multi_class_unverified
+        FROM sh2
+    ),
+    -- 2c: that filing's own zero-debt proof, at bs_date, from a filing the balance sheet was read from.
+    -- It applies only where debt is missing or wholly older; never over debt tagged at bs_date (C21).
+    dz AS (
+        SELECT q.cik, q.period_end, q.accn FROM lf
+        JOIN quarantine_checks q ON q.cik = lf.cik AND q.accn = lf.accn AND q.family = 'm11_balance_sheet'
+        WHERE q.status = 'ok' AND q.result = 'debt_zero' AND q.parser >= {M11_PARSERS['m11_balance_sheet']}
+          AND q.filed <= $as_of                                                                  -- C23
+    ),
+    -- The filings the screen read the balance sheet from, at bs_date.
+    bsa AS (
+        SELECT b.cik, list(DISTINCT x.accn) AS accns FROM bs b JOIN (
+            SELECT cik, period_end, accn FROM cash UNION ALL SELECT cik, period_end, accn FROM sti
+            UNION ALL SELECT cik, period_end, accn FROM dt UNION ALL SELECT cik, period_end, accn FROM dc
+            UNION ALL SELECT cik, period_end, accn FROM dn UNION ALL SELECT cik, period_end, accn FROM stb
+            UNION ALL SELECT cik, period_end, accn FROM eq
+        ) x ON x.cik = b.cik AND x.period_end = b.bs_date
+        GROUP BY b.cik
+    ),
+    debtr AS (
+        SELECT coalesce(d.cik, b.cik) AS cik,
+               z.cik IS NOT NULL AND (d.debt IS NULL OR d.debt_period_end < b.bs_date) AS zeroed,
+               d.debt_period_end, d.debt, d.debt_sources_disagree, d.dropped_recent, d.debt_tag, d.debt_accns,
+               b.bs_date AS z_date, z.accn AS z_accn
+        FROM bs b LEFT JOIN debt d ON d.cik = b.cik
+        LEFT JOIN bsa ON bsa.cik = b.cik
+        LEFT JOIN dz z ON z.cik = b.cik AND z.period_end = b.bs_date AND list_contains(bsa.accns, z.accn)
+    ),
+    debt2 AS (
+        SELECT cik,
+               CASE WHEN zeroed THEN z_date ELSE debt_period_end END AS debt_period_end,
+               CASE WHEN zeroed THEN 0 ELSE debt END AS debt,
+               CASE WHEN zeroed THEN FALSE ELSE debt_sources_disagree END AS debt_sources_disagree,
+               CASE WHEN zeroed THEN NULL ELSE dropped_recent END AS dropped_recent,
+               CASE WHEN zeroed THEN 'balance_sheet_no_debt' ELSE debt_tag END AS debt_tag,
+               CASE WHEN zeroed THEN [z_accn] ELSE debt_accns END AS debt_accns
+        FROM debtr
+    ),
     base AS (
         SELECT px.cik, px.price_date, px.close_raw,
                datediff('day', px.price_date, $as_of) AS price_age_days,
@@ -177,6 +288,8 @@ def valuation_sql(policy: Policy = "as_last_known") -> str:
                -- (NVDA: May 24 count, June 10 split) must scale them to the price's basis.
                px.close_raw * sh.value * split_factor(px.cik, sh.period_end)
                    / split_factor(px.cik, px.price_date) AS mcap,
+               lf.accn AS m11_filing,
+               coalesce(sh.multi_class_unverified, FALSE) AS multi_class_unverified,
                sh.tag AS shares_tag, sh.period_end AS shares_period_end,
                datediff('day', sh.period_end, $as_of) AS shares_age_days,
                bs.bs_date,
@@ -209,8 +322,8 @@ def valuation_sql(policy: Policy = "as_last_known") -> str:
                    {{'item': 'capex', 'tag': capex.tag, 'period_end': capex.period_end, 'accns': capex.accns}}
                ], lambda s: s.accns[1] IS NOT NULL) AS sources
         FROM px
-        LEFT JOIN sh USING (cik) LEFT JOIN bs USING (cik)
-        LEFT JOIN cash USING (cik) LEFT JOIN sti USING (cik) LEFT JOIN debt USING (cik)
+        LEFT JOIN shr AS sh USING (cik) LEFT JOIN bs USING (cik) LEFT JOIN lf USING (cik)
+        LEFT JOIN cash USING (cik) LEFT JOIN sti USING (cik) LEFT JOIN debt2 AS debt USING (cik)
         LEFT JOIN gw USING (cik) LEFT JOIN eq USING (cik)
         LEFT JOIN ebit USING (cik) LEFT JOIN cfo USING (cik) LEFT JOIN capex USING (cik)
         LEFT JOIN hi USING (cik) LEFT JOIN brk USING (cik)
@@ -224,6 +337,7 @@ def valuation_sql(policy: Policy = "as_last_known") -> str:
         -- left is a balance-sheet count of one class, or nothing (META, BRK, V).
         shares_tag IS DISTINCT FROM '{DEI_SHARES}' AS multi_class_risk,
         list_filter([
+            CASE WHEN multi_class_unverified THEN 'multi_class_unverified' END,
             CASE WHEN mcap IS NULL THEN 'missing_shares'
                  WHEN shares_age_days > {STALE_DAYS} THEN 'stale_shares' END,
             CASE WHEN price_age_days > {STALE_PRICE_DAYS} THEN 'stale_price' END,

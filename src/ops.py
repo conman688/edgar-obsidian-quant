@@ -175,6 +175,9 @@ def _warnings(con, today: date, counts: dict, before: dict, steps: list[dict], t
     failed_f4 = con.execute("SELECT count(*) FROM form4_filings WHERE status = 'failed'").fetchall()[0][0]
     if failed_f4:
         w.append(f"{failed_f4:,} Form 4 filings failed (retried next run)")
+    failed_q = con.execute("SELECT count(*) FROM quarantine_checks WHERE status = 'error'").fetchall()[0][0]
+    if failed_q:
+        w.append(f"{failed_q:,} quarantine checks failed (retried next run)")
     failed_px = con.execute("SELECT count(*) FROM price_status WHERE status = 'error'").fetchall()[0][0]
     if failed_px:
         w.append(f"{failed_px:,} companies failed their price refresh")
