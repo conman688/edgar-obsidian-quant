@@ -226,3 +226,15 @@ def test_s2_two_consolidated_balance_sheets_give_a_definite_not_zero(con):
     run_checks(con, sec, rows(con), AS_OF)
     assert ledger(con)["m11_balance_sheet"] == ("ok", "not_zero")
     assert URLS["r"] not in sec.calls
+
+
+def test_c20_fetch_uses_the_screens_governing_filing_not_an_amendment(con):
+    from src.ingestion.companyfacts import load_docs
+    from tests.test_m4_screen import doc_for
+    both_families(con)
+    load_docs(con, [doc_for(CIK, {(GAAP, "StockholdersEquity", "USD"):
+                                  [{**inst("2024-06-30", 9_000_000, "2024-08-25", "q2a"), "form": "10-Q/A"}]})])
+    sec = FakeSec(good_docs())
+    run_checks(con, sec, rows(con), AS_OF)
+    assert sorted(sec.calls) == sorted(URLS.values())                  # q2, the screen's governing 10-Q
+    assert {a for (a,) in con.execute("SELECT DISTINCT accn FROM quarantine_checks").fetchall()} == {"q2"}

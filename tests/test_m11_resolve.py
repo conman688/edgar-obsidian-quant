@@ -104,7 +104,7 @@ def test_c22_single_class_binds_to_the_as_of_quote_not_refresh_metadata(con):
     quarantined(con, CIK, "MIR", stale_share_company())
     cover(con, [(A, 1_000_000, "MIR", D)], ["MIR"])
     con.execute("UPDATE price_status SET ticker = 'FUTURE'")
-    r = row(con)
+    r = next(x for x in screen_table(con, AS_OF).to_pylist() if x["cik"] == CIK)   # display ticker is now FUTURE
     assert r["shares_period_end"] == D and "multi_class_unverified" not in r["issues"]
 
 
