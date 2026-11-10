@@ -51,31 +51,30 @@ def _check(issue: str, reason: str, message: str, candidates: list[dict] | None 
     return {"issue": issue, "reason": reason, "message": message, "candidates": candidates or []}
 
 
-def _filings(con, ciks: list[int], as_of: date) -> dict[int, list[dict]]:
-    """Accessions in the stored facts filed by as_of, newest first, with their form and date."""
-    out: dict[int, list[dict]] = defaultdict(list)
+def _accessions(con, ciks: list[int], as_of: date) -> tuple[dict[int, list[dict]], dict[int, list[str]]]:
+    """(filings, gaps). filings: accessions in the stored facts filed by as_of, newest first, with
+    their form and date. gaps: ledger accessions with no stored facts at all, whose form and filing
+    date are unknown. One grouped scan of xbrl_facts; a correlated probe per ledger row took ~4
+    minutes on the 11-07 backup."""
+    filings: dict[int, list[dict]] = defaultdict(list)
+    have: set[tuple[int, str]] = set()
     for cik, accn, form, filed, has_dei in con.execute("""
             SELECT cik, accn, min(form), min(filed),
                    -- Only a count the screen could use: the same date guards as pit.py.
                    bool_or(taxonomy = 'dei' AND tag = 'EntityCommonStockSharesOutstanding'
                            AND period_end <= filed + INTERVAL 7 DAY AND period_end <= $as_of)
-            FROM xbrl_facts WHERE list_contains($ciks, cik) AND filed <= $as_of
+            FROM xbrl_facts WHERE list_contains($ciks, cik)
             GROUP BY cik, accn ORDER BY cik, min(filed) DESC, accn DESC""",
             {"ciks": ciks, "as_of": as_of}).fetchall():
-        out[cik].append({"accn": accn, "form": form, "filed": filed, "has_dei": has_dei})
-    return out
-
-
-def _ledger_gaps(con, ciks: list[int]) -> dict[int, list[str]]:
-    """Ledger accessions with no stored facts at all: their form and filing date are unknown."""
-    out: dict[int, list[str]] = defaultdict(list)
-    for cik, accn in con.execute("""
-            SELECT l.cik, l.accn FROM loaded_filings l
-            WHERE list_contains($ciks, l.cik)
-              AND NOT EXISTS (SELECT 1 FROM xbrl_facts f WHERE f.cik = l.cik AND f.accn = l.accn)
-            ORDER BY l.cik, l.accn""", {"ciks": ciks}).fetchall():
-        out[cik].append(accn)
-    return out
+        have.add((cik, accn))
+        if filed <= as_of:
+            filings[cik].append({"accn": accn, "form": form, "filed": filed, "has_dei": has_dei})
+    gaps: dict[int, list[str]] = defaultdict(list)
+    for cik, accn in con.execute("SELECT cik, accn FROM loaded_filings WHERE list_contains($ciks, cik) "
+                                 "ORDER BY cik, accn", {"ciks": ciks}).fetchall():
+        if (cik, accn) not in have:
+            gaps[cik].append(accn)
+    return filings, gaps
 
 
 def _debt_candidates(con, want: list[tuple[int, date, list[str]]], as_of: date) -> dict[int, list[dict]]:
@@ -189,8 +188,7 @@ def with_issue_checks(con: duckdb.DuckDBPyConnection, table: pa.Table, as_of: da
     rows = table.to_pylist()
     q = [r for r in rows if r["status"] == "quarantine"]
     ciks = sorted({r["cik"] for r in q})
-    filings = _filings(con, ciks, as_of) if ciks else {}
-    gaps = _ledger_gaps(con, ciks) if ciks else {}
+    filings, gaps = _accessions(con, ciks, as_of) if ciks else ({}, {})
     want = [(r["cik"], r["bs_date"], _bs_accns(r)) for r in q
             if set(r["issues"]) & set(DEBT_ISSUES) and r["bs_date"] is not None]
     cands = _debt_candidates(con, want, as_of)
