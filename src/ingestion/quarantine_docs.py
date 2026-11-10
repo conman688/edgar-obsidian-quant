@@ -22,6 +22,7 @@ from html import unescape
 XBRLI = "{http://www.xbrl.org/2003/instance}"
 XBRLDI = "{http://xbrl.org/2006/xbrldi}"
 XSI_NIL = "{http://www.w3.org/2001/XMLSchema-instance}nil"
+ISO4217 = "http://www.xbrl.org/2003/iso4217"
 CLASS_AXIS = "us-gaap:StatementClassOfStockAxis"
 COVER_COUNT = "dei:EntityCommonStockSharesOutstanding"
 TRADING_SYMBOL = "dei:TradingSymbol"
@@ -55,6 +56,15 @@ ROLLUPS = [(f"us-gaap:{p}", frozenset(f"us-gaap:{c}" for c in cs)) for p, cs in 
         "AccountsPayableCurrent", "AccountsPayableTradeCurrent", "AccountsPayableRelatedPartiesCurrent",
         "AccruedLiabilitiesCurrent", "EmployeeRelatedLiabilitiesCurrent", "AccruedSalariesCurrent",
         "AccruedEmployeeBenefitsCurrent")))]
+# C15: a broad accrual aggregate beside an element it may contain. A flat statement cannot show the
+# two lines are disjoint, so the pair is refused (not assumed nested, not assumed separate).
+AMBIGUOUS = [(f"us-gaap:{b}", frozenset(f"us-gaap:{p}" for p in ps)) for b, ps in (
+    ("AccruedLiabilitiesCurrent", ("EmployeeRelatedLiabilitiesCurrent", "AccruedSalariesCurrent",
+                                   "AccruedEmployeeBenefitsCurrent", "TaxesPayableCurrent", "AccruedIncomeTaxesCurrent",
+                                   "SalesAndExciseTaxPayableCurrent", "DividendsPayableCurrent")),
+    ("AccruedLiabilitiesNoncurrent", ("AccruedIncomeTaxesNoncurrent",)),
+    ("AccountsPayableAndAccruedLiabilitiesCurrent", ("TaxesPayableCurrent", "AccruedIncomeTaxesCurrent",
+                                                     "SalesAndExciseTaxPayableCurrent", "DividendsPayableCurrent")))]
 # Alternative elements for one concept: both on one statement cannot be told apart, so refused.
 ALTERNATIVES = [frozenset(f"us-gaap:{t}" for t in pair) for pair in (
     ("DeferredRevenueCurrent", "ContractWithCustomerLiabilityCurrent"),
@@ -77,7 +87,9 @@ class DocError(Exception):
 class Instance:
     # id -> (instant, dimensions, entity identifier)
     contexts: dict[str, tuple[date | None, tuple[tuple[str, str], ...], str]] = field(default_factory=dict)
-    facts: list[dict] = field(default_factory=list)       # name, context, value (str), decimals
+    facts: list[dict] = field(default_factory=list)       # name, context, value (str), decimals, unit, nil
+    # unit id -> ISO 4217 currency code for a single-measure monetary unit, else None (C16)
+    units: dict[str, str | None] = field(default_factory=dict)
 
 
 def instance_name(index_json: bytes) -> str:
@@ -110,9 +122,18 @@ def parse_instance(xml: bytes) -> Instance:
         raise DocError(f"malformed instance XML: {e}") from None
     inst = Instance()
     # Extension prefixes as the filer declared them (ElementTree drops prefixes).
-    ext: dict[str, str] = {}
+    ext: dict[str, str] = {}                       # namespace URI -> prefix as declared
     for m in re.finditer(rb'xmlns:([\w.-]+)="([^"]+)"', xml[:200_000]):
         ext[m.group(2).decode()] = m.group(1).decode()
+    prefix_uri = {p: u for u, p in ext.items()}
+    for u in root.iter(f"{XBRLI}unit"):
+        measures = u.findall(f"{XBRLI}measure")    # direct children only: a divide unit has none
+        code = None
+        if len(measures) == 1 and measures[0].text and ":" in measures[0].text:
+            p, local = measures[0].text.strip().split(":", 1)
+            if prefix_uri.get(p) == ISO4217:
+                code = local.upper()
+        inst.units[u.get("id")] = code
     for c in root.iter(f"{XBRLI}context"):
         instant = c.find(f"{XBRLI}period/{XBRLI}instant")
         dims = tuple(sorted((m.get("dimension"), (m.text or "").strip())
@@ -135,7 +156,8 @@ def parse_instance(xml: bytes) -> Instance:
         if name.startswith("ext:"):
             name = f"{ext.get(ns, 'ext')}:{local}"
         inst.facts.append({"name": name, "context": ctx, "value": (el.text or "").strip(),
-                           "decimals": el.get("decimals"), "nil": el.get(XSI_NIL) == "true"})
+                           "decimals": el.get("decimals"), "nil": el.get(XSI_NIL) == "true",
+                           "unit": el.get("unitRef")})
     return inst
 
 
@@ -290,6 +312,9 @@ def zero_debt(dates: list[date], rows: list[tuple[str, str]], inst: Instance, co
             prev = vals.get(f["name"])
             if prev and prev[0] != v:
                 return no(f"{f['name']} has two different values at {column}")
+            currency = inst.units.get(f["unit"]) if f["unit"] else None
+            if currency != "USD":                  # C16: one currency, the screen's (USD)
+                return no(f"{f['name']} is not in a USD monetary unit (unitRef {f['unit']!r}: {currency})")
             vals[f["name"]] = (v, _half_unit(f["decimals"]))
     if TOTAL not in vals:
         return no(f"no Liabilities value at {column}")
@@ -305,6 +330,9 @@ def zero_debt(dates: list[date], rows: list[tuple[str, str]], inst: Instance, co
             f"residual {residual:,.0f} between {total} {vals[total][0]:,.0f} and its rows {got:,.0f} "
             f"exceeds the rounding budget {budget:,.0f}")
 
+    for broad, parts in AMBIGUOUS:
+        if broad in liab and parts & set(liab):
+            return no(f"ambiguous coverage: {broad} beside {', '.join(sorted(parts & set(liab)))}")
     for alt in ALTERNATIVES:
         if alt <= set(liab):
             return no("two elements for one concept: " + ", ".join(sorted(alt)))
