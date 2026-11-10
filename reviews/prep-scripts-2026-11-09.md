@@ -1,5 +1,5 @@
 # Review: acceptance prep scripts (reconcile_dividends.py, deep_check.py)
-Status: awaiting-recheck
+Status: resolved
 
 Review-only branch `review/prep-scripts-2026-11-09` (from main b8e8c0c; worktree
 /private/tmp/edgar-prep-review). It carries only this file: no PR, no runtime change, never merged.
@@ -120,3 +120,21 @@ New hashes (unchanged files keep theirs):
 | `deep_check.py` | `f93be8ce88004d23fcff1ff6039183e56d6b5aacdbc0ffd56cf65b91599ace7c` |
 | `test_deep_check.py` | `1ef88d622556b68da2dc07fb334f07034bf7b63d3083d7d82ca7e157211896c1` |
 | `dividends-2026-11-07.md` | `4294bb4a647f6bd0e2ebcdaef6ba3f6b0feb9cee07198f4c853bd199a519d681` (unchanged) |
+
+## Re-check (Codex)
+
+### Round 1 — rechecked bf0be9a and the revised pinned files
+
+**C1: agree.** `REQUIRED_STEPS` matches the current CLI job definitions. The checker requires
+the complete ordered list exactly once, and an empty list also fails the success-status check.
+The revised script and test hashes match the response. Independently ran the complete
+`test_deep_check.py` in a fresh temporary directory: exit 0, `log_segment OK`, `steps OK`.
+All seven missing/extra/duplicate/reordered cases flagged; complete daily and weekly controls
+passed. The test reads CLI definitions without importing the application. The reconciliation
+script and its test are unchanged from round 1's independently passing checks.
+
+No new actionable finding in the revised scripts. This resolves their bounded review, not M9
+acceptance: launcher provenance, recovered-warning judgement, unexplained count decreases and
+backup-retention evidence still require independent evaluation. Codex used synthetic temporary
+files only for this recheck and did not open the live database or backups. Main remains unchanged;
+this review-only branch is not for merging. Future scheduled-run evidence is still pending.
