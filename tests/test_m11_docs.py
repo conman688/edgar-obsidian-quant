@@ -16,11 +16,11 @@ NS = ('xmlns:xbrli="http://www.xbrl.org/2003/instance" xmlns:dei="http://xbrl.se
       'xmlns:acme="http://acme.example/20240630"')
 
 
-def ctx(cid, day, member=None, axis="us-gaap:StatementClassOfStockAxis"):
+def ctx(cid, day, member=None, axis="us-gaap:StatementClassOfStockAxis", cik="0000001234"):
     seg = (f'<xbrli:segment><xbrldi:explicitMember dimension="{axis}">{member}</xbrldi:explicitMember>'
            f'</xbrli:segment>') if member else ""
     return (f'<xbrli:context id="{cid}"><xbrli:entity><xbrli:identifier scheme="http://www.sec.gov/CIK">'
-            f'0000001234</xbrli:identifier>{seg}</xbrli:entity><xbrli:period><xbrli:instant>{day}'
+            f'{cik}</xbrli:identifier>{seg}</xbrli:entity><xbrli:period><xbrli:instant>{day}'
             f'</xbrli:instant></xbrli:period></xbrli:context>')
 
 
@@ -121,22 +121,28 @@ def test_balance_sheet_report_is_the_one_statement():
     fs = filing_summary(("Cover", "R1.htm", "Cover"), ("Condensed Consolidated Balance Sheets", "R2.htm", "Statements"),
                         ("Condensed Consolidated Balance Sheets (Parenthetical)", "R3.htm", "Statements"),
                         ("Condensed Consolidated Statements of Operations", "R4.htm", "Statements"))
-    assert balance_sheet_report(fs) == "R2.htm"
+    assert balance_sheet_report(fs) == {"html": "R2.htm", "name": "Condensed Consolidated Balance Sheets",
+                                        "consolidated": True}
 
 
 @pytest.mark.parametrize("reports", [
     [("Statements of Operations", "R4.htm", "Statements")],
-    [("Consolidated Balance Sheets", "R2.htm", "Statements"), ("Balance Sheets - Parent Company", "R9.htm", "Statements")]])
+    [("Consolidated Balance Sheets", "R2.htm", "Statements"), ("Consolidated Balance Sheets - Other", "R9.htm", "Statements")]])
 def test_no_or_two_balance_sheets_is_an_error(reports):
     with pytest.raises(DocError):
         balance_sheet_report(filing_summary(*reports))
 
 
-def rpage(dates, rows) -> bytes:
+LABELS = {"us-gaap_AccruedLiabilitiesCurrent": "Accrued liabilities"}
+
+
+def rpage(dates, rows, title="Consolidated Balance Sheets") -> bytes:
+    """rows: element names (with a plain label) or (element, label) pairs."""
     head = "".join(f'<th class="th"><div>{d}</div></th>' for d in dates)
-    body = "".join(f'<tr><td class="pl"><a onclick="showAr( this, \'defref_{e}\', window );">{e}</a></td>'
-                   + "<td>1</td>" * len(dates) + "</tr>" for e in rows)
-    return (f'<html><body><table class="report"><tr><th class="tl"><div>Balance Sheets - USD ($) $ in Thousands</div></th>'
+    pairs = [r if isinstance(r, tuple) else (r, LABELS.get(r, r.split("_", 1)[1])) for r in rows]
+    body = "".join(f'<tr><td class="pl"><a onclick="showAr( this, \'defref_{e}\', window );">{lab}</a></td>'
+                   + "<td>1</td>" * len(dates) + "</tr>" for e, lab in pairs)
+    return (f'<html><body><table class="report"><tr><th class="tl"><div>{title} - USD ($) $ in Thousands</div></th>'
             f'{head}</tr>{body}</table></body></html>').encode()
 
 
@@ -144,17 +150,18 @@ def test_r_page_gives_column_dates_and_row_elements_in_order():
     dates, rows = r_page(rpage(["Jun. 30, 2024", "Dec. 31, 2023"],
                                ["us-gaap_Assets", "us-gaap_AccountsPayableCurrent", "us-gaap_Liabilities"]))
     assert dates == [date(2024, 6, 30), date(2023, 12, 31)]
-    assert rows == ["us-gaap:Assets", "us-gaap:AccountsPayableCurrent", "us-gaap:Liabilities"]
+    assert rows == [("us-gaap:Assets", "Assets"), ("us-gaap:AccountsPayableCurrent", "AccountsPayableCurrent"),
+                    ("us-gaap:Liabilities", "Liabilities")]
 
 
 BS = date(2024, 6, 30)
 ASSETS = ["us-gaap_CashAndCashEquivalentsAtCarryingValue", "us-gaap_Assets"]
 
 
-def bs_case(rows, facts, dates=("Jun. 30, 2024",), contexts=None):
+def bs_case(rows, facts, dates=("Jun. 30, 2024",), contexts=None, cik=1234):
     page = rpage(list(dates), ASSETS + rows + ["us-gaap_StockholdersEquity", "us-gaap_LiabilitiesAndStockholdersEquity"])
     inst = parse_instance(instance(*(contexts or [ctx("c", "2024-06-30")]), *facts))
-    return zero_debt(*r_page(page), inst, BS)
+    return zero_debt(*r_page(page), inst, BS, cik)
 
 
 SIX = ["AccountsPayableCurrent", "AccruedLiabilitiesCurrent", "ContractWithCustomerLiabilityCurrent",
@@ -250,3 +257,67 @@ def test_repeated_element_keeps_quarantine():
     rows, facts = six_rows()
     rows.insert(1, f"us-gaap_{SIX[0]}")
     assert bs_case(rows, facts)["debt_zero"] is False
+
+
+# --- review round 6 ----------------------------------------------------------------------
+
+def test_c11_current_subtotal_without_children_keeps_quarantine():
+    rows = ["us-gaap_LiabilitiesCurrent", "us-gaap_Liabilities"]
+    facts = [usd("LiabilitiesCurrent", "c", 100, "INF"), usd("Liabilities", "c", 100, "INF")]
+    got = bs_case(rows, facts)
+    assert got["debt_zero"] is False and "LiabilitiesCurrent" in got["reason"]
+
+
+def test_c11_noncurrent_subtotal_without_children_keeps_quarantine():
+    rows = ["us-gaap_AccountsPayableCurrent", "us-gaap_LiabilitiesCurrent", "us-gaap_LiabilitiesNoncurrent",
+            "us-gaap_Liabilities"]
+    facts = [usd("AccountsPayableCurrent", "c", 60, "INF"), usd("LiabilitiesCurrent", "c", 60, "INF"),
+             usd("LiabilitiesNoncurrent", "c", 40, "INF"), usd("Liabilities", "c", 100, "INF")]
+    assert bs_case(rows, facts)["debt_zero"] is False
+
+
+def test_c11_partial_children_of_a_subtotal_keep_quarantine():
+    rows = ["us-gaap_AccountsPayableCurrent", "us-gaap_LiabilitiesCurrent", "us-gaap_Liabilities"]
+    facts = [usd("AccountsPayableCurrent", "c", 50, "INF"), usd("LiabilitiesCurrent", "c", 100, "INF"),
+             usd("Liabilities", "c", 100, "INF")]
+    assert bs_case(rows, facts)["debt_zero"] is False
+
+
+def test_c12_and_other_aggregate_on_an_allowed_tag_keeps_quarantine():
+    rows = [("us-gaap_AccruedLiabilitiesCurrent", "Accrued expenses and other"), "us-gaap_Liabilities"]
+    facts = [usd("AccruedLiabilitiesCurrent", "c", 100, "INF"), usd("Liabilities", "c", 100, "INF")]
+    got = bs_case(rows, facts)
+    assert got["debt_zero"] is False and "Accrued expenses and other" in got["reason"]
+
+
+def test_c12_specific_accrual_label_and_headings_pass():
+    rows = [("us-gaap_LiabilitiesCurrentAbstract", "Current liabilities:"),
+            ("us-gaap_AccruedLiabilitiesCurrent", "Accrued liabilities"), "us-gaap_Liabilities"]
+    facts = [usd("AccruedLiabilitiesCurrent", "c", 100, "INF"), usd("Liabilities", "c", 100, "INF")]
+    assert bs_case(rows, facts)["debt_zero"] is True
+
+
+def test_c12_real_cava_page_keeps_the_aggregate_label():
+    page = open("tests/fixtures/m11/cava-0001628280-26-070344-R2.htm", "rb").read()
+    dates, rows = r_page(page)
+    assert date(2026, 10, 4) in dates
+    assert ("us-gaap:AccruedLiabilitiesCurrent", "Accrued expenses and other") in rows
+    assert ("us-gaap:LiabilitiesCurrentAbstract", "Current liabilities:") in rows
+
+
+def test_c13_lone_parent_company_balance_sheet_is_never_proof():
+    got = balance_sheet_report(filing_summary(("Parent Company Balance Sheets", "parent.htm", "Statements")))
+    assert got["consolidated"] is False
+
+
+@pytest.mark.parametrize("name, ok", [("Consolidated Balance Sheets", True), ("Combined Balance Sheets", True),
+                                      ("Balance Sheets", False), ("Condensed Balance Sheets - Registrant", False),
+                                      ("Consolidated Balance Sheets - Guarantor Subsidiaries", False)])
+def test_c13_scope_must_be_positively_consolidated(name, ok):
+    assert balance_sheet_report(filing_summary((name, "R2.htm", "Statements")))["consolidated"] is ok
+
+
+def test_c13_another_entitys_undimensioned_context_is_not_used():
+    rows, facts = six_rows()
+    got = bs_case(rows, facts, contexts=[ctx("c", "2024-06-30", cik="0000009999")])
+    assert got["debt_zero"] is False
