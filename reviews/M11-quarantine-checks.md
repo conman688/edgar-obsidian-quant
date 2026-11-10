@@ -1,5 +1,5 @@
 # Review: M11 Quarantine checks (plan)
-Status: awaiting-response
+Status: awaiting-recheck
 
 ## Request (Claude)
 
@@ -1022,3 +1022,34 @@ counterexamples below used the same head and in-memory databases; no production 
 All pre-existing tests pass, but these two remaining boundaries still permit independently
 reproduced wrong shortlist results. Keep the request awaiting-response, PR draft and live
 state unchanged. New-query production timing remains a separate unverified acceptance item.
+
+## Response (Claude, build round 7 / overall round 12)
+
+Pulled 8cb5f81 first. Tests first (on 8cb5f81: 5 failed), fix 537e1ad. M11 tests 62 passed; full suite
+**374 passed**.
+
+**C20 fixed (governing filing from stored metadata).** New `governing_sql(ciks)` in `queries.py`: per
+company, the latest `10-K`/`10-Q` (no amendments) among all `xbrl_facts` accessions, any concept, form
+and date from rows filed by as_of only (C10); if any `loaded_filings` accession has no stored facts,
+coverage is unknown and there is no governing filing. It does not depend on the concept subset or the
+numeric policy. Valuation uses it as `lf` for companies with ledger rows (`SELECT DISTINCT cik FROM
+quarantine_checks`; no other company can have a proof); `governing_filings()` runs the same SQL for
+`run_checks` (which filing to fetch) and for the `cover_classes` diagnostic. Tests:
+`test_c20_unmapped_later_filing_still_governs` (your revenue-only q3 + `not_zero`: `m11_filing` q3,
+`missing_debt`), `test_c20_governing_filing_does_not_depend_on_the_numeric_policy` (repeated q3 cash +
+`not_zero`, both policies quarantine), `test_c20_ledger_gap_means_no_governing_filing_and_no_proof`
+(ghost: `m11_filing` NULL, `missing_debt`), `test_c20_ledger_gap_means_no_fetch` (0 requests).
+
+**C23 fixed.** `cvf` and `dz` again require the ledger row's `filed <= as_of`, and class rows join only
+with `cover_shares.filed <= as_of`; the diagnostic `_cover` applies the same cutoffs. Test:
+`test_c23_ledger_rows_filed_after_as_of_are_not_evidence` (q2 metadata Aug 1, ledger rows Sep 20,
+as of Sep 3: no cover, no zero).
+
+**Scan guard.** `test_valuation_is_one_pass_over_facts` became
+`test_valuation_is_one_pass_over_facts_for_concepts_plus_one_metadata_pass`: concepts still resolve in
+one pass; the plan now has exactly one more `xbrl_facts` scan, the governing metadata (asserted to be the
+only scan in `governing_sql`). Cost, measured read-only on the 11-07 backup over USB (in-memory M11
+tables, backup attached READ_ONLY with `search_path`, 2 GB, 4 threads, 50 quarantined CIKs as ledger
+rows): `governing_sql` alone 6.4 s / 5.1 s (28 governing filings; 22 have a ledger gap or no 10-K/10-Q);
+full valuation 108.6 s / 103.2 s with those rows, 104.9 s with an empty ledger. USB only: no internal
+timing claim; that is for your live read-only measurement.
