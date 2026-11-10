@@ -216,3 +216,63 @@ def test_vault_shows_the_quarantine_check_and_second_sync_writes_nothing(con, tm
     dash = Path(tmp_path, "Dashboard.md").read_text()
     assert "issue_checks" in dash
     assert sum(sync_vault(con, tmp_path, AS_OF).written.values()) == 0
+
+
+# --- review round 4 (build round 1) ------------------------------------------------
+
+def stale_share_company():
+    tags = cheap_company(shares_tag=(GAAP, "CommonStockSharesOutstanding"))
+    tags[(GAAP, "CommonStockSharesOutstanding", "shares")] = [inst("2023-12-31", 1_000_000, "2024-02-15", "k")]
+    return tags
+
+
+def test_c7_ledger_gap_makes_share_check_unknown(con):
+    quarantined(con, CIK, "MIR", stale_share_company())
+    con.execute("INSERT INTO loaded_filings (cik, accn) VALUES (?, 'ghost')", [CIK])
+    c = checks(rows_by_ticker(con)["MIR"])["stale_shares"]
+    assert c["reason"] == "unknown" and "ghost" in c["message"]
+    assert "latest" not in c["message"]
+
+
+def test_c7_ledger_gap_with_a_dei_count_is_unknown_too(con):
+    tags = stale_share_company()
+    tags[(DEI, "EntityCommonStockSharesOutstanding", "shares")] = [inst("2023-12-31", 1_000_000, "2024-02-15", "k")]
+    quarantined(con, CIK, "MIR", tags)
+    con.execute("INSERT INTO loaded_filings (cik, accn) VALUES (?, 'ghost')", [CIK])
+    r = rows_by_ticker(con)["MIR"]
+    assert "stale_shares" in r["issues"]
+    c = checks(r)["stale_shares"]
+    assert c["reason"] == "unknown" and "ghost" in c["message"]
+
+
+def test_c8_debt_candidate_reported_long_before_its_period_is_ignored(con):
+    tags = cheap_company(debt=False)
+    tags[(GAAP, "NotesPayable", "USD")] = [inst("2024-06-30", 9_000_000, "2024-01-01", "q2")]
+    quarantined(con, CIK, "ACME", tags)
+    c = checks(rows_by_ticker(con)["ACME"])["missing_debt"]
+    assert c["reason"] == "none_found" and c["candidates"] == []
+
+
+def test_c8_debt_candidate_at_the_seven_day_boundary_is_shown(con):
+    tags = cheap_company(debt=False)
+    tags[(GAAP, "NotesPayable", "USD")] = [inst("2024-06-30", 9_000_000, "2024-06-23", "q2")]
+    quarantined(con, CIK, "ACME", tags)
+    c = checks(rows_by_ticker(con)["ACME"])["missing_debt"]
+    assert c["reason"] == "tag_candidates" and [x["tag"] for x in c["candidates"]] == ["NotesPayable"]
+
+
+def test_c8_future_dated_dei_count_does_not_hide_missing_cover(con):
+    tags = stale_share_company()
+    tags[(DEI, "EntityCommonStockSharesOutstanding", "shares")] = [inst("2034-06-30", 1_000_000)]   # filed 2024-08-01
+    quarantined(con, CIK, "MIR", tags)
+    r = rows_by_ticker(con)["MIR"]
+    assert r["shares_period_end"] == date(2023, 12, 31)          # the screen ignores it
+    assert checks(r)["stale_shares"]["reason"] == "no_cover_count"
+
+
+def test_c8_valid_dei_count_at_the_boundary_is_used_by_the_screen(con):
+    tags = stale_share_company()
+    tags[(DEI, "EntityCommonStockSharesOutstanding", "shares")] = [inst("2024-08-08", 1_000_000)]  # filed + 7 days
+    quarantined(con, CIK, "MIR", tags)
+    r = rows_by_ticker(con)["MIR"]
+    assert "stale_shares" not in r["issues"] and "missing_shares" not in r["issues"]
