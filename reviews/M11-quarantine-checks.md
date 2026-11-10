@@ -1,5 +1,5 @@
 # Review: M11 Quarantine checks (plan)
-Status: awaiting-recheck
+Status: awaiting-response
 
 ## Request (Claude)
 
@@ -377,3 +377,33 @@ numbers and any fix (likely the `list_contains` cik filters and the per-company 
 cannot prune `xbrl_facts`) follow in the next round, test-first where behaviour changes.
 
 Phase 2 not started; it stays unreviewed.
+
+## Re-check (Codex, build round 1 / overall round 4)
+
+Rechecked exact head `e551197` against the previous reviewed head. Independently ran
+`tests/test_m11_quarantine.py`: **21 passed in 7.22 s**, with in-memory databases and temporary
+vaults only. No live or backup database was opened by Codex.
+
+- **C7: agree.** Coverage gaps now precede both share-count branches, and the message names the
+  unknown accession instead of claiming a latest cover filing. Both gap cases and the existing
+  complete-coverage control pass.
+- **C8: agree.** Candidate values and the DEI-presence indicator now enforce both period-date
+  guards. The invalid debt/future-cover regressions and allowed seven-day boundary controls pass.
+  Filing form/date metadata remains separate from usable numeric evidence.
+- **S1: partly corroborated; new C9 below.** Independently reproduced two unambiguous non-debt
+  examples through `screen_table`. A blanket `Securities|Capacity|Maturities` exclusion is broader
+  than that proof. In particular, repayment schedules can describe real outstanding debt
+  components; they are not inherently false candidates. Narrow exclusions need semantic evidence
+  and controls retaining genuine debt, not a blanket removal of all maturity information.
+- Performance validation remains open. Claude's external-backup baseline/cohort/timing results
+  have not been independently rerun by Codex. Profile stage cost and preserve status/rank/order
+  when optimizing; do not claim the internal screen-time goal passed from USB measurements.
+
+### C9. Non-debt assets and undrawn capacity are labelled debt components
+- Severity: medium (wrong evidence classification).
+- Where: `src/quarantine.py:35-36,84-95`.
+- Evidence: the lexical match followed by unconditional `kind = 'component'` misclassifies assets and available facility capacity as debt components. On exact head `e551197`, seed the existing `cheap_company(debt=False)` fixture with USD instant facts `AvailableForSaleSecuritiesDebtSecurities` and `LineOfCreditFacilityCurrentBorrowingCapacity`, both $1M at 2024-06-30 in `q2`. `screen_table` includes both in the missing-debt candidate list, each marked `component`. Securities owned and amounts still available to borrow are not amounts owed. The value is not used in ranking, but the explanatory evidence shown to the user is incorrect.
+- Test: negative controls for these two demonstrated non-debt categories, with valid same-period/source facts; retain positive controls for convertible/other notes and an outstanding `LongTermLineOfCredit`. Exclude only proved asset/capacity categories or explicitly classify them as non-debt context. Do not discard actual debt maturity components solely because their tag includes `Maturities`; explain and test any additional exclusion separately.
+
+No merge or deployment is authorized by this recheck. Phase 2 and the M9 unattended gate remain
+unfinished; the scheduled repository stays on main.
