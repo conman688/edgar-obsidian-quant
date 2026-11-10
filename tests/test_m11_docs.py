@@ -71,7 +71,7 @@ def test_cover_classes_per_member_with_symbols():
     doc = instance(ctx("e", "2024-07-25"), ctx("a", "2024-07-25", "us-gaap:CommonClassAMember"),
                    ctx("b", "2024-07-25", "us-gaap:CommonClassBMember"),
                    count("a", 281792507), count("b", 70009005), symbol("a", "TSN"))
-    got = cover_classes(parse_instance(doc))
+    got = cover_classes(parse_instance(doc), 1234)
     assert got["conflict"] is False
     assert got["classes"] == [
         {"member": "us-gaap:CommonClassAMember", "shares": 281792507.0, "symbol": "TSN", "dei_date": date(2024, 7, 25)},
@@ -82,7 +82,7 @@ def test_cover_classes_per_member_with_symbols():
 def test_entity_level_symbol_is_counted_once():
     doc = instance(ctx("e", "2024-07-25"), ctx("a", "2024-07-25", "us-gaap:CommonClassAMember"),
                    count("a", 1_000_000), symbol("e", "ACME"), symbol("a", "ACME"))
-    got = cover_classes(parse_instance(doc))
+    got = cover_classes(parse_instance(doc), 1234)
     assert got["symbols"] == ["ACME"] and got["classes"][0]["symbol"] == "ACME"
 
 
@@ -90,21 +90,21 @@ def test_disagreeing_contexts_for_one_class_are_a_conflict():
     doc = instance(ctx("a1", "2024-07-25", "us-gaap:CommonClassAMember"),
                    ctx("a2", "2024-07-26", "us-gaap:CommonClassAMember"),
                    count("a1", 1_000_000), count("a2", 1_100_000))
-    assert cover_classes(parse_instance(doc))["conflict"] is True
+    assert cover_classes(parse_instance(doc), 1234)["conflict"] is True
 
 
 def test_agreeing_duplicate_contexts_are_one_class():
     doc = instance(ctx("a1", "2024-07-25", "us-gaap:CommonClassAMember"),
                    ctx("a2", "2024-07-25", "us-gaap:CommonClassAMember"),
                    count("a1", 1_000_000), count("a2", 1_000_000))
-    got = cover_classes(parse_instance(doc))
+    got = cover_classes(parse_instance(doc), 1234)
     assert got["conflict"] is False and len(got["classes"]) == 1
 
 
 def test_counts_on_other_axes_are_ignored():
     doc = instance(ctx("s", "2024-07-25", "acme:SegmentMember", axis="us-gaap:StatementBusinessSegmentsAxis"),
                    count("s", 5))
-    assert cover_classes(parse_instance(doc))["classes"] == []
+    assert cover_classes(parse_instance(doc), 1234)["classes"] == []
 
 
 def test_malformed_instance_is_an_error():
@@ -339,7 +339,7 @@ def nil_count(cid):
 def test_c14_nil_class_count_is_unusable_never_zero():
     doc = instance(ctx("a", "2024-07-25", "us-gaap:CommonClassAMember"), ctx("b", "2024-07-25", "us-gaap:CommonClassBMember"),
                    nil_count("a"), count("b", 1_000_000), symbol("b", "ACME"))
-    got = cover_classes(parse_instance(doc))
+    got = cover_classes(parse_instance(doc), 1234)
     assert got["conflict"] is True
     assert all(c["shares"] != 0 for c in got["classes"]) and "us-gaap:CommonClassAMember" not in [c["member"] for c in got["classes"]]
 
@@ -347,7 +347,7 @@ def test_c14_nil_class_count_is_unusable_never_zero():
 def test_c14_non_numeric_class_count_is_a_doc_error():
     doc = instance(ctx("a", "2024-07-25", "us-gaap:CommonClassAMember"), count("a", "lots"))
     with pytest.raises(DocError):
-        cover_classes(parse_instance(doc))
+        cover_classes(parse_instance(doc), 1234)
 
 
 def test_c14_bad_context_date_is_a_doc_error():

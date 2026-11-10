@@ -12,6 +12,7 @@ on the next run. A document that reads fine but proves nothing is a normal resul
 """
 from __future__ import annotations
 
+import io
 import json
 import re
 import xml.etree.ElementTree as ET
@@ -104,68 +105,94 @@ def instance_name(index_json: bytes) -> str:
     return hits[0]
 
 
-def _qname(tag: str) -> str:
-    """'{ns}Local' -> 'prefix:Local'; extension namespaces keep a prefix from their URI."""
-    if not tag.startswith("{"):
-        return tag
-    ns, local = tag[1:].split("}", 1)
-    for uri, p in _PREFIX:
-        if ns.startswith(uri):
+def _canonical(uri: str, local: str) -> str:
+    """An expanded name as 'us-gaap:X' / 'dei:X' for the standard taxonomies, else '{uri}X'."""
+    for base, p in _PREFIX:
+        if uri.startswith(base):
             return f"{p}:{local}"
-    return f"ext:{local}" if not ns.startswith("http://www.xbrl.org/") else tag
+    return f"{{{uri}}}{local}"
+
+
+def _resolve(text: str | None, scope: dict[str, str]) -> tuple[str, str] | None:
+    """A QName value (attribute or element text) resolved against its element's in-scope
+    namespaces (C17): the prefix as written means nothing on its own."""
+    if not text:
+        return None
+    prefix, local = text.strip().split(":", 1) if ":" in text else ("", text.strip())
+    uri = scope.get(prefix)
+    return (uri, local) if uri else None
 
 
 def parse_instance(xml: bytes) -> Instance:
+    """Contexts (date, dimensions as expanded names, entity identifier), units (ISO 4217 code or
+    None) and top-level facts. QName values are resolved with each element's in-scope namespace
+    declarations, so aliases, local declarations and rebinding are handled."""
+    scopes: dict[ET.Element, dict[str, str]] = {}
+    stack: list[dict[str, str]] = [{}]
+    pending: dict[str, str] = {}
+    root = None
     try:
-        root = ET.fromstring(xml)
+        for ev, obj in ET.iterparse(io.BytesIO(xml), events=("start-ns", "start", "end")):
+            if ev == "start-ns":
+                pending[obj[0]] = obj[1]
+            elif ev == "start":
+                scope = {**stack[-1], **pending} if pending else stack[-1]
+                pending = {}
+                stack.append(scope)
+                scopes[obj] = scope
+                root = obj if root is None else root
+            else:
+                stack.pop()
     except ET.ParseError as e:
         raise DocError(f"malformed instance XML: {e}") from None
+    if root is None:
+        raise DocError("empty instance XML")
     inst = Instance()
-    # Extension prefixes as the filer declared them (ElementTree drops prefixes).
-    ext: dict[str, str] = {}                       # namespace URI -> prefix as declared
-    for m in re.finditer(rb'xmlns:([\w.-]+)="([^"]+)"', xml[:200_000]):
-        ext[m.group(2).decode()] = m.group(1).decode()
-    prefix_uri = {p: u for u, p in ext.items()}
     for u in root.iter(f"{XBRLI}unit"):
         measures = u.findall(f"{XBRLI}measure")    # direct children only: a divide unit has none
-        code = None
-        if len(measures) == 1 and measures[0].text and ":" in measures[0].text:
-            p, local = measures[0].text.strip().split(":", 1)
-            if prefix_uri.get(p) == ISO4217:
-                code = local.upper()
-        inst.units[u.get("id")] = code
+        r = _resolve(measures[0].text, scopes[measures[0]]) if len(measures) == 1 else None
+        inst.units[u.get("id")] = r[1].upper() if r and r[0] == ISO4217 else None
     for c in root.iter(f"{XBRLI}context"):
         instant = c.find(f"{XBRLI}period/{XBRLI}instant")
-        dims = tuple(sorted((m.get("dimension"), (m.text or "").strip())
-                            for m in c.iter(f"{XBRLDI}explicitMember")))
-        typed = any(True for _ in c.iter(f"{XBRLDI}typedMember"))
-        if typed:
-            dims += (("typed", "typed"),)
+        dims = []
+        for m in c.iter(f"{XBRLDI}explicitMember"):
+            axis, member = _resolve(m.get("dimension"), scopes[m]), _resolve(m.text, scopes[m])
+            dims.append((_canonical(*axis) if axis else f"unresolved:{m.get('dimension')}",
+                         _canonical(*member) if member else f"unresolved:{(m.text or '').strip()}"))
+        if any(True for _ in c.iter(f"{XBRLDI}typedMember")):
+            dims.append(("typed", "typed"))
         try:
             day = date.fromisoformat(instant.text.strip()) if instant is not None and instant.text else None
         except ValueError as e:
             raise DocError(f"bad context date in instance: {e}") from None
         ident = c.find(f"{XBRLI}entity/{XBRLI}identifier")
-        inst.contexts[c.get("id")] = (day, dims, (ident.text or "").strip() if ident is not None else "")
+        inst.contexts[c.get("id")] = (day, tuple(sorted(dims)), (ident.text or "").strip() if ident is not None else "")
     for el in root:
         ctx = el.get("contextRef")
         if ctx is None or not el.tag.startswith("{"):
             continue
         ns, local = el.tag[1:].split("}", 1)
-        name = _qname(el.tag)
-        if name.startswith("ext:"):
-            name = f"{ext.get(ns, 'ext')}:{local}"
+        name = _canonical(ns, local)
+        if name.startswith("{"):                   # extension: show it with the filer's own prefix
+            p = next((k for k, v in scopes[el].items() if v == ns and k), None)
+            name = f"{p}:{local}" if p else name
         inst.facts.append({"name": name, "context": ctx, "value": (el.text or "").strip(),
                            "decimals": el.get("decimals"), "nil": el.get(XSI_NIL) == "true",
                            "unit": el.get("unitRef")})
     return inst
 
 
-def cover_classes(inst: Instance) -> dict:
-    """Cover counts per share-class member, the class's own symbol, and every symbol tagged.
+def _own(inst: Instance, ctx: str, cik: int) -> bool:
+    ident = inst.contexts.get(ctx, (None, (), ""))[2]
+    return ident.isdigit() and int(ident) == cik
 
-    conflict: two contexts for one class disagree (count or date). Facts on any axis other than
-    the share-class axis, alone, are not a class.
+
+def cover_classes(inst: Instance, cik: int) -> dict:
+    """The filer's cover counts per share-class member, each class's own symbol, and every symbol
+    the filer tagged. Only contexts whose entity identifier is `cik` count (C18).
+
+    conflict: two contexts for one class disagree (count or date), a class has two symbols, or a
+    class count is nil. Facts on any axis other than the share-class axis, alone, are not a class.
     """
     def member(ctx: str) -> str | None:
         dims = inst.contexts.get(ctx, (None, (), ""))[1]
@@ -175,6 +202,8 @@ def cover_classes(inst: Instance) -> dict:
     syms: dict[str | None, set] = {}
     nil = False
     for f in inst.facts:
+        if not _own(inst, f["context"], cik):
+            continue
         if f["name"] == COVER_COUNT:
             m = member(f["context"])
             if m and f["nil"]:
@@ -298,8 +327,7 @@ def zero_debt(dates: list[date], rows: list[tuple[str, str]], inst: Instance, co
         return no("aggregate rows: " + ", ".join(aggregates))
 
     # Only the reporting entity's own undimensioned contexts (C13).
-    plain = {c for c, (d, dims, ident) in inst.contexts.items()
-             if d == column and not dims and ident.isdigit() and int(ident) == cik}
+    plain = {c for c, (d, dims, _) in inst.contexts.items() if d == column and not dims and _own(inst, c, cik)}
     vals: dict[str, tuple[float, float | None]] = {}
     for f in inst.facts:
         if f["context"] in plain and (f["name"] in liab or f["name"] == TOTAL):

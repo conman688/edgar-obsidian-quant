@@ -103,7 +103,7 @@ def run_checks(con: duckdb.DuckDBPyConnection, sec, rows: list[dict], as_of: dat
             try:
                 inst = parse_instance(get(base + instance_name(get(base + "index.json"))))
                 if fam == "m11_cover":
-                    cov = cover_classes(inst)
+                    cov = cover_classes(inst, cik)
                     if not cov["classes"]:
                         _write(con, cik, filing, fam, "not_found", message="no share-class cover counts in the instance",
                                detail={"symbols": cov["symbols"]})
