@@ -13,7 +13,9 @@ from src.ingestion.quarantine_docs import (DocError, balance_sheet_report, cover
 
 NS = ('xmlns:xbrli="http://www.xbrl.org/2003/instance" xmlns:dei="http://xbrl.sec.gov/dei/2024" '
       'xmlns:us-gaap="http://fasb.org/us-gaap/2024" xmlns:xbrldi="http://xbrl.org/2006/xbrldi" '
-      'xmlns:acme="http://acme.example/20240630"')
+      'xmlns:acme="http://acme.example/20240630" xmlns:iso4217="http://www.xbrl.org/2003/iso4217"')
+UNITS = ('<xbrli:unit id="usd"><xbrli:measure>iso4217:USD</xbrli:measure></xbrli:unit>'
+         '<xbrli:unit id="shares"><xbrli:measure>xbrli:shares</xbrli:measure></xbrli:unit>')
 
 
 def ctx(cid, day, member=None, axis="us-gaap:StatementClassOfStockAxis", cik="0000001234"):
@@ -24,8 +26,8 @@ def ctx(cid, day, member=None, axis="us-gaap:StatementClassOfStockAxis", cik="00
             f'</xbrli:instant></xbrli:period></xbrli:context>')
 
 
-def instance(*parts) -> bytes:
-    return f'<?xml version="1.0"?><xbrli:xbrl {NS}>{"".join(parts)}</xbrli:xbrl>'.encode()
+def instance(*parts, units=UNITS) -> bytes:
+    return f'<?xml version="1.0"?><xbrli:xbrl {NS}>{units}{"".join(parts)}</xbrli:xbrl>'.encode()
 
 
 def count(cid, v, decimals="INF"):
@@ -36,9 +38,10 @@ def symbol(cid, s):
     return f'<dei:TradingSymbol contextRef="{cid}">{s}</dei:TradingSymbol>'
 
 
-def usd(tag, cid, v, decimals="-3", prefix="us-gaap"):
+def usd(tag, cid, v, decimals="-3", prefix="us-gaap", unit="usd"):
     d = f' decimals="{decimals}"' if decimals is not None else ""
-    return f'<{prefix}:{tag} contextRef="{cid}" unitRef="usd"{d}>{v}</{prefix}:{tag}>'
+    u = f' unitRef="{unit}"' if unit is not None else ""
+    return f'<{prefix}:{tag} contextRef="{cid}"{u}{d}>{v}</{prefix}:{tag}>'
 
 
 # --- index ------------------------------------------------------------------------
@@ -158,9 +161,9 @@ BS = date(2024, 6, 30)
 ASSETS = ["us-gaap_CashAndCashEquivalentsAtCarryingValue", "us-gaap_Assets"]
 
 
-def bs_case(rows, facts, dates=("Jun. 30, 2024",), contexts=None, cik=1234):
+def bs_case(rows, facts, dates=("Jun. 30, 2024",), contexts=None, cik=1234, units=UNITS):
     page = rpage(list(dates), ASSETS + rows + ["us-gaap_StockholdersEquity", "us-gaap_LiabilitiesAndStockholdersEquity"])
-    inst = parse_instance(instance(*(contexts or [ctx("c", "2024-06-30")]), *facts))
+    inst = parse_instance(instance(*(contexts or [ctx("c", "2024-06-30")]), *facts, units=units))
     return zero_debt(*r_page(page), inst, BS, cik)
 
 
@@ -400,3 +403,60 @@ def test_c15_two_tags_for_one_concept_keep_quarantine():
     facts = [usd("DeferredRevenueCurrent", "c", 50, "INF"), usd("ContractWithCustomerLiabilityCurrent", "c", 50, "INF"),
              usd("Liabilities", "c", 100, "INF")]
     assert bs_case(rows, facts)["debt_zero"] is False
+
+
+# --- review round 8 ----------------------------------------------------------------------
+
+@pytest.mark.parametrize("broad, part", [
+    ("AccruedLiabilitiesCurrent", "EmployeeRelatedLiabilitiesCurrent"),      # Codex's case
+    ("AccruedLiabilitiesCurrent", "AccruedSalariesCurrent"),
+    ("AccruedLiabilitiesCurrent", "TaxesPayableCurrent"),
+    ("AccruedLiabilitiesCurrent", "AccruedIncomeTaxesCurrent"),
+    ("AccruedLiabilitiesCurrent", "DividendsPayableCurrent"),
+    ("AccruedLiabilitiesNoncurrent", "AccruedIncomeTaxesNoncurrent"),
+    ("AccountsPayableAndAccruedLiabilitiesCurrent", "TaxesPayableCurrent")])
+def test_c15_broad_accrual_beside_a_possible_component_keeps_quarantine(broad, part):
+    rows = [f"us-gaap_{part}", f"us-gaap_{broad}", "us-gaap_Liabilities"]
+    facts = [usd(part, "c", 100, "INF"), usd(broad, "c", 100, "INF"), usd("Liabilities", "c", 200, "INF")]
+    got = bs_case(rows, facts)
+    assert got["debt_zero"] is False and "ambiguous" in got["reason"]
+
+
+def eur_units():
+    return UNITS + '<xbrli:unit id="eur"><xbrli:measure>iso4217:EUR</xbrli:measure></xbrli:unit>'
+
+
+def test_c16_mixed_currencies_keep_quarantine():
+    rows = ["us-gaap_AccountsPayableCurrent", "us-gaap_Liabilities"]
+    facts = [usd("AccountsPayableCurrent", "c", 100, "INF", unit="eur"), usd("Liabilities", "c", 100, "INF")]
+    got = bs_case(rows, facts, units=eur_units())
+    assert got["debt_zero"] is False and "unit" in got["reason"]
+
+
+def test_c16_all_eur_is_not_a_usd_proof():
+    rows = ["us-gaap_AccountsPayableCurrent", "us-gaap_Liabilities"]
+    facts = [usd("AccountsPayableCurrent", "c", 100, "INF", unit="eur"), usd("Liabilities", "c", 100, "INF", unit="eur")]
+    assert bs_case(rows, facts, units=eur_units())["debt_zero"] is False
+
+
+@pytest.mark.parametrize("unit", [None, "undefined", "shares"])
+def test_c16_missing_unresolved_or_nonmonetary_unit_keeps_quarantine(unit):
+    rows = ["us-gaap_AccountsPayableCurrent", "us-gaap_Liabilities"]
+    facts = [usd("AccountsPayableCurrent", "c", 100, "INF", unit=unit), usd("Liabilities", "c", 100, "INF")]
+    assert bs_case(rows, facts)["debt_zero"] is False
+
+
+def test_c16_divide_unit_keeps_quarantine():
+    units = UNITS + ('<xbrli:unit id="usdps"><xbrli:divide><xbrli:unitNumerator><xbrli:measure>iso4217:USD'
+                     '</xbrli:measure></xbrli:unitNumerator><xbrli:unitDenominator><xbrli:measure>xbrli:shares'
+                     '</xbrli:measure></xbrli:unitDenominator></xbrli:divide></xbrli:unit>')
+    rows = ["us-gaap_AccountsPayableCurrent", "us-gaap_Liabilities"]
+    facts = [usd("AccountsPayableCurrent", "c", 100, "INF", unit="usdps"), usd("Liabilities", "c", 100, "INF")]
+    assert bs_case(rows, facts, units=units)["debt_zero"] is False
+
+
+def test_c16_distinct_unit_ids_that_are_both_usd_pass():
+    units = UNITS + '<xbrli:unit id="U_USD"><xbrli:measure>iso4217:USD</xbrli:measure></xbrli:unit>'
+    rows = ["us-gaap_AccountsPayableCurrent", "us-gaap_Liabilities"]
+    facts = [usd("AccountsPayableCurrent", "c", 100, "INF", unit="U_USD"), usd("Liabilities", "c", 100, "INF")]
+    assert bs_case(rows, facts, units=units)["debt_zero"] is True
