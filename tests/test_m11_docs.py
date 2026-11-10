@@ -460,3 +460,92 @@ def test_c16_distinct_unit_ids_that_are_both_usd_pass():
     rows = ["us-gaap_AccountsPayableCurrent", "us-gaap_Liabilities"]
     facts = [usd("AccountsPayableCurrent", "c", 100, "INF", unit="U_USD"), usd("Liabilities", "c", 100, "INF")]
     assert bs_case(rows, facts, units=units)["debt_zero"] is True
+
+
+# --- review round 9 ----------------------------------------------------------------------
+
+G = 'xmlns:g="http://fasb.org/us-gaap/2024"'
+
+
+def ctx_raw(cid, day, axis, member, decl="", cik="0000001234"):
+    return (f'<xbrli:context id="{cid}" {decl}><xbrli:entity><xbrli:identifier scheme="http://www.sec.gov/CIK">{cik}'
+            f'</xbrli:identifier><xbrli:segment><xbrldi:explicitMember dimension="{axis}">{member}</xbrldi:explicitMember>'
+            f'</xbrli:segment></xbrli:entity><xbrli:period><xbrli:instant>{day}</xbrli:instant></xbrli:period></xbrli:context>')
+
+
+def two_classes(b_ctx):
+    return instance(ctx("a", "2024-07-25", "us-gaap:CommonClassAMember"), b_ctx,
+                    count("a", 1_000_000), count("b", 500_000), symbol("a", "ACME"))
+
+
+BASE_CLASSES = [("us-gaap:CommonClassAMember", 1_000_000.0), ("us-gaap:CommonClassBMember", 500_000.0)]
+
+
+def members(doc, cik=1234):
+    got = cover_classes(parse_instance(doc), cik)
+    return [(c["member"], c["shares"]) for c in got["classes"]], got
+
+
+def test_c17_alias_prefix_declared_locally_keeps_the_class():
+    doc = two_classes(ctx_raw("b", "2024-07-25", "g:StatementClassOfStockAxis", "g:CommonClassBMember", decl=G))
+    got, full = members(doc)
+    assert got == BASE_CLASSES and full["conflict"] is False
+
+
+def test_c17_alias_prefix_declared_on_the_root_keeps_the_class():
+    doc = two_classes(ctx_raw("b", "2024-07-25", "g:StatementClassOfStockAxis", "g:CommonClassBMember"))
+    doc = doc.replace(b"<xbrli:xbrl ", b"<xbrli:xbrl " + G.encode() + b" ", 1)
+    assert members(doc)[0] == BASE_CLASSES
+
+
+def test_c17_alias_for_both_classes_is_one_class_set():
+    a = ctx_raw("a", "2024-07-25", "g:StatementClassOfStockAxis", "g:CommonClassAMember", decl=G)
+    b = ctx_raw("b", "2024-07-25", "g:StatementClassOfStockAxis", "g:CommonClassBMember", decl=G)
+    doc = instance(a, b, count("a", 1_000_000), count("b", 500_000), symbol("a", "ACME"))
+    assert members(doc)[0] == BASE_CLASSES
+
+
+def test_c17_aliased_duplicate_context_still_detects_a_conflict():
+    a2 = ctx_raw("a2", "2024-07-25", "g:StatementClassOfStockAxis", "g:CommonClassAMember", decl=G)
+    doc = instance(ctx("a", "2024-07-25", "us-gaap:CommonClassAMember"), a2, count("a", 1_000_000), count("a2", 900_000))
+    assert members(doc)[1]["conflict"] is True
+
+
+def test_c17_rebound_prefix_is_not_the_class_axis():
+    # 'us-gaap' bound locally to another namespace: not the us-gaap share-class axis.
+    b = ctx_raw("b", "2024-07-25", "us-gaap:StatementClassOfStockAxis", "us-gaap:CommonClassBMember",
+                decl='xmlns:us-gaap="http://other.example/2024"')
+    assert members(two_classes(b))[0] == BASE_CLASSES[:1]
+
+
+def test_c17_business_segment_axis_stays_ignored_under_an_alias():
+    b = ctx_raw("b", "2024-07-25", "g:StatementBusinessSegmentsAxis", "g:CommonClassBMember", decl=G)
+    assert members(two_classes(b))[0] == BASE_CLASSES[:1]
+
+
+def test_c17_iso_currency_alias_and_rebinding():
+    units = UNITS + ('<xbrli:unit id="u2" xmlns:cur="http://www.xbrl.org/2003/iso4217"><xbrli:measure>cur:USD'
+                     '</xbrli:measure></xbrli:unit>'
+                     '<xbrli:unit id="fake" xmlns:iso4217="http://not-iso.example/"><xbrli:measure>iso4217:USD'
+                     '</xbrli:measure></xbrli:unit>')
+    rows = ["us-gaap_AccountsPayableCurrent", "us-gaap_Liabilities"]
+    ok = [usd("AccountsPayableCurrent", "c", 100, "INF", unit="u2"), usd("Liabilities", "c", 100, "INF")]
+    assert bs_case(rows, ok, units=units)["debt_zero"] is True
+    bad = [usd("AccountsPayableCurrent", "c", 100, "INF", unit="fake"), usd("Liabilities", "c", 100, "INF")]
+    assert bs_case(rows, bad, units=units)["debt_zero"] is False
+
+
+def test_c18_other_entity_cover_facts_are_not_the_filers():
+    doc = instance(ctx("a", "2024-07-25", "us-gaap:CommonClassAMember", cik="0000009999"),
+                   count("a", 1_000_000), symbol("a", "ACME"))
+    got, full = members(doc)
+    assert got == [] and full["symbols"] == []
+
+
+def test_c18_mixed_entities_do_not_contaminate_or_conflict():
+    doc = instance(ctx("a", "2024-07-25", "us-gaap:CommonClassAMember"),
+                   ctx("x", "2024-07-25", "us-gaap:CommonClassAMember", cik="0000009999"),
+                   count("a", 1_000_000), count("x", 7_000_000), symbol("a", "ACME"), symbol("x", "OTHR"))
+    got, full = members(doc)
+    assert got == [("us-gaap:CommonClassAMember", 1_000_000.0)]
+    assert full["conflict"] is False and full["symbols"] == ["ACME"]

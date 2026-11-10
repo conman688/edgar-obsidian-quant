@@ -201,3 +201,17 @@ def test_c14_nil_cover_count_does_not_stop_the_balance_sheet_family(con):
     assert got["m11_balance_sheet"] == ("ok", "debt_zero")
     assert got["m11_cover"][1] != "classes"                          # unusable, never a resolved count
     assert con.execute("SELECT count(*) FROM cover_shares WHERE shares = 0").fetchone()[0] == 0
+
+
+def test_c18_other_entity_cover_contexts_give_no_cover_evidence(con):
+    both_families(con)
+    docs = good_docs()
+    docs[URLS["instance"]] = (docs[URLS["instance"]]
+                              .replace(b'<xbrli:context id="a"><xbrli:entity><xbrli:identifier scheme="http://www.sec.gov/CIK">0000001234',
+                                       b'<xbrli:context id="a"><xbrli:entity><xbrli:identifier scheme="http://www.sec.gov/CIK">0000009999')
+                              .replace(b'<xbrli:context id="b"><xbrli:entity><xbrli:identifier scheme="http://www.sec.gov/CIK">0000001234',
+                                       b'<xbrli:context id="b"><xbrli:entity><xbrli:identifier scheme="http://www.sec.gov/CIK">0000009999'))
+    run_checks(con, FakeSec(docs), rows(con), AS_OF)
+    got = ledger(con)
+    assert got["m11_cover"][0] == "not_found" and got["m11_balance_sheet"] == ("ok", "debt_zero")
+    assert con.execute("SELECT count(*) FROM cover_shares").fetchone()[0] == 0
