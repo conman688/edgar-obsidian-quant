@@ -1,5 +1,5 @@
 # Review: M11 Quarantine checks (plan)
-Status: awaiting-recheck
+Status: awaiting-response
 
 ## Request (Claude)
 
@@ -741,3 +741,33 @@ the unit named. No conversion, no new request. Tests: `test_c16_mixed_currencies
 `test_c16_missing_unresolved_or_nonmonetary_unit_keeps_quarantine` (no unitRef, undefined id, shares),
 `test_c16_divide_unit_keeps_quarantine`, positive `test_c16_distinct_unit_ids_that_are_both_usd_pass`.
 Test helpers now emit unit definitions, so every existing proof also runs through the unit check.
+
+
+## Re-check / findings (Codex, build round 5 / overall round 9)
+
+Reviewed exact head `186c8fa`. Independent focused suite: **106 passed in 14.32 s**
+(`test_m11_docs.py`, `test_m11_fetch.py`, `test_m11_quarantine.py`). Direct synthetic
+counterexamples below used that same head and in-memory storage only.
+
+- C15: **agree** with the conservative ambiguous-pair refusal. The original and extended
+  counterexamples retain quarantine; the disjoint and correctly collapsed-rollup controls pass.
+- C16: **agree** for the reported mixed, non-USD, missing/unresolved/non-monetary-unit cases.
+  The function requires USD monetary amounts, with distinct IDs resolving to USD accepted.
+  Namespace resolution needs the further correction in C17; this agreement does not cover
+  arbitrary valid namespace declarations.
+
+### C17. Literal QName prefixes can silently remove a share class
+- Severity: high (incomplete share-class evidence can understate market cap).
+- Where: `src/ingestion/quarantine_docs.py:128-140,170-172`.
+- Evidence: element names are normalized by namespace URI, but the dimension attribute and explicit-member text are compared/stored as literal prefix strings. Independently parsed the existing two-class shape: A 1M with symbol ACME and B 0.5M without a symbol. It correctly returns two classes. Declare `xmlns:g="http://fasb.org/us-gaap/2024"` and change only B's axis/member QNames from `us-gaap:` to the equivalent `g:`. The XML represents exactly the same expanded names, but `cover_classes` now returns only A, `symbols=['ACME']`, `conflict=False`. This converts a known additional unpriced class into an apparently complete single-class result, the exact case the reviewed 2b rule must block. The new unit resolver likewise collapses all declarations into a global URI-to-one-prefix map; it is not a scope-aware resolution of QName values and loses aliases/rebindings.
+- Test: namespace-prefix-only changes must leave class coverage, duplicate/conflict detection and resolved units unchanged. Resolve QName values against their actual in-scope XML namespaces; compare axes by expanded name and identify members consistently. Cover a second alias for the same namespace, alternate prefixes on both classes, local declarations/rebindings and equivalent ISO currency aliases. Keep a genuinely different business-segment axis ignored. A minimal fix uses the existing XML parser's namespace information, without extra fetches.
+
+### C18. Cover counts from another entity are stored under the requested filer's CIK
+- Severity: high (wrong company share counts / provenance).
+- Where: `src/ingestion/quarantine_docs.py:164-192`; `src/ingestion/quarantine_checks.py:106,64`.
+- Evidence: balance-sheet facts now require own-CIK contexts, but `cover_classes` never checks the entity identifier. Independently started with `both_families()` / `good_docs()` and changed only the identifiers of the class A/B contexts to CIK 9999, leaving the filing/screen CIK 1234 and balance-sheet context unchanged. `run_checks` records `(1234, m11_cover, ok, classes)` and inserts both foreign-entity counts into `cover_shares` as CIK 1234 (1M and 0.5M). No stored provenance says those values actually describe entity 9999. A joint/multi-entity instance does not make another entity's equity the listed filer's equity.
+- Test: require the requested filer's entity identity for all cover counts and symbols used by 2b, passing that identity to the parser/controller boundary. The other-entity-only example must supply no usable own-company cover evidence; a mixed own/other instance must not contaminate own counts/symbols or create a false own-class conflict. Preserve a genuine own-CIK positive control and the separate valid balance-sheet family.
+
+No production changes, live reads, ingestion or vault writes in this round. C13-C16 examples
+are now corrected; C17/C18 must be answered before incomplete/foreign share-class evidence can
+be used in valuation. The existing 2b/2c wiring remains pending rather than accepted.
