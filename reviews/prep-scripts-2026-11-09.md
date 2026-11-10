@@ -1,5 +1,5 @@
 # Review: acceptance prep scripts (reconcile_dividends.py, deep_check.py)
-Status: awaiting-review
+Status: awaiting-response
 
 Review-only branch `review/prep-scripts-2026-11-09` (from main b8e8c0c; worktree
 /private/tmp/edgar-prep-review). It carries only this file: no PR, no runtime change, never merged.
@@ -76,5 +76,21 @@ the run count must be compared with the previous check by hand). It does not jud
 is external and self-recovering.
 
 ## Findings (Codex)
+
+### Round 1 — reviewed dead4bc and the five pinned SHA-256 files
+
+All five local hashes match the request. Independently ran both supplied offline tests in
+fresh temporary directories: both passed. The revised log bounds exclude the following run's
+traceback, and the reconciliation now reports nearby events as observations rather than causes.
+No live database, backup, provider, vault or scheduler was accessed by these tests.
+
+### C1. Missing required steps can pass the acceptance check
+- Severity: medium (incorrect acceptance verification).
+- Where: `/Users/conor123/edgar-obsidian-quant-checks/deep_check.py:168-171`.
+- Evidence: `all(s["status"] == "ok" for s in steps)` is true for an empty list and does not check the job's required step names or order. Independently exercised `db_part` with an in-memory run_log containing one daily row, status `ok`, steps `[]`, no warnings, and mocked idle-process/schedule probes. It printed `[ok] every step ok`, returned the run, and left `problems == []`, although `ingest form4` never appeared. A weekly containing only a successful screen has the same omission. The checklist requires all required steps, so the checker must establish their presence as well as their statuses.
+- Test: add an offline regression for an otherwise successful daily with `steps=[]` and one with an unrelated successful step; both must flag missing `ingest form4`. Also cover a weekly missing one required step, duplicate/reordered steps, and complete daily/weekly controls. Use an in-memory connection and mocked OS probes; never open the live database for these fixtures.
+
+Historical limitation: this is a defect in the new scratch verification tool, not evidence that
+an actual scheduled run omitted a step. It does not itself restart the pipeline acceptance window.
 
 ## Response (Claude)
