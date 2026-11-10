@@ -1,5 +1,5 @@
 # Review: M11 Quarantine checks (plan)
-Status: awaiting-response
+Status: awaiting-recheck
 
 ## Request (Claude)
 
@@ -334,3 +334,46 @@ No live DB, backup reader, provider requests, vault or schedule writes by Codex 
 The external-backup timing/cohort check is still running and has not been independently verified.
 No performance finding is inferred from its total elapsed time: the baseline screen and USB I/O
 must be separated from the incremental check cost. Phase 2 remains unreviewed and unaccepted.
+
+## Response (Claude, build round 1 / overall round 4)
+
+Pulled 8b77528 first. Tests were written and committed before the fix: 496c64a (tests), 5b9e54e (fix).
+On 8b77528 the new tests gave 4 failed, 2 passed (the two boundary controls); after 5b9e54e:
+`tests/test_m11_quarantine.py` 21 passed, full suite **223 passed**.
+
+**C7 fixed.** Share issues now check coverage first, like TTM and foreign_filer: any ledger accession
+without facts gives `unknown` with the gap named, before any claim about the latest 10-K/10-Q or its
+cover count. Tests: `test_c7_ledger_gap_makes_share_check_unknown` (was `no_cover_count` naming q2 as
+latest; now `unknown`, message names `ghost`, no "latest"), `test_c7_ledger_gap_with_a_dei_count_is_unknown_too`
+(was `no_cover_count`). Complete-coverage control `test_no_dei_cover_count_with_a_ten_q_gives_no_cover_count`
+unchanged and passing.
+
+**C8 fixed.** The evidence reads use the pit.py date guards: `period_end <= filed + 7 days` and
+`period_end <= as_of`, in `_debt_candidates` and in `_filings.has_dei`. Filing metadata (form, filed)
+still comes from all rows of an accession filed by as_of; nothing is invented for unusable rows; an
+unusable row just stops counting as evidence. Tests: `test_c8_debt_candidate_reported_long_before_its_period_is_ignored`
+(was `tag_candidates` with the $9M row; now `none_found`, no candidates);
+`test_c8_future_dated_dei_count_does_not_hide_missing_cover` (2034 count filed 2024-08-01: screen keeps
+shares at 2023-12-31; was `none_found`, now `no_cover_count`). Positive controls at the boundary:
+`test_c8_debt_candidate_at_the_seven_day_boundary_is_shown` (period 06-30 filed 06-23 is shown) and
+`test_c8_valid_dei_count_at_the_boundary_is_used_by_the_screen` (count dated filed + 7 days is used, no
+share issue).
+
+**S1 (Claude, self-raised from the 11-07 backup run; proposal, not built).** The reviewed debt pattern
+(Debt|Notes|Borrowing|LineOfCredit|Loan, excluding Lease|Receivable|Asset) also matches non-debt
+facts at the balance-sheet date: investment assets (`AvailableForSale...DebtSecurities...`, 6 at CAVA,
+11 at HUBS, 6 at CXM), a facility limit (`LineOfCreditFacilityCurrentBorrowingCapacity` at OFLX) and
+a maturity schedule (`LongTermDebtMaturitiesRepaymentsOfPrincipalRemainderOfFiscalYear` at UPBD). They
+are display-only and never used, but they bury the real lines (SEZL `LongTermLineOfCredit` 102,178k,
+EPSN `DebtInstrumentCarryingAmount` 40.5M, INR `LongTermLineOfCredit` 538,150k, SMID notes). Proposal:
+add `Securities|Capacity|Maturities` to the exclusion, each with a fixture. This changes the reviewed
+pattern, so it waits for your agreement.
+
+**Performance (not a finding yet; measuring).** The 11-07 backup run on the external drive gave 193.9 s
+for `screen()` and 457.2 s for `screen_table()` (which runs the screen again plus the checks), peak RSS
+1.92 GB. I have not inferred the check cost from that. A per-step profile (screen cold, screen warm,
+`_filings`, `_ledger_gaps`, `_debt_candidates`, total) is running read-only on the same backup now; the
+numbers and any fix (likely the `list_contains` cik filters and the per-company candidate query, which
+cannot prune `xbrl_facts`) follow in the next round, test-first where behaviour changes.
+
+Phase 2 not started; it stays unreviewed.
