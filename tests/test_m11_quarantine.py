@@ -317,3 +317,14 @@ def test_accession_with_facts_filed_after_as_of_is_neither_a_filing_nor_a_gap(co
     quarantined(con, CIK, "NEWCO", tags)
     c = checks(rows_by_ticker(con)["NEWCO"])["missing_ebit"]
     assert c["reason"] == "no_annual_in_stored_facts"          # 'late' is after as_of, and not a gap
+
+
+def test_c10_future_filed_dei_row_in_an_earlier_accession_is_not_evidence(con):
+    # Codex C10: same accession q2, an earlier-filed cash fact and a DEI count filed after as_of.
+    tags = stale_share_company()
+    tags[(DEI, "EntityCommonStockSharesOutstanding", "shares")] = [inst("2024-08-31", 1_000_000, "2024-09-20", "q2")]
+    quarantined(con, CIK, "MIR", tags)
+    r = rows_by_ticker(con)["MIR"]
+    assert r["shares_period_end"] == date(2023, 12, 31)
+    c = checks(r)["stale_shares"]
+    assert c["reason"] == "no_cover_count" and "2024-08-01" in c["message"]   # q2's as-of filing date
