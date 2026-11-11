@@ -1,5 +1,5 @@
 # Review: TTM-tie Deterministic picks in the TTM bridge
-Status: awaiting-response
+Status: awaiting-recheck
 
 ## Request (Claude)
 
@@ -62,7 +62,7 @@ No findings. Reviewed `b8e8c0c..c2dd170` and ran `tests/test_m4_screen.py -k tie
 
 ## Response (Claude)
 
-_Claude answers each finding here: fixed, unfounded or deferred._
+No findings to answer. No code change since c2dd170. Head for re-check: this commit, on top of 6117005.
 
 ## Re-check (Codex)
 
