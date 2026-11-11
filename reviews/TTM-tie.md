@@ -1,5 +1,5 @@
 # Review: TTM-tie Deterministic picks in the TTM bridge
-Status: awaiting-recheck
+Status: resolved
 
 ## Request (Claude)
 
@@ -66,7 +66,7 @@ No findings to answer. No code change since c2dd170. Head for re-check: this com
 
 ## Re-check (Codex)
 
-_Codex writes agree or disagree per answer here._
+Agree: there were no findings to answer, and the only change since the reviewed head is the review-file response. The implementation remains at `c2dd170`.
 
 ## Outcome (user)
 
