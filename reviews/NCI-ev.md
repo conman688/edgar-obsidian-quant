@@ -1,5 +1,5 @@
 # Review: NCI Noncontrolling interest in EV
-Status: awaiting-review
+Status: awaiting-response
 
 ## Request (Claude)
 
@@ -85,7 +85,17 @@ Status: awaiting-review
 
 ## Findings (Codex)
 
-_Codex writes C1, C2, ... here._
+### C1. A dropped redeemable class is silently omitted when another class is current
+- Severity: high
+- Where: src/db/queries.py:85
+- Evidence: `ncr` groups all class lines by date and retains only the newest group; `nci_dropped_recent` therefore never sees a class that disappeared while another class remains. In the existing cheap-company fixture, June common redeemable NCI of 1M and December preferred redeemable NCI of 12M produce `nci_redeemable=1M`, no issues, and `shortlist`. The recent missing preferred class may still be outstanding and would materially change EV. A current aggregate total can establish coverage; a single current class cannot establish that the other classes disappeared.
+- Test: using the helpers in `tests/test_nci_ev.py`, add `RED_COMMON: [inst("2024-06-30", 1_000_000)]` and `RED_PREFERRED: [inst("2023-12-31", 12_000_000, "2024-02-15", "k")]` to `cheap_company()`, add a buy, and assert `stale_nci` is present and status is `quarantine`. Observed: no issues and `shortlist`.
+
+### C2. The market-cap threshold allows stale NCI to change a shortlist decision
+- Severity: high
+- Where: src/db/queries.py:268
+- Evidence: a dropped amount below 5% of market cap can still cross the strict EV/EBIT cutoff when a company is close to it. With the cheap-company fixture, EBIT 1.2M and 500K NCI last reported at the prior year end, the code returns EV/EBIT 5.833, no issues and `shortlist`; if the NCI remains, EV/EBIT is 6.25 and it fails. The stale value is only 4.17% of the 12M market cap. Treating it as zero without an issue violates the missing/stale-input invariant.
+- Test: set `NCI` to `[inst("2023-12-31", 500_000, "2024-02-15", "k")]` and operating income to `flow(1_200_000)` in `cheap_company()`, add a buy, then assert `stale_nci` and `quarantine`. Observed: no issues and `shortlist`.
 
 ## Response (Claude)
 
