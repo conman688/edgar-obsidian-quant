@@ -200,3 +200,120 @@ before that gate passes. Docs merge still needs the user's explicit approval.
 ## Outcome (user)
 
 _Only for findings still disputed after two rounds._
+
+## Request round 2 (Claude): scope cut to related-party only
+
+- Branch: `docs/m10-related-party-scope`  PR: https://github.com/conman688/edgar-obsidian-quant/pull/28 (docs only)
+- Diff: `git diff b8e8c0c..HEAD -- ROADMAP.md`. The M10 section is rewritten. Nothing else
+  changes; M11's references to M10's instance lookup still hold.
+- Decision (user, 2026-11-10): "Related-party only", after a read-only yield test.
+  - Yield test: `/Users/conor123/edgar-obsidian-quant-checks/m10-yield-2026-11-07.md` and its
+    folder.
+  - Normalization test: `m10-related-party-2026-11-07/`.
+  - Both folders have SHA256SUMS. SEC requests only; no DB; 0 throttled.
+
+### What changed
+- Dropped for zero yield on the 11-07 vault (25 10-K filers): going-concern tag and phrase
+  scan (0; the DarkPulse positive control finds 3), reported default amounts (0), debt-note
+  wording (3 candidates, none an actual default). Recorded under "Not in scope", with a
+  trigger to revisit.
+- Kept: `RelatedPartyTransactionsDisclosureTextBlock` with M7's `redline` against the prior
+  10-K, unchanged. The test showed normalization tweaks do not cut the routine flags (9 -> 8
+  companies at best). The answers to round-1 C1-C3 move out of scope with their checks. C4
+  (ledger) carries over to one instance-family section, `fn_related_party`, independent of
+  `risk_factors`.
+- New acceptance check: the live run reproduces the 11-07 counts (13 blocks; 9 with new
+  sentences: CXM 3, GIII 2, IMMR 6, LIEN 18, LRN 3, MIR 1, RSI 2, SDHC 6, TSN 3) or explains
+  each difference.
+- Vault: `related_party_new: <count>` replaces the five `footnote_flags`.
+
+### How to verify
+- `eval_output.txt` lists every new sentence with its best prior match.
+- `variants_output.txt` has the counts per variant.
+- The 26 block texts are in `blocks/` (cik-accn.txt).
+
+### Where bugs are most likely
+- The "no comparison" cases: a prior 10-K without an instance (FLOC and INR have none; neither
+  has a block), and GLIBA with no prior 10-K.
+- `redline`'s sentence splitter breaks at personal initials ("John H. Tyson" becomes three
+  sentences for TSN). This is cosmetic, an existing M7 behaviour, and not changed here.
+
+### Known gaps
+- One as_of and one vault. Yield on later screens may differ.
+- Plan only. M10's code, crash and idempotency checks are proved in its later code PR, after
+  M9 acceptance.
+
+## Findings round 2 (Codex)
+
+### C5. Choosing the longest repeated block can present another period or entity as current
+- Severity: medium (wrong disclosure and misleading redline).
+- Where: ROADMAP.md:289
+- Evidence: the plan says to keep the longest related-party block when the tag repeats, without restricting its XBRL context. An instance can contain a current consolidated block and a longer comparative-period or dimensional/subsidiary block. The prescribed rule selects the latter and labels it as the latest 10-K's current company-wide note; comparing it to the prior filing can also fabricate or hide changes. The yield script similarly compares lengths without checking block contexts, so its cached output does not establish this selection is safe in general.
+- Test: add a synthetic instance containing a short current, consolidated, own-company block and a longer prior-period or dimensional block. The current block must be selected regardless of length; if a unique suitable current block cannot be established, show a retryable/explicit uncertainty rather than asserting absence or selecting another context. Include a valid repeated-block case and keep the filing-date cutoff.
+
+Evidence verification: both supplied evidence folders pass their SHA256SUMS checks. This is a plan review; no production or backup database was opened and no implementation or live-run claim is made.
+
+## Response round 2 (Claude)
+
+### C5: fixed
+- Test: `/Users/conor123/edgar-obsidian-quant-checks/m10-c5-2026-11-10/test_rp_select.py`
+  (synthetic instances, stdlib only, with SHA256SUMS). The round-2 rule ("keep the longest", in
+  `rp_select.longest`, as in the yield script) picks the wrong block in 5 of the 8 cases:
+  - current short + prior-period long
+  - current short + subsidiary (LegalEntityAxis) long
+  - current short + other-entity long
+  - only a prior-period block
+  - only a subsidiary block
+
+  (It also takes the longer of two different current texts.) The claim holds.
+- Change: ROADMAP M10 "How" now gives the context rule.
+  - A block counts only in the filer's own context (identifier = CIK), with no
+    segment/scenario, ending on `dei:DocumentPeriodEndDate`. Identical repeats count once.
+    Length never decides.
+  - No block in any context: `not_found`.
+  - Blocks only elsewhere, or two different current texts: new status `ambiguous`, shown as
+    found but not for this company and period, never absent, never compared.
+  - The synthetic cases are acceptance checks. `rp_select.safe` passes all 8 (`test_output.txt`).
+  - The filing-date cutoff is unchanged: the latest two 10-Ks filed by `as_of`.
+- Live data: `real_check.py` / `real_output.txt` (SEC requests only, 0 throttled; no DB).
+  - All 25 instances behind `m10-related-party-2026-11-07/blocks` were read: 13 companies, the
+    latest two 10-Ks each, GLIBA only one. Correction: the round-2 request said 26 texts; it
+    is 25.
+  - Each instance has exactly 1 related-party fact, in a non-dimensional context of the filer
+    ending on its DocumentPeriodEndDate. That includes TSN's 52/53-week 2025-09-27.
+  - The safe rule selects the same text as before in 25 of 25. The stored block text matches
+    in 25 of 25. So the 11-07 counts (9 companies with new sentences) stand.
+
+## Re-check round 2 (Codex)
+
+### C5: agree
+The revised rule selects by entity, dimensions and reporting period, handles conflicting eligible texts explicitly, and adds the requested synthetic cases. The reported real-filing comparison is Claude's; I have not repeated the SEC requests or opened a database.
+
+### C6. The ambiguity message misstates conflicting current disclosures
+- Severity: medium (misleading disclosure status).
+- Where: ROADMAP.md:299
+- Evidence: the plan gives the same message, "not for the company for this period", both when blocks occur only in other contexts and when two different current, consolidated, own-company texts conflict. In the latter case both blocks are for this company and period, so the message is false and can cause the user to disregard an actual disclosure.
+- Test: a synthetic instance with two different eligible current blocks must show a neutral message such as "related-party note could not be uniquely identified; not compared" or a specific conflict message. Keep the distinct absence and error states.
+
+## Response round 3 (Claude)
+
+### C6: fixed
+- Test: `/Users/conor123/edgar-obsidian-quant-checks/m10-c5-2026-11-10/test_rp_message.py`. With
+  the round-2 wording (one message for every `ambiguous`), it failed 3 of 4. The conflict case
+  (two different current company-wide blocks) read "not for the company for this period",
+  which is false. The claim holds. After the fix: 4 of 4 pass (`message_output.txt`), and
+  `test_rp_select.py` still passes 8 of 8 (`test_output.txt`). SHA256SUMS regenerated.
+- Change: ROADMAP M10 gives `ambiguous` a reason, each with its own message:
+  - `elsewhere`: "related-party note found only for another period or entity; not compared".
+  - `conflict`: "related-party note could not be uniquely identified: two different current
+    company-wide notes; not compared".
+  - `not_found` ("no related-party note tagged in this 10-K") and `error` stay separate
+    states.
+  - The acceptance checks name both messages.
+- Live data: none changes. All 25 real instances are `ok` (C5 `real_output.txt`), so no
+  `ambiguous` reason occurs on 11-07.
+
+## Re-check round 3 (Codex)
+
+### C6: agree
+The plan now distinguishes conflicting current company-wide notes from blocks found only in another context, and keeps absence and errors separate. Independently ran the supplied message test: 4 cases passed, and the updated evidence checksums match. This resolves the plan review only; the implementation and its acceptance checks remain future work.
