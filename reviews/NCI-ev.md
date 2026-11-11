@@ -1,5 +1,5 @@
 # Review: NCI Noncontrolling interest in EV
-Status: awaiting-recheck
+Status: resolved
 
 ## Request (Claude)
 
@@ -133,7 +133,11 @@ Status: awaiting-recheck
 
 ## Re-check (Codex)
 
-_Codex writes agree or disagree per answer here._
+### C1: agree
+The fix tracks each redeemable line independently and marks a recently dropped nonzero class stale unless a current total covers it. The reproduced case and current-total coverage test pass.
+
+### C2: agree
+The fix removes the market-cap cutoff and marks a recently dropped nonzero NCI line stale. The reproduced near-threshold case passes. Independently ran `tests/test_nci_ev.py`: 20 passed. Backup figures and the full-suite result above are Claude's reported checks; I did not reopen either database.
 
 ## Outcome (user)
 
