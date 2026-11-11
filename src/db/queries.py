@@ -66,7 +66,10 @@ DEI_SHARES = "EntityCommonStockSharesOutstanding"
 
 _INSTANTS = {"sh": "shares_outstanding", "cash": "cash", "sti": "st_investments", "dt": "debt_total",
              "dc": "debt_current", "dn": "debt_noncurrent", "stb": "short_term_debt",
-             "gw": "goodwill", "eq": "equity"}
+             "gw": "goodwill", "eq": "equity", "nci": "nci",
+             # Redeemable NCI: the total, else the sum of its class lines at the same date.
+             "ncr": "nci_redeemable", "ncrc": "nci_redeemable_common",
+             "ncrp": "nci_redeemable_preferred", "ncro": "nci_redeemable_other"}
 # Debt tags that already include short-term borrowings, so those are not added again.
 _DEBT_INCL_SHORT_TERM = ("DebtLongtermAndShorttermCombinedAmount", "DebtCurrent")
 _FLOWS = ("ebit", "cfo", "capex")
@@ -106,6 +109,9 @@ def valuation_sql(policy: Policy = "as_last_known") -> str:
             SELECT cik, period_end FROM cash UNION ALL SELECT cik, period_end FROM dt
             UNION ALL SELECT cik, period_end FROM dc UNION ALL SELECT cik, period_end FROM dn
             UNION ALL SELECT cik, period_end FROM stb UNION ALL SELECT cik, period_end FROM eq
+            UNION ALL SELECT cik, period_end FROM nci UNION ALL SELECT cik, period_end FROM ncr
+            UNION ALL SELECT cik, period_end FROM ncrc UNION ALL SELECT cik, period_end FROM ncrp
+            UNION ALL SELECT cik, period_end FROM ncro
         ) GROUP BY cik
     ),
     debt_src AS (
@@ -188,6 +194,27 @@ def valuation_sql(policy: Policy = "as_last_known") -> str:
                    OR regexp_matches(coalesce(cash.form, ''), '^(20|40)-F') AS foreign_filer,
                cash.period_end AS cash_period_end,
                debt.debt, debt.debt_period_end, debt.debt_sources_disagree,
+               -- NCI counts only at bs_date. A nonzero line reported in the last 400 days but
+               -- not then may still be there (a missing tag is not a buyout): not current,
+               -- and the stale_nci issue at any size, since a little NCI can cross the
+               -- EV/EBIT cutoff (review C2). Older lines have been left out of a full 10-K
+               -- since (GIII, LRN last tagged NCI in 2014-2017). Untagged means none.
+               -- Redeemable NCI is the total, else the sum of class lines; a current total
+               -- covers every class, but one current class says nothing of another (C1).
+               CASE WHEN nci.period_end = bs.bs_date THEN nci.value ELSE 0 END AS nci,
+               CASE WHEN ncr.period_end = bs.bs_date THEN ncr.value
+                    ELSE coalesce(list_sum([CASE WHEN ncrc.period_end = bs.bs_date THEN ncrc.value END,
+                                            CASE WHEN ncrp.period_end = bs.bs_date THEN ncrp.value END,
+                                            CASE WHEN ncro.period_end = bs.bs_date THEN ncro.value END]), 0)
+               END AS nci_redeemable,
+               list_bool_or(list_transform(
+                   CASE WHEN ncr.period_end = bs.bs_date
+                        THEN [{{'end': nci.period_end, 'v': nci.value}}]
+                        ELSE [{{'end': nci.period_end, 'v': nci.value}}, {{'end': ncr.period_end, 'v': ncr.value}},
+                              {{'end': ncrc.period_end, 'v': ncrc.value}}, {{'end': ncrp.period_end, 'v': ncrp.value}},
+                              {{'end': ncro.period_end, 'v': ncro.value}}] END,
+                   lambda x: coalesce(x.end < bs.bs_date AND datediff('day', x.end, bs.bs_date) <= 400
+                                      AND x.v <> 0, FALSE))) AS nci_stale,
                coalesce(debt.dropped_recent > 0.05 * greatest(debt.debt, 0)
                         OR (debt.dropped_recent > 0 AND debt.debt <= 0), FALSE) AS debt_line_dropped,
                ebit.value AS ebit_ttm, ebit.basis AS ebit_basis, ebit.tag AS ebit_tag,
@@ -204,6 +231,20 @@ def valuation_sql(policy: Policy = "as_last_known") -> str:
                    {{'item': 'st_investments', 'tag': sti.tag, 'period_end': sti.period_end,
                      'accns': CASE WHEN sti.period_end = cash.period_end THEN [sti.accn] END}},
                    {{'item': 'debt', 'tag': debt.debt_tag, 'period_end': debt.debt_period_end, 'accns': debt.debt_accns}},
+                   {{'item': 'nci', 'tag': nci.tag, 'period_end': nci.period_end,
+                     'accns': CASE WHEN nci.period_end = bs.bs_date THEN [nci.accn] END}},
+                   {{'item': 'nci_redeemable',
+                     'tag': CASE WHEN ncr.period_end = bs.bs_date THEN ncr.tag
+                                 ELSE array_to_string([CASE WHEN ncrc.period_end = bs.bs_date THEN ncrc.tag END,
+                                                       CASE WHEN ncrp.period_end = bs.bs_date THEN ncrp.tag END,
+                                                       CASE WHEN ncro.period_end = bs.bs_date THEN ncro.tag END], '+') END,
+                     'period_end': bs.bs_date,
+                     'accns': CASE WHEN ncr.period_end = bs.bs_date THEN [ncr.accn]
+                                   ELSE list_sort(list_distinct(list_filter(
+                                       [CASE WHEN ncrc.period_end = bs.bs_date THEN ncrc.accn END,
+                                        CASE WHEN ncrp.period_end = bs.bs_date THEN ncrp.accn END,
+                                        CASE WHEN ncro.period_end = bs.bs_date THEN ncro.accn END],
+                                       lambda a: a IS NOT NULL))) END}},
                    {{'item': 'ebit', 'tag': ebit.tag, 'period_end': ebit.period_end, 'accns': ebit.accns}},
                    {{'item': 'cfo', 'tag': cfo.tag, 'period_end': cfo.period_end, 'accns': cfo.accns}},
                    {{'item': 'capex', 'tag': capex.tag, 'period_end': capex.period_end, 'accns': capex.accns}}
@@ -212,12 +253,14 @@ def valuation_sql(policy: Policy = "as_last_known") -> str:
         LEFT JOIN sh USING (cik) LEFT JOIN bs USING (cik)
         LEFT JOIN cash USING (cik) LEFT JOIN sti USING (cik) LEFT JOIN debt USING (cik)
         LEFT JOIN gw USING (cik) LEFT JOIN eq USING (cik)
+        LEFT JOIN nci USING (cik) LEFT JOIN ncr USING (cik)
+        LEFT JOIN ncrc USING (cik) LEFT JOIN ncrp USING (cik) LEFT JOIN ncro USING (cik)
         LEFT JOIN ebit USING (cik) LEFT JOIN cfo USING (cik) LEFT JOIN capex USING (cik)
         LEFT JOIN hi USING (cik) LEFT JOIN brk USING (cik)
     )
-    SELECT *,
-        mcap + debt - cash_like AS ev,
-        CASE WHEN ebit_ttm > 0 THEN (mcap + debt - cash_like) / ebit_ttm END AS ev_ebit,
+    SELECT * EXCLUDE (nci_stale),
+        mcap + debt - cash_like + nci + nci_redeemable AS ev,
+        CASE WHEN ebit_ttm > 0 THEN (mcap + debt - cash_like + nci + nci_redeemable) / ebit_ttm END AS ev_ebit,
         (cash_like - debt) / nullif(mcap, 0) AS net_cash_to_mcap,
         shares_age_days > {STALE_DAYS} AS stale_shares,
         -- Multi-class filers tag cover shares per class, which companyfacts drops; what is
@@ -234,6 +277,7 @@ def valuation_sql(policy: Policy = "as_last_known") -> str:
             CASE WHEN debt IS NULL THEN 'missing_debt'
                  WHEN debt_period_end < bs_date OR debt_line_dropped THEN 'stale_debt' END,
             CASE WHEN debt_sources_disagree THEN 'debt_sources_disagree' END,
+            CASE WHEN nci_stale THEN 'stale_nci' END,
             CASE WHEN datediff('day', bs_date, $as_of) > {STALE_DAYS} THEN 'stale_balance_sheet' END,
             CASE WHEN ebit_ttm IS NULL THEN 'missing_ebit' WHEN NOT ebit_same_tag THEN 'mixed_ebit_tags' END,
             CASE WHEN fcf_ttm IS NULL THEN 'missing_fcf'
@@ -248,6 +292,9 @@ def valuation_sql(policy: Policy = "as_last_known") -> str:
 
 def valuation(con: duckdb.DuckDBPyConnection, as_of: date, policy: Policy = "as_last_known"):
     """Market cap, EV, EV/EBIT, net cash / mcap, FCF, goodwill/equity, as of a date.
+
+    EV = market cap + debt - cash and short-term investments + noncontrolling interest
+    (equity and redeemable, at the balance-sheet date). Net cash / mcap leaves NCI out.
 
     One row per priced company. Missing inputs stay NULL and are named in `issues`
     (missing_debt, stale_cash, ...), so a filer that simply didn't tag debt cannot pass
