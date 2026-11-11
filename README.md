@@ -47,7 +47,8 @@ uv run python -m src.cli screen --as-of 2026-11-02            # default filters
 uv run python -m src.cli screen --min-drawdown 0.3 --max-ev-ebit 10 --trace
 ```
 
-Ranks priced, non-financial companies on four filters: trailing FCF > 0, EV/EBIT < 6, net
+Ranks priced, non-financial companies on four filters: trailing FCF > 0, EV/EBIT < 6 (EV =
+market cap + debt - cash + noncontrolling interest, equity and redeemable), net
 debt <= 25% of market cap, and a cluster buy by insiders known within 90 days. A drawdown rule
 (`--min-drawdown 0.5`: at least 50% below the 52-week high) is available but off by default;
 the backtest found it worked only after 2020. Every input is point-in-time. Each company gets a status:
@@ -61,7 +62,9 @@ Issues: `missing_*` / `stale_*` (shares, cash, debt, balance sheet, financials o
 capex from different periods), `mixed_ebit_tags` / `mixed_fcf_tags` (a TTM bridge mixing
 ladder tags), `debt_sources_disagree` (total and current + noncurrent differ by over 10%;
 the larger is used), `stale_debt` also when a debt line over 5% of debt, reported in the
-last 400 days, is missing from the newest balance sheet, `share_jump` (>40% share change in a
+last 400 days, is missing from the newest balance sheet, `stale_nci` (noncontrolling
+interest over 5% of market cap, reported in the last 400 days, missing from the newest
+balance sheet), `share_jump` (>40% share change in a
 year: missed split or M&A), `foreign_filer` (20-F/40-F: ADS price vs ordinary shares),
 `stale_price`. Flags, shown but not blocking: `multi_class_risk` (no cover-page share
 count, so a class count or nothing), `ebit_is_pretax` (pre-tax income stands in for EBIT).

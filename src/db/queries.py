@@ -66,7 +66,7 @@ DEI_SHARES = "EntityCommonStockSharesOutstanding"
 
 _INSTANTS = {"sh": "shares_outstanding", "cash": "cash", "sti": "st_investments", "dt": "debt_total",
              "dc": "debt_current", "dn": "debt_noncurrent", "stb": "short_term_debt",
-             "gw": "goodwill", "eq": "equity"}
+             "gw": "goodwill", "eq": "equity", "nci": "nci", "ncr": "nci_redeemable"}
 # Debt tags that already include short-term borrowings, so those are not added again.
 _DEBT_INCL_SHORT_TERM = ("DebtLongtermAndShorttermCombinedAmount", "DebtCurrent")
 _FLOWS = ("ebit", "cfo", "capex")
@@ -106,6 +106,7 @@ def valuation_sql(policy: Policy = "as_last_known") -> str:
             SELECT cik, period_end FROM cash UNION ALL SELECT cik, period_end FROM dt
             UNION ALL SELECT cik, period_end FROM dc UNION ALL SELECT cik, period_end FROM dn
             UNION ALL SELECT cik, period_end FROM stb UNION ALL SELECT cik, period_end FROM eq
+            UNION ALL SELECT cik, period_end FROM nci UNION ALL SELECT cik, period_end FROM ncr
         ) GROUP BY cik
     ),
     debt_src AS (
@@ -188,6 +189,17 @@ def valuation_sql(policy: Policy = "as_last_known") -> str:
                    OR regexp_matches(coalesce(cash.form, ''), '^(20|40)-F') AS foreign_filer,
                cash.period_end AS cash_period_end,
                debt.debt, debt.debt_period_end, debt.debt_sources_disagree,
+               -- NCI counts only at bs_date. One reported in the last 400 days but not then
+               -- may still be there (a missing tag is not a buyout): not current, and an
+               -- issue when over 5% of market cap. Older lines have been left out of a full
+               -- 10-K since (GIII, LRN last tagged NCI in 2014-2017). Untagged means none.
+               CASE WHEN nci.period_end = bs.bs_date THEN nci.value ELSE 0 END AS nci,
+               CASE WHEN ncr.period_end = bs.bs_date THEN ncr.value ELSE 0 END AS nci_redeemable,
+               list_sum([
+                   CASE WHEN nci.period_end < bs.bs_date AND datediff('day', nci.period_end, bs.bs_date) <= 400
+                        THEN abs(nci.value) END,
+                   CASE WHEN ncr.period_end < bs.bs_date AND datediff('day', ncr.period_end, bs.bs_date) <= 400
+                        THEN abs(ncr.value) END]) AS nci_dropped_recent,
                coalesce(debt.dropped_recent > 0.05 * greatest(debt.debt, 0)
                         OR (debt.dropped_recent > 0 AND debt.debt <= 0), FALSE) AS debt_line_dropped,
                ebit.value AS ebit_ttm, ebit.basis AS ebit_basis, ebit.tag AS ebit_tag,
@@ -204,6 +216,10 @@ def valuation_sql(policy: Policy = "as_last_known") -> str:
                    {{'item': 'st_investments', 'tag': sti.tag, 'period_end': sti.period_end,
                      'accns': CASE WHEN sti.period_end = cash.period_end THEN [sti.accn] END}},
                    {{'item': 'debt', 'tag': debt.debt_tag, 'period_end': debt.debt_period_end, 'accns': debt.debt_accns}},
+                   {{'item': 'nci', 'tag': nci.tag, 'period_end': nci.period_end,
+                     'accns': CASE WHEN nci.period_end = bs.bs_date THEN [nci.accn] END}},
+                   {{'item': 'nci_redeemable', 'tag': ncr.tag, 'period_end': ncr.period_end,
+                     'accns': CASE WHEN ncr.period_end = bs.bs_date THEN [ncr.accn] END}},
                    {{'item': 'ebit', 'tag': ebit.tag, 'period_end': ebit.period_end, 'accns': ebit.accns}},
                    {{'item': 'cfo', 'tag': cfo.tag, 'period_end': cfo.period_end, 'accns': cfo.accns}},
                    {{'item': 'capex', 'tag': capex.tag, 'period_end': capex.period_end, 'accns': capex.accns}}
@@ -212,12 +228,13 @@ def valuation_sql(policy: Policy = "as_last_known") -> str:
         LEFT JOIN sh USING (cik) LEFT JOIN bs USING (cik)
         LEFT JOIN cash USING (cik) LEFT JOIN sti USING (cik) LEFT JOIN debt USING (cik)
         LEFT JOIN gw USING (cik) LEFT JOIN eq USING (cik)
+        LEFT JOIN nci USING (cik) LEFT JOIN ncr USING (cik)
         LEFT JOIN ebit USING (cik) LEFT JOIN cfo USING (cik) LEFT JOIN capex USING (cik)
         LEFT JOIN hi USING (cik) LEFT JOIN brk USING (cik)
     )
-    SELECT *,
-        mcap + debt - cash_like AS ev,
-        CASE WHEN ebit_ttm > 0 THEN (mcap + debt - cash_like) / ebit_ttm END AS ev_ebit,
+    SELECT * EXCLUDE (nci_dropped_recent),
+        mcap + debt - cash_like + nci + nci_redeemable AS ev,
+        CASE WHEN ebit_ttm > 0 THEN (mcap + debt - cash_like + nci + nci_redeemable) / ebit_ttm END AS ev_ebit,
         (cash_like - debt) / nullif(mcap, 0) AS net_cash_to_mcap,
         shares_age_days > {STALE_DAYS} AS stale_shares,
         -- Multi-class filers tag cover shares per class, which companyfacts drops; what is
@@ -234,6 +251,7 @@ def valuation_sql(policy: Policy = "as_last_known") -> str:
             CASE WHEN debt IS NULL THEN 'missing_debt'
                  WHEN debt_period_end < bs_date OR debt_line_dropped THEN 'stale_debt' END,
             CASE WHEN debt_sources_disagree THEN 'debt_sources_disagree' END,
+            CASE WHEN nci_dropped_recent > 0.05 * mcap THEN 'stale_nci' END,
             CASE WHEN datediff('day', bs_date, $as_of) > {STALE_DAYS} THEN 'stale_balance_sheet' END,
             CASE WHEN ebit_ttm IS NULL THEN 'missing_ebit' WHEN NOT ebit_same_tag THEN 'mixed_ebit_tags' END,
             CASE WHEN fcf_ttm IS NULL THEN 'missing_fcf'
@@ -248,6 +266,9 @@ def valuation_sql(policy: Policy = "as_last_known") -> str:
 
 def valuation(con: duckdb.DuckDBPyConnection, as_of: date, policy: Policy = "as_last_known"):
     """Market cap, EV, EV/EBIT, net cash / mcap, FCF, goodwill/equity, as of a date.
+
+    EV = market cap + debt - cash and short-term investments + noncontrolling interest
+    (equity and redeemable, at the balance-sheet date). Net cash / mcap leaves NCI out.
 
     One row per priced company. Missing inputs stay NULL and are named in `issues`
     (missing_debt, stale_cash, ...), so a filer that simply didn't tag debt cannot pass

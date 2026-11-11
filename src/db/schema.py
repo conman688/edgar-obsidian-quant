@@ -405,6 +405,13 @@ CONCEPT_SEED: list[tuple[str, str, str, str, int]] = [
     ("goodwill", "us-gaap", "Goodwill", "USD", 1),
     ("equity", "us-gaap", "StockholdersEquity", "USD", 1),
     ("equity", "us-gaap", "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest", "USD", 2),
+    # Noncontrolling interest, added to EV: EBIT consolidates 100% of subsidiaries, so the
+    # outside owners' share of them is part of what a buyer of the whole would take on.
+    ("nci", "us-gaap", "MinorityInterest", "USD", 1),
+    ("nci", "us-gaap", "NonredeemableNoncontrollingInterest", "USD", 2),
+    # Redeemable NCI sits in temporary equity, outside both equity and liabilities.
+    ("nci_redeemable", "us-gaap", "RedeemableNoncontrollingInterestEquityCarryingAmount", "USD", 1),
+    ("nci_redeemable", "us-gaap", "RedeemableNoncontrollingInterestEquityFairValue", "USD", 2),
     ("current_assets", "us-gaap", "AssetsCurrent", "USD", 1),
     ("current_liabilities", "us-gaap", "LiabilitiesCurrent", "USD", 1),
     ("total_liabilities", "us-gaap", "Liabilities", "USD", 1),
