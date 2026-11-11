@@ -62,9 +62,9 @@ Issues: `missing_*` / `stale_*` (shares, cash, debt, balance sheet, financials o
 capex from different periods), `mixed_ebit_tags` / `mixed_fcf_tags` (a TTM bridge mixing
 ladder tags), `debt_sources_disagree` (total and current + noncurrent differ by over 10%;
 the larger is used), `stale_debt` also when a debt line over 5% of debt, reported in the
-last 400 days, is missing from the newest balance sheet, `stale_nci` (noncontrolling
-interest over 5% of market cap, reported in the last 400 days, missing from the newest
-balance sheet), `share_jump` (>40% share change in a
+last 400 days, is missing from the newest balance sheet, `stale_nci` (nonzero noncontrolling
+interest reported in the last 400 days, missing from the newest balance sheet; a redeemable
+class line counts unless the redeemable total is current), `share_jump` (>40% share change in a
 year: missed split or M&A), `foreign_filer` (20-F/40-F: ADS price vs ordinary shares),
 `stale_price`. Flags, shown but not blocking: `multi_class_risk` (no cover-page share
 count, so a class count or nothing), `ebit_is_pretax` (pre-tax income stands in for EBIT).
