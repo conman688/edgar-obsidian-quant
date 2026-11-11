@@ -78,15 +78,20 @@ def ttm_flow_sql(policy: Policy, source: str | None = None) -> str:
     and 52/53-week fiscal years align. Falls back to the plain FY value.
 
     `source` is SQL yielding one concept's resolved rows (default: concept_sql, which
-    binds $concept). `accns` lists the filings the value came from; `same_tag` is FALSE
-    when the bridge mixes ladder tags (say operating income for the year, pre-tax YTD).
+    binds $concept). Rows ending on the same day with different starts (a restated
+    comparative beside the old print, 52/53-week years) are separate rows; each pick
+    breaks that tie the same way every run: the year's tag, then the latest filing,
+    then the ladder, then the later start. `accns` lists the filings the value came
+    from; `same_tag` is FALSE when the bridge mixes ladder tags (say operating income
+    for the year, pre-tax YTD).
     """
     return f"""
     WITH c AS ({source or concept_sql(policy)}),
     fy AS (
-        SELECT cik, value, period_end, tag, accn
+        SELECT cik, value, period_end, tag, accn, filed, priority, period_start
         FROM c WHERE period_kind = 'annual'
-        QUALIFY row_number() OVER (PARTITION BY cik ORDER BY period_end DESC) = 1
+        QUALIFY row_number() OVER (PARTITION BY cik
+            ORDER BY period_end DESC, filed DESC, priority ASC, period_start DESC) = 1
     ),
     ytd AS (
         SELECT c.cik, c.value, c.period_start, c.period_end, c.period_kind, c.tag, c.accn
@@ -94,14 +99,16 @@ def ttm_flow_sql(policy: Policy, source: str | None = None) -> str:
         WHERE c.period_kind IN ('quarterly', 'semiannual', 'ytd9m')
           AND c.period_end > fy.period_end
           AND abs(datediff('day', fy.period_end, c.period_start)) <= 10
-        QUALIFY row_number() OVER (PARTITION BY c.cik ORDER BY c.period_end DESC) = 1
+        QUALIFY row_number() OVER (PARTITION BY c.cik
+            ORDER BY c.period_end DESC, c.tag = fy.tag DESC, c.filed DESC, c.priority ASC, c.period_start DESC) = 1
     ),
     ytd_prior AS (
         SELECT p.cik, p.value, p.tag, p.accn
-        FROM c p JOIN ytd y ON p.cik = y.cik AND p.period_kind = y.period_kind
+        FROM c p JOIN ytd y ON p.cik = y.cik AND p.period_kind = y.period_kind JOIN fy ON fy.cik = p.cik
         WHERE datediff('day', p.period_start, y.period_start) BETWEEN 355 AND 375
           AND datediff('day', p.period_end, y.period_end) BETWEEN 355 AND 375
-        QUALIFY row_number() OVER (PARTITION BY p.cik ORDER BY p.period_end DESC) = 1
+        QUALIFY row_number() OVER (PARTITION BY p.cik
+            ORDER BY p.period_end DESC, p.tag = fy.tag DESC, p.filed DESC, p.priority ASC, p.period_start DESC) = 1
     )
     SELECT fy.cik,
            CASE WHEN ytd_prior.value IS NOT NULL THEN fy.value + ytd.value - ytd_prior.value
