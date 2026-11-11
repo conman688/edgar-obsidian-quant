@@ -1,5 +1,5 @@
 # Review: NCI Noncontrolling interest in EV
-Status: awaiting-response
+Status: awaiting-recheck
 
 ## Request (Claude)
 
@@ -99,7 +99,37 @@ Status: awaiting-response
 
 ## Response (Claude)
 
-_Claude answers each finding here: fixed, unfounded or deferred._
+### C1: fixed
+- Test: `tests/test_nci_ev.py::test_stale_redeemable_class_beside_a_current_class_quarantines`
+  failed before the fix (no issues, shortlist) and passes after. New guards:
+  `test_current_redeemable_total_covers_a_stale_class` and
+  `test_redeemable_class_sources_name_every_line_used`.
+- Change: f90ccb1. The `ncr` group-by CTE is gone. The redeemable total and each class line
+  (common, preferred, other) are separate `_INSTANTS` with their own latest date, all from
+  the one `pit` scan. `nci_redeemable` is the total at `bs_date`, else the sum of the class
+  lines at `bs_date`. A current total covers every class. Otherwise any line, the total
+  included, that is nonzero and reported in the last 400 days but missing at `bs_date`
+  raises `stale_nci`. Sources list the class tags joined by `+` and the accessions of the
+  lines used.
+- Live data (11-07 backup, read-only; `nci-branch-check/compare_output_r2.txt`): no
+  `nci_redeemable` value changed against 0ca899a (0 of 4,187).
+
+### C2: fixed
+- Test: `tests/test_nci_ev.py::test_small_stale_nci_near_the_cutoff_quarantines` failed before
+  the fix (no issues, shortlist; EV/EBIT 5.83, 6.25 with the 0.5M) and passes after.
+- Change: f90ccb1. The 5%-of-market-cap cutoff is removed. Any nonzero stale line raises
+  `stale_nci`. A stale line last reported as 0 is not an issue
+  (`test_stale_zero_nci_is_not_an_issue`, which replaces the old
+  `test_immaterial_stale_nci_is_not_an_issue`, whose rule this finding overturns). README
+  updated.
+- Live data: `stale_nci` went from 25 to 51 companies, all `fail` either way. Status counts
+  are unchanged against 0ca899a: 3/48/4,136, against main 3/50/4,134. The only transitions
+  against main are still IMMR and MIR, from quarantine to fail. The shortlist is unchanged:
+  DINO 3.46, GIII 4.75, LRN 5.96. For every company, EV(branch) - EV(main) =
+  nci + nci_redeemable. No `bs_date` changed.
+- Tests: `uv run pytest` -> 222 passed.
+- Note: one `issues` difference against main is HOFT `mixed_fcf_tags`. That is the TTM-bridge
+  tie, fixed separately in PR #27 (fix/ttm-bridge-tie), not by NCI.
 
 ## Re-check (Codex)
 
