@@ -66,10 +66,12 @@ DEI_SHARES = "EntityCommonStockSharesOutstanding"
 
 _INSTANTS = {"sh": "shares_outstanding", "cash": "cash", "sti": "st_investments", "dt": "debt_total",
              "dc": "debt_current", "dn": "debt_noncurrent", "stb": "short_term_debt",
-             "gw": "goodwill", "eq": "equity", "nci": "nci", "ncr": "nci_redeemable"}
+             "gw": "goodwill", "eq": "equity", "nci": "nci"}
 # Debt tags that already include short-term borrowings, so those are not added again.
 _DEBT_INCL_SHORT_TERM = ("DebtLongtermAndShorttermCombinedAmount", "DebtCurrent")
 _FLOWS = ("ebit", "cfo", "capex")
+# Redeemable NCI: the total, else the sum of its class lines reported for the same date.
+_NCR = ("nci_redeemable", "nci_redeemable_common", "nci_redeemable_preferred", "nci_redeemable_other")
 
 
 def valuation_sql(policy: Policy = "as_last_known") -> str:
@@ -79,9 +81,21 @@ def valuation_sql(policy: Policy = "as_last_known") -> str:
 
     parts = {k: latest_instant_sql(policy, one(c)) for k, c in _INSTANTS.items()}
     parts |= {k: ttm_flow_sql(policy, one(k)) for k in _FLOWS}
+    parts["ncr"] = f"""
+        SELECT cik, period_end,
+               coalesce(max(value) FILTER (WHERE concept = '{_NCR[0]}'),
+                        sum(value) FILTER (WHERE concept <> '{_NCR[0]}')) AS value,
+               coalesce(max(tag) FILTER (WHERE concept = '{_NCR[0]}'),
+                        string_agg(tag, '+' ORDER BY tag) FILTER (WHERE concept <> '{_NCR[0]}')) AS tag,
+               CASE WHEN count(*) FILTER (WHERE concept = '{_NCR[0]}') > 0
+                    THEN list(accn) FILTER (WHERE concept = '{_NCR[0]}')
+                    ELSE list_sort(list_distinct(list(accn) FILTER (WHERE concept <> '{_NCR[0]}'))) END AS accns
+        FROM pit WHERE concept IN {_NCR} AND period_kind = 'instant'
+        GROUP BY cik, period_end
+        QUALIFY row_number() OVER (PARTITION BY cik ORDER BY period_end DESC) = 1"""
     ctes = ",\n".join(f"{k} AS ({v})" for k, v in parts.items())
     return f"""
-    WITH pit AS MATERIALIZED ({concepts_sql(policy, tuple(_INSTANTS.values()) + _FLOWS)}),
+    WITH pit AS MATERIALIZED ({concepts_sql(policy, tuple(_INSTANTS.values()) + _FLOWS + _NCR)}),
     {ctes},
     px AS (
         SELECT cik, close_raw, price_date FROM prices WHERE price_date <= $as_of
@@ -219,7 +233,7 @@ def valuation_sql(policy: Policy = "as_last_known") -> str:
                    {{'item': 'nci', 'tag': nci.tag, 'period_end': nci.period_end,
                      'accns': CASE WHEN nci.period_end = bs.bs_date THEN [nci.accn] END}},
                    {{'item': 'nci_redeemable', 'tag': ncr.tag, 'period_end': ncr.period_end,
-                     'accns': CASE WHEN ncr.period_end = bs.bs_date THEN [ncr.accn] END}},
+                     'accns': CASE WHEN ncr.period_end = bs.bs_date THEN ncr.accns END}},
                    {{'item': 'ebit', 'tag': ebit.tag, 'period_end': ebit.period_end, 'accns': ebit.accns}},
                    {{'item': 'cfo', 'tag': cfo.tag, 'period_end': cfo.period_end, 'accns': cfo.accns}},
                    {{'item': 'capex', 'tag': capex.tag, 'period_end': capex.period_end, 'accns': capex.accns}}

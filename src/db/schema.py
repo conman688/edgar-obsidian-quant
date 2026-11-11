@@ -412,6 +412,10 @@ CONCEPT_SEED: list[tuple[str, str, str, str, int]] = [
     # Redeemable NCI sits in temporary equity, outside both equity and liabilities.
     ("nci_redeemable", "us-gaap", "RedeemableNoncontrollingInterestEquityCarryingAmount", "USD", 1),
     ("nci_redeemable", "us-gaap", "RedeemableNoncontrollingInterestEquityFairValue", "USD", 2),
+    # Class lines, summed when no total is tagged for that date (KNTK, MCK).
+    ("nci_redeemable_common", "us-gaap", "RedeemableNoncontrollingInterestEquityCommonCarryingAmount", "USD", 1),
+    ("nci_redeemable_preferred", "us-gaap", "RedeemableNoncontrollingInterestEquityPreferredCarryingAmount", "USD", 1),
+    ("nci_redeemable_other", "us-gaap", "RedeemableNoncontrollingInterestEquityOtherCarryingAmount", "USD", 1),
     ("current_assets", "us-gaap", "AssetsCurrent", "USD", 1),
     ("current_liabilities", "us-gaap", "LiabilitiesCurrent", "USD", 1),
     ("total_liabilities", "us-gaap", "Liabilities", "USD", 1),
