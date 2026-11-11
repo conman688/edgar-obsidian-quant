@@ -386,3 +386,25 @@ def test_ten_fold_jump_in_a_day_is_a_price_break(con):
     add_company(con, CIK, "CHRD", cheap_company())
     con.execute("INSERT INTO prices (cik, ticker, price_date, close_raw, source) VALUES (?, 'CHRD', DATE '2024-03-01', 0.9, 't'), (?, 'CHRD', DATE '2024-03-04', 12.0, 't')", [CIK, CIK])
     assert "price_break" in val_row(con)["issues"]
+
+
+CFO = "NetCashProvidedByUsedInOperatingActivities"
+CFO_CONT = "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations"
+
+
+@pytest.mark.parametrize("plain_first", [True, False])
+def test_tied_prior_year_ytd_is_picked_the_same_way(con, plain_first):
+    # HOFT on 2026-11-07: two prior-year YTD rows end on the same day with starts one day
+    # apart: the current 10-Q's comparative (the year's tag) and an old 10-Q's own figure
+    # (another tag). row_number() ordered by period_end alone took either, run to run.
+    tags = cheap_company()
+    del tags[(GAAP, CFO, "USD")]
+    plain = {(GAAP, CFO, "USD"): [fact("2023-01-02", "2023-06-30", 500_000, "2023-08-01", "q2old", "10-Q", fp="Q2")]}
+    cont = {(GAAP, CFO_CONT, "USD"): [
+        annual(2_500_000), fact("2024-01-01", "2024-06-30", 1_250_000, "2024-08-01", "q2", "10-Q", fp="Q2"),
+        fact("2023-01-01", "2023-06-30", 1_250_000, "2024-08-01", "q2", "10-Q", fp="Q2")]}
+    tags.update({**plain, **cont} if plain_first else {**cont, **plain})
+    add_company(con, CIK, "HOFT", tags)
+    row = val_row(con)
+    assert row["cfo_ttm"] == 2_500_000 and row["fcf_same_tag"]
+    assert row["issues"] == []
