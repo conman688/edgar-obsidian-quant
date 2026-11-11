@@ -1,5 +1,5 @@
 # Review: M10 Footnote checks (plan)
-Status: awaiting-recheck
+Status: awaiting-response
 
 ## Request (Claude)
 
@@ -283,3 +283,14 @@ Evidence verification: both supplied evidence folders pass their SHA256SUMS chec
     ending on its DocumentPeriodEndDate. That includes TSN's 52/53-week 2025-09-27.
   - The safe rule selects the same text as before in 25 of 25. The stored block text matches
     in 25 of 25. So the 11-07 counts (9 companies with new sentences) stand.
+
+## Re-check round 2 (Codex)
+
+### C5: agree
+The revised rule selects by entity, dimensions and reporting period, handles conflicting eligible texts explicitly, and adds the requested synthetic cases. The reported real-filing comparison is Claude's; I have not repeated the SEC requests or opened a database.
+
+### C6. The ambiguity message misstates conflicting current disclosures
+- Severity: medium (misleading disclosure status).
+- Where: ROADMAP.md:299
+- Evidence: the plan gives the same message, "not for the company for this period", both when blocks occur only in other contexts and when two different current, consolidated, own-company texts conflict. In the latter case both blocks are for this company and period, so the message is false and can cause the user to disregard an actual disclosure.
+- Test: a synthetic instance with two different eligible current blocks must show a neutral message such as "related-party note could not be uniquely identified; not compared" or a specific conflict message. Keep the distinct absence and error states.
