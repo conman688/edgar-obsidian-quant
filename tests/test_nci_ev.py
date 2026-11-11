@@ -110,3 +110,28 @@ def test_nci_gone_for_over_400_days_is_not_stale(con):
 def test_nci_filed_after_as_of_is_not_seen(con):
     row = company_with(con, {NCI: [inst("2024-06-30", 2_000_000, "2024-09-10", "q2late")]})
     assert row["nci"] == 0 and row["ev"] == 7_000_000
+
+
+RED_COMMON = (GAAP, "RedeemableNoncontrollingInterestEquityCommonCarryingAmount", "USD")
+RED_PREFERRED = (GAAP, "RedeemableNoncontrollingInterestEquityPreferredCarryingAmount", "USD")
+RED_OTHER = (GAAP, "RedeemableNoncontrollingInterestEquityOtherCarryingAmount", "USD")
+
+
+def test_redeemable_nci_tagged_only_by_class_is_summed(con):
+    # KNTK, MCK on 2026-11-07: redeemable NCI only in class lines, no total.
+    row = company_with(con, {RED_COMMON: [inst("2024-06-30", 1_000_000)],
+                             RED_PREFERRED: [inst("2024-06-30", 500_000)],
+                             RED_OTHER: [inst("2024-06-30", 250_000)]})
+    assert row["nci_redeemable"] == 1_750_000 and row["ev"] == 8_750_000
+
+
+def test_redeemable_total_beats_its_class_lines(con):
+    row = company_with(con, {REDEEMABLE: [inst("2024-06-30", 1_000_000)],
+                             RED_COMMON: [inst("2024-06-30", 600_000)],
+                             RED_PREFERRED: [inst("2024-06-30", 400_000)]})
+    assert row["nci_redeemable"] == 1_000_000
+
+
+def test_recent_redeemable_class_line_missing_at_balance_sheet_date_is_stale(con):
+    row = company_with(con, {RED_COMMON: [inst("2023-12-31", 2_000_000, "2024-02-15", "k")]})
+    assert "stale_nci" in row["issues"] and row["nci_redeemable"] == 0
