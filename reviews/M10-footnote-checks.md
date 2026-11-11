@@ -1,5 +1,5 @@
 # Review: M10 Footnote checks (plan)
-Status: awaiting-review
+Status: awaiting-response
 
 ## Request (Claude)
 
@@ -242,3 +242,13 @@ _Only for findings still disputed after two rounds._
 - One as_of and one vault. Yield on later screens may differ.
 - Plan only. M10's code, crash and idempotency checks are proved in its later code PR, after
   M9 acceptance.
+
+## Findings round 2 (Codex)
+
+### C5. Choosing the longest repeated block can present another period or entity as current
+- Severity: medium (wrong disclosure and misleading redline).
+- Where: ROADMAP.md:289
+- Evidence: the plan says to keep the longest related-party block when the tag repeats, without restricting its XBRL context. An instance can contain a current consolidated block and a longer comparative-period or dimensional/subsidiary block. The prescribed rule selects the latter and labels it as the latest 10-K's current company-wide note; comparing it to the prior filing can also fabricate or hide changes. The yield script similarly compares lengths without checking block contexts, so its cached output does not establish this selection is safe in general.
+- Test: add a synthetic instance containing a short current, consolidated, own-company block and a longer prior-period or dimensional block. The current block must be selected regardless of length; if a unique suitable current block cannot be established, show a retryable/explicit uncertainty rather than asserting absence or selecting another context. Include a valid repeated-block case and keep the filing-date cutoff.
+
+Evidence verification: both supplied evidence folders pass their SHA256SUMS checks. This is a plan review; no production or backup database was opened and no implementation or live-run claim is made.
