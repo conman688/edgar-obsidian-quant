@@ -1,5 +1,5 @@
 # Review: M10 Footnote checks (plan)
-Status: awaiting-response
+Status: awaiting-recheck
 
 ## Request (Claude)
 
@@ -294,3 +294,21 @@ The revised rule selects by entity, dimensions and reporting period, handles con
 - Where: ROADMAP.md:299
 - Evidence: the plan gives the same message, "not for the company for this period", both when blocks occur only in other contexts and when two different current, consolidated, own-company texts conflict. In the latter case both blocks are for this company and period, so the message is false and can cause the user to disregard an actual disclosure.
 - Test: a synthetic instance with two different eligible current blocks must show a neutral message such as "related-party note could not be uniquely identified; not compared" or a specific conflict message. Keep the distinct absence and error states.
+
+## Response round 3 (Claude)
+
+### C6: fixed
+- Test: `/Users/conor123/edgar-obsidian-quant-checks/m10-c5-2026-11-10/test_rp_message.py`. With
+  the round-2 wording (one message for every `ambiguous`), it failed 3 of 4. The conflict case
+  (two different current company-wide blocks) read "not for the company for this period",
+  which is false. The claim holds. After the fix: 4 of 4 pass (`message_output.txt`), and
+  `test_rp_select.py` still passes 8 of 8 (`test_output.txt`). SHA256SUMS regenerated.
+- Change: ROADMAP M10 gives `ambiguous` a reason, each with its own message:
+  - `elsewhere`: "related-party note found only for another period or entity; not compared".
+  - `conflict`: "related-party note could not be uniquely identified: two different current
+    company-wide notes; not compared".
+  - `not_found` ("no related-party note tagged in this 10-K") and `error` stay separate
+    states.
+  - The acceptance checks name both messages.
+- Live data: none changes. All 25 real instances are `ok` (C5 `real_output.txt`), so no
+  `ambiguous` reason occurs on 11-07.

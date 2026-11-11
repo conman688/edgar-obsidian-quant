@@ -295,10 +295,15 @@ How (reusing M7, no new dependency):
   (entity identifier = its CIK), has no dimensions (no segment or scenario, so no subsidiary or
   legal-entity member), and ends on the instance's `dei:DocumentPeriodEndDate`. Identical
   repeats count once. Length never decides. If there is no block at all, the result is
-  `not_found`. If blocks exist only in other contexts (a prior period, a subsidiary, another
-  entity), or two different current texts exist, the result is `ambiguous`. It is shown as
-  "related-party note found, but not for the company for this period: not compared", never as
-  absent and never as the current note. On 11-07, each of the 25 instances behind the
+  `not_found`. Otherwise the result is `ambiguous`, with one of two reasons, each with its
+  own message (review C6). Neither is ever shown as absent or as the current note:
+  - `elsewhere`: blocks exist only in other contexts (a prior period, a subsidiary, another
+    entity). Shown as "related-party note found only for another period or entity; not
+    compared".
+  - `conflict`: two different current company-wide texts exist. Shown as "related-party note
+    could not be uniquely identified: two different current company-wide notes; not
+    compared".
+  On 11-07, each of the 25 instances behind the
   related-party test has exactly one block, in the filer's own non-dimensional context ending
   on its DocumentPeriodEndDate, so this rule changes no result there.
 - Storage: section `fn_related_party` in `filing_sections` (no migration), with its own parser
@@ -334,8 +339,10 @@ Checks:
   - A short current consolidated block beside a longer prior-period, subsidiary-dimension or
     other-entity block selects the current block.
   - Identical repeats are one block.
-  - Blocks only for a prior period or only for a subsidiary give `ambiguous`, and so do two
-    different current texts.
+  - Blocks only for a prior period or only for a subsidiary give `ambiguous` (`elsewhere`),
+    with the "only for another period or entity" message.
+  - Two different current texts give `ambiguous` (`conflict`), with the "could not be uniquely
+    identified" message, never the "another period or entity" one.
   - None of these is ever `not_found`, and an `ambiguous` prior 10-K means "no comparison".
 - A block present only in the current 10-K shows its text with "no comparison". An instance
   with no tag stores `not_found`, is shown as "no related-party note tagged in this 10-K", and
