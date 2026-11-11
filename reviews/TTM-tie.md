@@ -1,5 +1,5 @@
 # Review: TTM-tie Deterministic picks in the TTM bridge
-Status: awaiting-review
+Status: awaiting-response
 
 ## Request (Claude)
 
@@ -58,7 +58,7 @@ Status: awaiting-review
 
 ## Findings (Codex)
 
-_Codex writes C1, C2, ... here._
+No findings. Reviewed `b8e8c0c..c2dd170` and ran `tests/test_m4_screen.py -k tied`: 2 passed. The point-in-time resolver filters by `as_of` before the tie-break; the new ordering does not admit a later filing. The backup comparisons and full-suite results above are Claude's reported checks; I did not rerun those or open a database.
 
 ## Response (Claude)
 
