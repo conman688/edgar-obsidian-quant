@@ -249,99 +249,95 @@ code checked out in the repository folder, so keep `main` checked out there. Ope
 unattended weeks" check, 2026-11-06 to about 2026-11-19; `run_log` and `Reports/Health.md`
 show each run.
 
-### M10 Footnote checks (size: M, planned; starts only after the M9 two-week check passes)
+### M10 Footnote checks: related-party only (size: S, planned; starts only after the M9 two-week check passes)
 
-Decision (user, 2026-11-05 and R1): footnotes first, narrow: going-concern, related-party and
-debt-default text for the vault companies only. Plan written 2026-11-07, before any code; facts
-below were checked against SEC on 2026-11-07. Revised after review round 1
-(`reviews/M10-footnote-checks.md`).
+Decision (user, 2026-11-05 and R1): footnotes first, narrow. Plan written 2026-11-07, revised
+after review round 1 (`reviews/M10-footnote-checks.md`). **Scope cut to related-party only by the
+user on 2026-11-10**, after a read-only yield test on the 2026-11-07 vault
+(`edgar-obsidian-quant-checks/m10-yield-2026-11-07.md`, outside the repo). Of the 59 vault
+companies, 25 file 10-Ks. Results for those 25:
+
+| Planned check | Flagged on 11-07 |
+|---|---|
+| Going-concern (tag or phrase) | 0 (the phrase scan finds 3 sentences in DarkPulse, the positive control) |
+| Reported default amounts | 0 |
+| Debt wording for review | 3 candidates, none an actual default |
+| Related-party new sentences | 9 companies; by hand, SDHC, IMMR and TSN are substantive, about 5 are routine |
+
+Tightening the redline normalization did not separate routine updates from substantive ones:
+collapsed comparative-year lists and a 0.7 threshold still flag 8 to 9 companies. The routine
+cases are rewordings ("de minimis"), not changed numbers. So M7's `redline` is used as is, and
+the sentences are shown for the user to read.
 
 Ground rules:
 - Informational only: M10 never changes screen status, rank or shortlist membership.
-- Annual only: the latest 10-K filed by `as_of` (and the one before it, for comparison). Every
-  result shows that 10-K's report date, filing date and accession, and says "10-K only". 10-Q,
+- Annual only: the latest 10-K/10-KT filed by `as_of`, and the one before it for comparison.
+  Every result shows that 10-K's report date, filing date and accession, and says "10-K only".
   10-K/A and 20-F/40-F filers are not covered and are shown as "not covered".
-- A missing tag, phrase or amount is never shown as "no problem": it is "not found" or
-  "not reported in this 10-K".
-- Text matches are **candidates for manual review**, not findings. No language classifier.
-- Full selected text stays readable in the vault with its accession and URL.
+- A missing block is never shown as "no related-party dealings". It is "no related-party note
+  tagged in this 10-K".
+- New sentences are **candidates for manual review**, not findings. No language classifier.
+- The full current text stays readable in the vault, with its accession and URL.
 
-What it adds, per vault company that files 10-Ks (25 of the 59 vault companies on 2026-11-06,
-49 stored 10-Ks):
+What it adds, per vault company that files 10-Ks:
+- **Source:** `us-gaap:RelatedPartyTransactionsDisclosureTextBlock` in the 10-K's XBRL instance.
+- **Shown as:** the current text when tagged. Then the new and removed sentences against the
+  prior 10-K, or "no comparison" when the prior 10-K has no such block, its instance is not
+  found, or there is no prior 10-K.
 
-| Check | Source | Shown as |
-|---|---|---|
-| Going-concern | `us-gaap:SubstantialDoubtAboutGoingConcernTextBlock` in the latest 10-K's XBRL instance; and a phrase scan of the whole 10-K text (notes and auditor's report): a sentence with both "substantial doubt" and "going concern" | `tagged`, `text only` (phrase, no tag) or `none found` ("no tagged block or phrase found") |
-| Related-party | `us-gaap:RelatedPartyTransactionsDisclosureTextBlock` | the current text if present; new and removed sentences against the prior 10-K, or "no comparison" when the prior 10-K has no such block or there is no prior 10-K |
-| Reported default amount | `DebtDefaultLongtermDebtAmount`, `DebtDefaultShorttermDebtAmount` in `xbrl_facts` | see "Default amounts" below |
-| Debt-default language | the current debt note (`DebtDisclosureTextBlock`, or `LongTermDebtTextBlock` when that is the one tagged) | every current sentence containing "in default", "not in compliance", "waiver", "forbearance" or "accelerat", each marked `new` or `unchanged` against the prior 10-K, or "no comparison"; labelled "review: default-related wording", never "in default" |
-
-Default amounts (sparse facts; same rule as `src/forensics.py`, which reads the latest fiscal
-year only so an old value is never shown as current):
-- Read only facts from the selected latest 10-K's own accession with `period_end` equal to its
-  report date, `filed <= as_of` and `period_end <= as_of`. Values from older reports are never
-  carried forward.
-- Absent: "not reported in this 10-K" (unknown, not zero). Explicit 0: "reported zero".
-  Positive: the amount, its period end and filing, and the flag `debt_default_reported`.
+How (reusing M7, no new dependency):
+- Per new 10-K: `index.json` of the filing folder to find the one `*_htm.xml` instance. Its name
+  does not always follow the primary document (`darkpulse_i10k-123125_htm.xml`). Then fetch the
+  instance and read the text block with the stdlib XML parser. When a filing repeats the block,
+  keep the longest. Its HTML becomes text through the existing `html_text`. That is two
+  requests per new 10-K through `SecClient`; raw files are not kept.
+- Storage: section `fn_related_party` in `filing_sections` (no migration), with its own parser
+  version. It is written in one transaction per filing, separately from `risk_factors`.
+  `risk_factors` being complete never skips a missing `fn_related_party`, and the other way
+  round.
+- Status per row:
+  - `ok`: the block was found.
+  - `not_found`: the instance parsed and the tag is absent. This is final, and the filing is
+    not fetched again.
+  - `error`: the request failed, the index has no or several `*_htm.xml`, or the XML does not
+    parse. The row is retried on the next run and listed in the health report's warnings. An
+    `error` row is never shown as "not found".
 - If the selected 10-K's report date is more than 470 days before `as_of` (forensics'
-  `STALE_FY_DAYS`), all M10 results for that company are marked stale.
-
-How (reusing M7, no new dependency; edgartools only as a test reference in a throwaway venv):
-- Per new 10-K: `index.json` of the filing folder to find the one `*_htm.xml` instance (its name
-  does not always follow the primary document: `darkpulse_i10k-123125_htm.xml`), then the
-  instance (GIII 3.2 MB, DarkPulse 1.1 MB). Text-block facts read with the stdlib XML parser,
-  their HTML turned into text with the existing `html_text`. Two requests per new 10-K through
-  `SecClient`; raw files are not kept.
-- The going-concern phrase scan runs on the 10-K document `fetch-text` already downloads.
-- Storage in `filing_sections` (no migration), in two families, each with its own parser
-  version, each written in one transaction per filing:
-  - document family (one download): `risk_factors`, `gc_phrase`;
-  - instance family (index + instance): `fn_going_concern`, `fn_related_party`, `fn_debt`.
-- A family is complete for a filing only when all its sections exist at its current parser
-  version. Each family is checked on its own: a complete document family never skips a missing
-  instance family, and the other way round.
-- Status per row: `ok` (found), `not_found` (the instance or document parsed and the tag or
-  phrase is absent: final, not fetched again), or `error` (request failed, no or several
-  `*_htm.xml` in the index, XML that does not parse: retried on the next run and listed in the
-  health report's warnings). An `error` row is never shown as "not found".
+  `STALE_FY_DAYS`), the company's M10 result is marked stale.
 - Runs inside `fetch-text`, so the weekly job's steps do not change.
-- Vault: company note gets a "Footnotes" section (report date, filing, "10-K only", each check
-  with its text and provenance) and a `footnote_flags` frontmatter list: `going_concern_tagged`,
-  `going_concern_text`, `debt_default_reported`, `debt_language_review`, `related_party_new`.
-  Journal notes are never touched.
+- Vault: the company note gets a "Related parties" section (report date, filing, "10-K only",
+  the new and removed sentences, the full text folded below with provenance). Frontmatter gets
+  `related_party_new: <count>`, which is empty when there is no comparison. Journal notes are
+  never touched.
 
 Checks:
-- GIII 10-K 0001104659-26-033891: stored text equals the inline 10-K text with continuation parts
-  joined, compared with **all whitespace removed**: related-party 1,484 characters, debt 6,777.
-  The first inline part alone gives 908 for debt, so the test fails on that shortcut.
-- DarkPulse 10-K 0001683168-26-002937 (CIK 866439): going-concern `tagged`.
-- Synthetic 10-K with going-concern language but no tag: `text only`, never `none found`.
-- Synthetic 10-K with neither: `none found`, shown as "no tagged block or phrase found".
-- Debt language (R1-style fixtures): "We are not in default under any debt agreement." and "If we
-  fail to comply with financial covenants, lenders may accelerate repayment." are shown only as
-  review candidates and never set `debt_default_reported`.
-- An unchanged paragraph "We are in default under our loan agreement and the lender may demand
-  repayment." in both 10-Ks is shown as a current candidate marked `unchanged`; a first debt note
-  with no prior 10-K shows its candidates with "no comparison".
-- Default amounts: a positive 2020 amount plus a 2025 10-K with no default tag shows "not
-  reported in this 10-K", not a current default and not zero; an explicit 0 shows "reported
-  zero"; a positive amount in the selected 10-K sets `debt_default_reported` with its period
-  and filing.
-- Point-in-time: a 10-K or a default amount filed after `as_of` is never read; comparisons use
-  the latest two 10-Ks filed by `as_of`.
-- Ledger: a run stopped after the `risk_factors` row and before the instance family is written
-  fills the missing sections on the next run without refetching the document; a failed instance
-  request, an index with zero or two `*_htm.xml` files, and malformed XML each leave an `error`
-  row that is retried next run and reported; a parsed instance with no tag stores `not_found`
-  and is not fetched again.
+- GIII 10-K 0001104659-26-033891: the stored text equals the inline 10-K's related-party text,
+  continuation parts joined, compared with **all whitespace removed**: 1,484 characters.
+- On the 11-07 vault, read-only: 13 companies have a block. 9 show new sentences against the
+  prior 10-K: CXM 3, GIII 2, IMMR 6, LIEN 18, LRN 3, MIR 1, RSI 2, SDHC 6 and TSN 3. GLIBA has
+  no comparison. NSLR, OFLX and SMID show 0. The live run reproduces this with the same
+  as_of, or explains each difference.
+- A block present only in the current 10-K shows its text with "no comparison". An instance
+  with no tag stores `not_found`, is shown as "no related-party note tagged in this 10-K", and
+  is not fetched again.
+- A failed instance request, an index with zero or two `*_htm.xml` files, and malformed XML
+  each leave an `error` row that is retried next run and reported.
+- A crash after the `risk_factors` row commits and before `fn_related_party` commits fills
+  `fn_related_party` on the next run without refetching the document.
+- Point-in-time: a 10-K filed after `as_of` is never read. Comparisons use the latest two 10-Ks
+  filed by `as_of`.
 - A second `fetch-text` downloads 0 documents; a second `sync-vault` writes 0 files.
 - Screen output (status, rank, shortlist) is identical with and without M10 data.
-- Live run on the vault companies (vault backed up first): requests made, 10-Ks read, counts per
-  status, the companies flagged; parity with edgartools on 3 vault companies offline.
+- Live run on the vault companies, with the vault backed up first: requests made, 10-Ks read,
+  counts per status, the companies with new sentences.
 
-Not in scope: executive pay, 10-Q footnotes, 10-K/A, 20-F/40-F (IFRS) filers, other text blocks,
-classifying language automatically, events after the latest balance sheet (8-K deals such as
-GIII's Marc Jacobs purchase).
+Not in scope:
+- Dropped on 2026-11-10 for zero yield on the 11-07 vault (the yield note above has the
+  numbers): going-concern (tag and phrase scan), reported default amounts
+  (`DebtDefault*Amount`) and debt-note wording. Revisit if the vault starts to hold distressed
+  filers.
+- Also out: executive pay, 10-Q footnotes, 10-K/A, 20-F/40-F (IFRS) filers, other text blocks,
+  classifying language automatically, and events after the latest balance sheet.
 
 ### M11 Quarantine checks (size: M, planned; starts after M10)
 

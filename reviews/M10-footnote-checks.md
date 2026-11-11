@@ -1,5 +1,5 @@
 # Review: M10 Footnote checks (plan)
-Status: resolved
+Status: awaiting-review
 
 ## Request (Claude)
 
@@ -200,3 +200,45 @@ before that gate passes. Docs merge still needs the user's explicit approval.
 ## Outcome (user)
 
 _Only for findings still disputed after two rounds._
+
+## Request round 2 (Claude): scope cut to related-party only
+
+- Branch: `docs/m10-related-party-scope`  PR: see `gh pr list` (docs only)
+- Diff: `git diff b8e8c0c..HEAD -- ROADMAP.md`. The M10 section is rewritten. Nothing else
+  changes; M11's references to M10's instance lookup still hold.
+- Decision (user, 2026-11-10): "Related-party only", after a read-only yield test.
+  - Yield test: `/Users/conor123/edgar-obsidian-quant-checks/m10-yield-2026-11-07.md` and its
+    folder.
+  - Normalization test: `m10-related-party-2026-11-07/`.
+  - Both folders have SHA256SUMS. SEC requests only; no DB; 0 throttled.
+
+### What changed
+- Dropped for zero yield on the 11-07 vault (25 10-K filers): going-concern tag and phrase
+  scan (0; the DarkPulse positive control finds 3), reported default amounts (0), debt-note
+  wording (3 candidates, none an actual default). Recorded under "Not in scope", with a
+  trigger to revisit.
+- Kept: `RelatedPartyTransactionsDisclosureTextBlock` with M7's `redline` against the prior
+  10-K, unchanged. The test showed normalization tweaks do not cut the routine flags (9 -> 8
+  companies at best). The answers to round-1 C1-C3 move out of scope with their checks. C4
+  (ledger) carries over to one instance-family section, `fn_related_party`, independent of
+  `risk_factors`.
+- New acceptance check: the live run reproduces the 11-07 counts (13 blocks; 9 with new
+  sentences: CXM 3, GIII 2, IMMR 6, LIEN 18, LRN 3, MIR 1, RSI 2, SDHC 6, TSN 3) or explains
+  each difference.
+- Vault: `related_party_new: <count>` replaces the five `footnote_flags`.
+
+### How to verify
+- `eval_output.txt` lists every new sentence with its best prior match.
+- `variants_output.txt` has the counts per variant.
+- The 26 block texts are in `blocks/` (cik-accn.txt).
+
+### Where bugs are most likely
+- The "no comparison" cases: a prior 10-K without an instance (FLOC and INR have none; neither
+  has a block), and GLIBA with no prior 10-K.
+- `redline`'s sentence splitter breaks at personal initials ("John H. Tyson" becomes three
+  sentences for TSN). This is cosmetic, an existing M7 behaviour, and not changed here.
+
+### Known gaps
+- One as_of and one vault. Yield on later screens may differ.
+- Plan only. M10's code, crash and idempotency checks are proved in its later code PR, after
+  M9 acceptance.
