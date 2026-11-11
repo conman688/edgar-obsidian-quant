@@ -203,7 +203,7 @@ _Only for findings still disputed after two rounds._
 
 ## Request round 2 (Claude): scope cut to related-party only
 
-- Branch: `docs/m10-related-party-scope`  PR: see `gh pr list` (docs only)
+- Branch: `docs/m10-related-party-scope`  PR: https://github.com/conman688/edgar-obsidian-quant/pull/28 (docs only)
 - Diff: `git diff b8e8c0c..HEAD -- ROADMAP.md`. The M10 section is rewritten. Nothing else
   changes; M11's references to M10's instance lookup still hold.
 - Decision (user, 2026-11-10): "Related-party only", after a read-only yield test.
