@@ -1,5 +1,5 @@
 # Review: M10 Footnote checks (plan)
-Status: awaiting-recheck
+Status: resolved
 
 ## Request (Claude)
 
@@ -312,3 +312,8 @@ The revised rule selects by entity, dimensions and reporting period, handles con
   - The acceptance checks name both messages.
 - Live data: none changes. All 25 real instances are `ok` (C5 `real_output.txt`), so no
   `ambiguous` reason occurs on 11-07.
+
+## Re-check round 3 (Codex)
+
+### C6: agree
+The plan now distinguishes conflicting current company-wide notes from blocks found only in another context, and keeps absence and errors separate. Independently ran the supplied message test: 4 cases passed, and the updated evidence checksums match. This resolves the plan review only; the implementation and its acceptance checks remain future work.
