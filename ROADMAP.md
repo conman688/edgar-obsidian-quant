@@ -288,17 +288,30 @@ What it adds, per vault company that files 10-Ks:
 How (reusing M7, no new dependency):
 - Per new 10-K: `index.json` of the filing folder to find the one `*_htm.xml` instance. Its name
   does not always follow the primary document (`darkpulse_i10k-123125_htm.xml`). Then fetch the
-  instance and read the text block with the stdlib XML parser. When a filing repeats the block,
-  keep the longest. Its HTML becomes text through the existing `html_text`. That is two
-  requests per new 10-K through `SecClient`; raw files are not kept.
+  instance and read the text block with the stdlib XML parser. Its HTML becomes text through
+  the existing `html_text`. That is two requests per new 10-K through `SecClient`; raw files
+  are not kept.
+- Which block is current (review C5): a block counts only when its context belongs to the filer
+  (entity identifier = its CIK), has no dimensions (no segment or scenario, so no subsidiary or
+  legal-entity member), and ends on the instance's `dei:DocumentPeriodEndDate`. Identical
+  repeats count once. Length never decides. If there is no block at all, the result is
+  `not_found`. If blocks exist only in other contexts (a prior period, a subsidiary, another
+  entity), or two different current texts exist, the result is `ambiguous`. It is shown as
+  "related-party note found, but not for the company for this period: not compared", never as
+  absent and never as the current note. On 11-07, each of the 25 instances behind the
+  related-party test has exactly one block, in the filer's own non-dimensional context ending
+  on its DocumentPeriodEndDate, so this rule changes no result there.
 - Storage: section `fn_related_party` in `filing_sections` (no migration), with its own parser
   version. It is written in one transaction per filing, separately from `risk_factors`.
   `risk_factors` being complete never skips a missing `fn_related_party`, and the other way
   round.
 - Status per row:
   - `ok`: the block was found.
-  - `not_found`: the instance parsed and the tag is absent. This is final, and the filing is
-    not fetched again.
+  - `not_found`: the instance parsed and the tag is absent in every context. This is final,
+    and the filing is not fetched again.
+  - `ambiguous`: the instance parsed, but no unique current block exists (see above). This is
+    final for the parser version, never shown as absent, and not compared. A parser bump
+    fetches it again.
   - `error`: the request failed, the index has no or several `*_htm.xml`, or the XML does not
     parse. The row is retried on the next run and listed in the health report's warnings. An
     `error` row is never shown as "not found".
@@ -317,6 +330,13 @@ Checks:
   prior 10-K: CXM 3, GIII 2, IMMR 6, LIEN 18, LRN 3, MIR 1, RSI 2, SDHC 6 and TSN 3. GLIBA has
   no comparison. NSLR, OFLX and SMID show 0. The live run reproduces this with the same
   as_of, or explains each difference.
+- Context (review C5), with synthetic instances:
+  - A short current consolidated block beside a longer prior-period, subsidiary-dimension or
+    other-entity block selects the current block.
+  - Identical repeats are one block.
+  - Blocks only for a prior period or only for a subsidiary give `ambiguous`, and so do two
+    different current texts.
+  - None of these is ever `not_found`, and an `ambiguous` prior 10-K means "no comparison".
 - A block present only in the current 10-K shows its text with "no comparison". An instance
   with no tag stores `not_found`, is shown as "no related-party note tagged in this 10-K", and
   is not fetched again.

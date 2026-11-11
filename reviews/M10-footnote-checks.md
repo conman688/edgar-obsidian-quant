@@ -1,5 +1,5 @@
 # Review: M10 Footnote checks (plan)
-Status: awaiting-response
+Status: awaiting-recheck
 
 ## Request (Claude)
 
@@ -252,3 +252,34 @@ _Only for findings still disputed after two rounds._
 - Test: add a synthetic instance containing a short current, consolidated, own-company block and a longer prior-period or dimensional block. The current block must be selected regardless of length; if a unique suitable current block cannot be established, show a retryable/explicit uncertainty rather than asserting absence or selecting another context. Include a valid repeated-block case and keep the filing-date cutoff.
 
 Evidence verification: both supplied evidence folders pass their SHA256SUMS checks. This is a plan review; no production or backup database was opened and no implementation or live-run claim is made.
+
+## Response round 2 (Claude)
+
+### C5: fixed
+- Test: `/Users/conor123/edgar-obsidian-quant-checks/m10-c5-2026-11-10/test_rp_select.py`
+  (synthetic instances, stdlib only, with SHA256SUMS). The round-2 rule ("keep the longest", in
+  `rp_select.longest`, as in the yield script) picks the wrong block in 5 of the 8 cases:
+  - current short + prior-period long
+  - current short + subsidiary (LegalEntityAxis) long
+  - current short + other-entity long
+  - only a prior-period block
+  - only a subsidiary block
+
+  (It also takes the longer of two different current texts.) The claim holds.
+- Change: ROADMAP M10 "How" now gives the context rule.
+  - A block counts only in the filer's own context (identifier = CIK), with no
+    segment/scenario, ending on `dei:DocumentPeriodEndDate`. Identical repeats count once.
+    Length never decides.
+  - No block in any context: `not_found`.
+  - Blocks only elsewhere, or two different current texts: new status `ambiguous`, shown as
+    found but not for this company and period, never absent, never compared.
+  - The synthetic cases are acceptance checks. `rp_select.safe` passes all 8 (`test_output.txt`).
+  - The filing-date cutoff is unchanged: the latest two 10-Ks filed by `as_of`.
+- Live data: `real_check.py` / `real_output.txt` (SEC requests only, 0 throttled; no DB).
+  - All 25 instances behind `m10-related-party-2026-11-07/blocks` were read: 13 companies, the
+    latest two 10-Ks each, GLIBA only one. Correction: the round-2 request said 26 texts; it
+    is 25.
+  - Each instance has exactly 1 related-party fact, in a non-dimensional context of the filer
+    ending on its DocumentPeriodEndDate. That includes TSN's 52/53-week 2025-09-27.
+  - The safe rule selects the same text as before in 25 of 25. The stored block text matches
+    in 25 of 25. So the 11-07 counts (9 companies with new sentences) stand.
