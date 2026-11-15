@@ -105,6 +105,10 @@ def valuation_sql(policy: Policy = "as_last_known") -> str:
         SELECT cik FROM prices WHERE price_date BETWEEN $as_of - INTERVAL 365 DAY AND $as_of
         GROUP BY cik HAVING count(DISTINCT ticker) > 1
     ),
+    held AS (
+        -- Source actions that could not be tied to a security (review C2): unresolved inputs.
+        SELECT DISTINCT cik FROM price_actions_held WHERE ex_date BETWEEN $as_of - INTERVAL 365 DAY AND $as_of
+    ),
     bs AS (
         -- Balance-sheet date: the newest period among the items EV is built from. An item
         -- last reported before it is stale (the filer stopped tagging it or moved tags).
@@ -180,6 +184,7 @@ def valuation_sql(policy: Policy = "as_last_known") -> str:
                datediff('day', px.price_date, $as_of) AS price_age_days,
                brk.cik IS NOT NULL AS price_break,
                tkc.cik IS NOT NULL AS ticker_change,
+               held.cik IS NOT NULL AS held_source_action,
                -- Cover shares are counted before the price date; a split in between
                -- (NVDA: May 24 count, June 10 split) must scale them to the price's basis.
                px.close_raw * sh.value * split_factor(px.cik, sh.period_end)
@@ -220,7 +225,7 @@ def valuation_sql(policy: Policy = "as_last_known") -> str:
         LEFT JOIN cash USING (cik) LEFT JOIN sti USING (cik) LEFT JOIN debt USING (cik)
         LEFT JOIN gw USING (cik) LEFT JOIN eq USING (cik)
         LEFT JOIN ebit USING (cik) LEFT JOIN cfo USING (cik) LEFT JOIN capex USING (cik)
-        LEFT JOIN hi USING (cik) LEFT JOIN brk USING (cik) LEFT JOIN tkc USING (cik)
+        LEFT JOIN hi USING (cik) LEFT JOIN brk USING (cik) LEFT JOIN tkc USING (cik) LEFT JOIN held USING (cik)
     )
     SELECT *,
         mcap + debt - cash_like AS ev,
@@ -237,6 +242,7 @@ def valuation_sql(policy: Policy = "as_last_known") -> str:
             CASE WHEN close_raw < {MIN_PRICE} THEN 'penny_price' END,
             CASE WHEN price_break THEN 'price_break' END,
             CASE WHEN ticker_change THEN 'ticker_change' END,
+            CASE WHEN held_source_action THEN 'held_source_action' END,
             CASE WHEN foreign_filer THEN 'foreign_filer' END,
             CASE WHEN cash_like IS NULL THEN 'missing_cash' WHEN cash_period_end < bs_date THEN 'stale_cash' END,
             CASE WHEN debt IS NULL THEN 'missing_debt'

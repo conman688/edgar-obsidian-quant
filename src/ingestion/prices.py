@@ -200,7 +200,7 @@ def _store(con: duckdb.DuckDBPyConnection, batch: list[tuple[int, str, date]],
     """
     now = datetime.now()
     prices: dict[str, list] = {f.name: [] for f in PRICE_SCHEMA}
-    windows, keep, splits, divs, status, touched = [], [], [], [], [], []
+    windows, keep, splits, divs, status, touched, tick = [], [], [], [], [], [], {}
     for cik, ticker, start in batch:
         refresh = start != HISTORY_START
         df = frames.get(ticker)
@@ -229,14 +229,16 @@ def _store(con: duckdb.DuckDBPyConnection, batch: list[tuple[int, str, date]],
         prices["volume_raw"] += [None if pd.isna(v) else float(v) for v in closed["volume_raw"]]
         prices["source"] += [SOURCE] * n
         # A full fetch (first load, or a changed primary ticker) replaces only from the source's
-        # first row: a renamed symbol's history can start at the rename, and the stored history
-        # before it must not be deleted (MGPI -> CASK, 2026-11-07). A refresh window also stops
-        # at the first row stored under this ticker, unless the source itself reaches earlier,
-        # so another ticker's rows inside the overlap week survive (review C1 edge).
-        windows.append((cik, ticker, start, raw.index[0].date(), refresh))
+        # first close: a renamed symbol's history can start at the rename, and an action-only
+        # row before it proves no quote coverage (review C2), so the stored history before it
+        # must not be deleted (MGPI -> CASK, 2026-11-07). A refresh window also stops at the
+        # first row stored under this ticker, unless the source's quotes reach earlier, so another
+        # ticker's rows inside the overlap week survive (review C1 edge).
+        windows.append((cik, ticker, start, days[0], refresh))
         keep += [(cik, d.date()) for d in raw.index[raw["close_raw"].isna()]]
         splits += [(cik, d.date(), float(r), SOURCE) for d, r in ratios.items()]
         divs += [(cik, d.date(), float(v), SOURCE) for d, v in raw["dividend_raw"].items() if v > 0]
+        tick[cik] = ticker
         status.append((cik, ticker, "ok", days[0], days[-1], None, now))
         stats.priced += 1
         stats.price_rows += n
@@ -251,6 +253,18 @@ def _store(con: duckdb.DuckDBPyConnection, batch: list[tuple[int, str, date]],
             cuts = [(c, max(s, min(cur.get(c, s), first)) if r else first) for c, t, s, first, r in windows]
             con.register("windows", pa.table({"cik": pa.array([c for c, _ in cuts], pa.int32()),
                                               "start": pa.array([d for _, d in cuts], pa.date32())}))
+            # Source actions before the cut, where history is already stored, cannot be tied to
+            # the old or the new security: held, not stored as the company's (review C2).
+            cut = dict(cuts)
+            before = {c for (c,) in con.execute("SELECT DISTINCT p.cik FROM prices p JOIN windows w USING (cik) "
+                                                "WHERE p.price_date < w.start").fetchall()}
+            unsure = lambda c, d: c in before and d < cut[c]
+            held = [(c, "split", d, r, tick[c], s, now) for c, d, r, s in splits if unsure(c, d)] + \
+                   [(c, "dividend", d, v, tick[c], s, now) for c, d, v, s in divs if unsure(c, d)]
+            splits = [x for x in splits if not unsure(x[0], x[1])]
+            divs = [x for x in divs if not unsure(x[0], x[1])]
+            if held:
+                con.executemany("INSERT INTO price_actions_held VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING", held)
             con.register("keep", pa.table({"cik": pa.array([c for c, _ in keep], pa.int32()),
                                            "price_date": pa.array([d for _, d in keep], pa.date32())}))
             # One set-based delete per table and batch: a DELETE per company would rescan prices.
@@ -281,6 +295,13 @@ def _store(con: duckdb.DuckDBPyConnection, batch: list[tuple[int, str, date]],
             """, status)
         if touched:
             con.executemany("UPDATE price_status SET message = ?, fetched_at = ? WHERE cik = ?", touched)
+        if windows and held:
+            n_held: dict[int, int] = {}
+            for c, *_ in held:
+                n_held[c] = n_held.get(c, 0) + 1
+            con.executemany("UPDATE price_status SET message = ? WHERE cik = ?",
+                            [(f"{n} source action(s) before the first close held in price_actions_held: "
+                              f"not tied to a security", c) for c, n in n_held.items()])
         con.commit()
     except BaseException:
         con.rollback()

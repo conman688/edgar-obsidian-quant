@@ -81,7 +81,8 @@ def since(con: duckdb.DuckDBPyConnection, journals: list[dict], as_of: date) -> 
     when a close after the snapshot was priced under another ticker than the snapshot's: that may
     be another security (review PRICES-ticker-change C1). The snapshot's ticker is the note's own
     `ticker` (it never changes); a note without one uses the stored row on or before the snapshot
-    date, and has no return when that row is gone."""
+    date, and has no return when that row is gone. A held source action (review C2) between the
+    two closes also leaves the return unknown."""
     if not journals:
         return []
     snaps = [j["snapshot"] for j in journals]
@@ -102,7 +103,9 @@ def since(con: duckdb.DuckDBPyConnection, journals: list[dict], as_of: date) -> 
                      j.t0 IS NULL OR EXISTS (SELECT 1 FROM prices p1 WHERE p1.cik = j.cik
                                              AND p1.price_date > j.d0 AND p1.price_date <= n.d1
                                              AND p1.ticker <> j.t0)
-                         OR n.t1 <> j.t0 AS switched
+                         OR n.t1 <> j.t0
+                         OR EXISTS (SELECT 1 FROM price_actions_held h WHERE h.cik = j.cik
+                                    AND h.ex_date > j.d0 AND h.ex_date <= n.d1) AS switched
               FROM j LEFT JOIN n USING (cik))
         SELECT d1, c1, CASE WHEN NOT switched THEN a1 / nullif(a0, 0) - 1 END,
                CASE WHEN NOT gap AND NOT switched THEN (a1 + coalesce(divs, 0)) / nullif(a0, 0) - 1 END

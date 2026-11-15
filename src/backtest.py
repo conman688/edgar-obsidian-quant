@@ -184,6 +184,8 @@ def returns_sql(source: str) -> str:
             SELECT cik, price_date, a, ticker, lag(a) OVER w AS prev, lag(ticker) OVER w AS prev_ticker
             FROM adj WINDOW w AS (PARTITION BY cik ORDER BY price_date)
         ) WHERE a >= {PRICE_BREAK} * prev OR ticker <> prev_ticker
+        UNION ALL
+        SELECT cik, ex_date FROM price_actions_held      -- unresolved source action (review C2)
     ),
     cd AS (
         SELECT cik, ex_date,
