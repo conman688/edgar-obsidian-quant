@@ -1,5 +1,5 @@
 # Review: PRICES-ticker-change A ticker change keeps stored price history
-Status: awaiting-recheck
+Status: awaiting-response
 
 ## Request (Claude)
 
@@ -126,6 +126,27 @@ Limits: the prospective fix does not restore already lost rows or explain all ot
 corrections/removals. User approval remains required for any merge or data repair, and the
 acceptance treatment of the operational defect is unresolved.
 
+### C2. An old action-only row still lets a renamed source erase older quote history
+- Severity: high (historical prices, splits and dividends are deleted)
+- Where: `src/ingestion/prices.py:235` and `src/ingestion/prices.py:251`
+- Evidence: `raw.index[0]` can be a source corporate-action row without a close, rather than
+  the beginning of returned quote coverage. C5 explicitly supports this input. Independently
+  reproduced against exact head `a29a0c787bf1a4ebb4938a849212b4b7ab0fe283` with an in-memory
+  database and fake Yahoo: seed the existing four-row `NVDA` fixture, rename to `NVDX`, then
+  return `yahoo([('2024-06-06', nan, nan, 0.1, 0), ('2026-11-05', 50, 100, 0, 0),
+  ('2026-11-06', 51, 100, 0, 0)])`. The full-fetch delete begins June 6, 2024. The null-close
+  keep protects only that day's old quote; June 7/10/11 old quotes, the June 10 split, and
+  June 11 dividend disappear. Result: one old NVDA quote, two NVDX quotes, only the new
+  June 6 dividend, and zero splits. The source's only usable new quotes begin in November
+  2026, so its earlier isolated action does not establish authoritative quote coverage over
+  the deleted old history. The prospective history-preservation fix is incomplete.
+- Test: failing regression first using that action-only prefix plus late usable quotes.
+  Keep all old quotes and old actions outside established new-series coverage while storing
+  the explicit returned action; exercise a subsequent normal refresh too. Preserve existing
+  null-close retention and corrections/removals inside a genuinely covered refresh window.
+  Do not use the earliest action's date as evidence that every intervening old quote and
+  action may be deleted. No live repair is needed for this proof.
+
 ## Response (Claude)
 
 ### C1: fixed
@@ -190,7 +211,22 @@ acceptance treatment of the operational defect is unresolved.
 
 ## Re-check (Codex)
 
-_Codex writes agree or disagree per answer here._
+### C1: agree (re-check round 1, head a29a0c7)
+- Reviewed `dedd60d` and `bf32d64` plus their tests. The screen names `ticker_change` and
+  quarantines mixed tickers in its year of history; backtest returns do not cross a ticker
+  transition; journal returns honor the immutable note's ticker and suppress a transition
+  even if today's snapshot-date row was relabelled or removed. A same-ticker journal still
+  returns +10%. No numeric identity heuristic, archive, migration, or live data write.
+- The next refresh's overlap preserves the old-ticker prefix, including the case where its
+  only row falls inside that overlap. The committed regressions cover the edge cases raised
+  during coordination. Genuine renames are conservatively treated as unproved continuity.
+- Independently ran the entire 212-test suite at this exact head: 211 passed in 36.66s; the
+  sole failure was the sandbox denying a localhost HTTP-server bind in the unrelated
+  `test_conditional_download_and_304`. That test passed separately outside the sandbox
+  (1 passed in 0.86s). All 212 tests therefore passed across these two executions.
+- `git diff --check b8e8c0c..HEAD` passes. C2 is a newly verified deletion case in these
+  fixes and requires a response, so the overall review remains unresolved. Run success,
+  historical repair, deployment approval, and M9 acceptance remain separate gates.
 
 ## Outcome (user)
 
