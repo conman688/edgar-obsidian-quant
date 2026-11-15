@@ -362,3 +362,102 @@ def test_dividend_on_a_null_quote_from_installed_yfinance_history_survives_a_ref
     assert con.execute(DIVS).fetchall() == [(1, date(2026, 11, 3), 0.25)]
     assert con.execute("SELECT close_raw FROM prices WHERE cik = 1 ORDER BY price_date").fetchall() == \
         [(10.0,), (10.0,), (11.0,)]                             # Nov 3's stored close kept
+
+
+# --- Ticker change (2026-11-14 reconciliation): MGPI -> CASK lost 4,232 price rows and 48 dividends ---
+
+def _rename_nvda(con, new="NVDX"):
+    con.execute("DELETE FROM tickers WHERE cik = 2")
+    con.execute(f"INSERT INTO tickers VALUES (2, '{new}', 'Nvidia', 'Nasdaq', DATE '2026-11-07')")
+    con.execute(f"UPDATE companies SET tickers = ['{new}'] WHERE cik = 2")
+
+
+def test_ticker_change_keeps_both_series_with_their_tickers():
+    # Review C1: a later-starting new symbol may be another security. Nothing stored is deleted,
+    # each row keeps the ticker it was priced under, and a normal refresh leaves that as it is:
+    # the ticker change stays visible in the data for the screen, journal and backtest checks.
+    con = connect(":memory:")
+    seed(con)
+    old = yahoo([("2026-10-01", 100.0, 1e6, 0.0, 0.0), ("2026-10-02", 99.0, 1e6, 1.0, 0.0)])
+    prices.load(con, pause_s=0, download=FakeYahoo({"NVDA": old}))
+    _rename_nvda(con)
+    fake = FakeYahoo({"NVDX": yahoo([("2026-11-05", 50.0, 1e6, 0.0, 0.0), ("2026-11-06", 51.0, 1e6, 0.0, 0.0)])})
+    prices.load(con, pause_s=0, download=fake)
+    fake.frames["NVDX"] = yahoo([("2026-11-05", 50.0, 1e6, 0.0, 0.0), ("2026-11-06", 51.0, 1e6, 0.0, 0.0),
+                                 ("2026-11-09", 52.0, 1e6, 0.0, 0.0)])
+    prices.load(con, pause_s=0, download=fake)
+    q = lambda s: con.execute(s).fetchall()
+    assert q("SELECT ticker, price_date, close_raw FROM prices WHERE cik = 2 ORDER BY price_date") == [
+        ("NVDA", date(2026, 10, 1), 100.0), ("NVDA", date(2026, 10, 2), 99.0),
+        ("NVDX", date(2026, 11, 5), 50.0), ("NVDX", date(2026, 11, 6), 51.0), ("NVDX", date(2026, 11, 9), 52.0)]
+    assert q("SELECT ex_date FROM dividends WHERE cik = 2") == [(date(2026, 10, 2),)]
+    assert q("SELECT ticker FROM price_status WHERE cik = 2") == [("NVDX",)]
+
+
+def test_ticker_change_with_full_source_history_still_replaces_it():
+    # A new primary symbol whose source covers the stored dates is authoritative for them.
+    con = connect(":memory:")
+    seed(con)
+    prices.load(con, pause_s=0, download=FakeYahoo({"NVDA": NVDA}))
+    _rename_nvda(con)
+    full = yahoo([("2024-06-06", 50.0, 1e6, 0.0, 0.0), ("2024-06-11", 51.0, 1e6, 0.0, 0.0)])
+    prices.load(con, pause_s=0, download=FakeYahoo({"NVDX": full}))
+    assert con.execute("SELECT price_date, close_raw FROM prices WHERE cik = 2 ORDER BY 1").fetchall() == \
+        [(date(2024, 6, 6), 50.0), (date(2024, 6, 11), 51.0)]
+    assert con.execute("SELECT count(*) FROM dividends WHERE cik = 2").fetchall() == [(0,)]
+
+
+def test_refresh_after_a_rename_keeps_old_rows_inside_its_window():
+    # Codex, C1 edge 1: only an OLD quote on 10-30, NEW from 11-05. The next normal refresh
+    # starts at 11-06 - 7 days = 10-30; it must not delete the OLD row or its dividend (which
+    # would also clear the two-ticker signal the screen reads).
+    con = connect(":memory:")
+    seed(con)
+    prices.load(con, pause_s=0, download=FakeYahoo({"NVDA": yahoo([("2026-10-30", 100.0, 1e6, 1.0, 0.0)])}))
+    _rename_nvda(con)
+    fake = FakeYahoo({"NVDX": yahoo([("2026-11-05", 50.0, 1e6, 0.0, 0.0), ("2026-11-06", 51.0, 1e6, 0.0, 0.0)])})
+    prices.load(con, pause_s=0, download=fake)
+    last = [r for r in prices.universe(con) if r[0] == 2][0][2]
+    assert last - prices.REFRESH_OVERLAP == date(2026, 10, 30)     # the refresh window reaches the OLD row
+    fake.frames["NVDX"] = yahoo([("2026-11-05", 50.0, 1e6, 0.0, 0.0), ("2026-11-06", 51.5, 1e6, 0.0, 0.0),
+                                 ("2026-11-09", 52.0, 1e6, 0.0, 0.0)])
+    prices.load(con, pause_s=0, download=fake)
+    q = lambda s: con.execute(s).fetchall()
+    assert q("SELECT ticker, price_date, close_raw FROM prices WHERE cik = 2 ORDER BY price_date") == [
+        ("NVDA", date(2026, 10, 30), 100.0), ("NVDX", date(2026, 11, 5), 50.0),
+        ("NVDX", date(2026, 11, 6), 51.5), ("NVDX", date(2026, 11, 9), 52.0)]
+    assert q("SELECT ex_date FROM dividends WHERE cik = 2") == [(date(2026, 10, 30),)]
+
+
+def test_action_only_row_before_the_first_close_does_not_erase_old_history():
+    # Review C2: the renamed source's first row is an action without a close (C5 shape), and
+    # its first usable quotes come two years later. That action proves no quote coverage: the
+    # old quotes, split and dividend stay, and the action is held (not stored as the company's,
+    # not dropped) because it cannot be tied to either security. A later refresh keeps it so.
+    con = connect(":memory:")
+    seed(con)
+    prices.load(con, pause_s=0, download=FakeYahoo({"NVDA": NVDA}))
+    _rename_nvda(con)
+    src = yahoo([("2024-06-06", float("nan"), float("nan"), 0.1, 0.0),
+                 ("2026-11-05", 50.0, 100.0, 0.0, 0.0), ("2026-11-06", 51.0, 100.0, 0.0, 0.0)])
+    fake = FakeYahoo({"NVDX": src})
+    prices.load(con, pause_s=0, download=fake)
+    fake.frames["NVDX"] = yahoo([("2026-11-05", 50.0, 100.0, 0.0, 0.0), ("2026-11-06", 51.0, 100.0, 0.0, 0.0),
+                                 ("2026-11-09", 52.0, 100.0, 0.0, 0.0)])
+    prices.load(con, pause_s=0, download=fake)
+    q = lambda s: con.execute(s).fetchall()
+    assert q("SELECT ticker, count(*) FROM prices WHERE cik = 2 GROUP BY 1 ORDER BY 1") == [("NVDA", 4), ("NVDX", 3)]
+    assert q("SELECT ex_date, ratio FROM splits WHERE cik = 2") == [(date(2024, 6, 10), 10.0)]
+    assert q("SELECT ex_date FROM dividends WHERE cik = 2") == [(date(2024, 6, 11),)]
+    assert q("SELECT kind, ex_date, value, ticker FROM price_actions_held WHERE cik = 2") == \
+        [("dividend", date(2024, 6, 6), 0.1, "NVDX")]
+
+
+def test_first_load_still_stores_actions_before_the_first_close():
+    # C5 unchanged when nothing is stored: a new company's source actions are its own.
+    con = connect(":memory:")
+    seed(con)
+    src = yahoo([("2026-11-04", float("nan"), float("nan"), 0.2, 0.0), ("2026-11-05", 50.0, 100.0, 0.0, 0.0)])
+    prices.load(con, pause_s=0, download=FakeYahoo({"NVDA": src}))
+    assert con.execute("SELECT ex_date FROM dividends WHERE cik = 2").fetchall() == [(date(2026, 11, 4),)]
+    assert con.execute("SELECT count(*) FROM price_actions_held").fetchall() == [(0,)]
