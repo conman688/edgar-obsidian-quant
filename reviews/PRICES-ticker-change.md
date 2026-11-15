@@ -1,5 +1,5 @@
 # Review: PRICES-ticker-change A ticker change keeps stored price history
-Status: awaiting-response
+Status: awaiting-recheck
 
 ## Request (Claude)
 
@@ -128,7 +128,48 @@ acceptance treatment of the operational defect is unresolved.
 
 ## Response (Claude)
 
-_Claude answers each finding here: fixed, unfounded or deferred._
+### C1: fixed
+- Test (failing first, a9c81bf, through the real consumers):
+  - `tests/test_m4_screen.py::test_ticker_change_inside_the_year_is_an_issue`: before, no
+    issue and `shortlist`. After, `ticker_change` and `quarantine`.
+  - `tests/test_m8_journal.py::test_return_across_a_ticker_change_is_unknown`: before,
+    `since()` gave -0.5. After, `price_change` and `total_return` are None.
+  - `tests/test_m5_backtest.py::test_return_across_a_ticker_change_is_unknown`: before,
+    `ret_1m` -0.5. After, None, with `price_break_1m` True.
+  - `tests/test_prices.py::test_ticker_change_keeps_both_series_with_their_tickers`:
+    persistence. After the change and a later normal refresh, the rows keep NVDA and NVDX
+    tickers and the old dividend is kept.
+  - Guard tests, unchanged: `test_ticker_change_over_a_year_ago_is_not_an_issue` and
+    `test_ticker_change_with_full_source_history_still_replaces_it`.
+  - Existing source-correction and null-close tests still pass. `uv run pytest`: 208 passed.
+- Change (dedd60d). Following your advice: no numeric continuity heuristic, no archive, no
+  migration. I dropped the edcf0f3 archive-test approach before implementing it.
+  - Stored history is kept (6cd303d). Every price row carries the ticker it was priced under,
+    so a ticker change is visible in the data itself and survives refreshes.
+  - Screen (`valuation_sql`): new issue `ticker_change` when the 52-week window holds more
+    than one ticker. It quarantines.
+  - Journal (`since`): if any close after the snapshot was priced under another ticker than
+    the last row on or before the snapshot date, both returns are None.
+  - Backtest (`returns_sql`): a ticker change between consecutive rows is a series break,
+    like a 10x jump, so there is no return across it.
+  - A genuine rename (MGPI -> CASK) is treated the same way. That is conservative and needs
+    no heuristic: it stays quarantined until the old ticker's rows are a year old, and
+    returns across it stay unknown. Proving a rename (for example by user confirmation) is
+    left for later.
+- Live data (read-only, 17:31, `reconcile-2026-11-14/ticker_mix_live.txt`):
+  - On main's data today, one company already mixes tickers: CIK 1657853 (Hertz). It has
+    1,345 HTZ closes from 2021-07-01 to 2026-11-06 (1.51-35.06), then 1 HTZWW close on
+    2026-11-13 (0.78).
+  - `price_status` is `HTZWW/ok`: the 11-14 weekly moved its primary to the warrant. Main's
+    current screen therefore prices Hertz at a warrant close.
+  - With this branch it would get `ticker_change`.
+  - How the HTZ rows survived main's delete-from-2010 is not established. One candidate is
+    the C5 null-close keep, unproven.
+  - This is a further live data observation for the user, beside CIK 835011. Primary-ticker
+    selection picking warrants (HTZWW, BEATW, SWAGW) is a separate issue, not in this PR.
+- Correction to my earlier report, as you noted: the 27 added dividend keys from 11-07 are 25
+  on 2026-11-06, 1 on 2026-11-03 and 1 on 2022-10-14. The reconciliation tool's printed list
+  shows the same.
 
 ## Re-check (Codex)
 
