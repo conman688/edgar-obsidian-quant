@@ -417,10 +417,11 @@ def test_refresh_after_a_rename_keeps_old_rows_inside_its_window():
     _rename_nvda(con)
     fake = FakeYahoo({"NVDX": yahoo([("2026-11-05", 50.0, 1e6, 0.0, 0.0), ("2026-11-06", 51.0, 1e6, 0.0, 0.0)])})
     prices.load(con, pause_s=0, download=fake)
+    last = [r for r in prices.universe(con) if r[0] == 2][0][2]
+    assert last - prices.REFRESH_OVERLAP == date(2026, 10, 30)     # the refresh window reaches the OLD row
     fake.frames["NVDX"] = yahoo([("2026-11-05", 50.0, 1e6, 0.0, 0.0), ("2026-11-06", 51.5, 1e6, 0.0, 0.0),
                                  ("2026-11-09", 52.0, 1e6, 0.0, 0.0)])
     prices.load(con, pause_s=0, download=fake)
-    assert fake.calls[-1][1] == date(2026, 10, 30)                 # the refresh window reaches the OLD row
     q = lambda s: con.execute(s).fetchall()
     assert q("SELECT ticker, price_date, close_raw FROM prices WHERE cik = 2 ORDER BY price_date") == [
         ("NVDA", date(2026, 10, 30), 100.0), ("NVDX", date(2026, 11, 5), 50.0),

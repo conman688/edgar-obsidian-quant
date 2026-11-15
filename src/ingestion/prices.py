@@ -230,8 +230,10 @@ def _store(con: duckdb.DuckDBPyConnection, batch: list[tuple[int, str, date]],
         prices["source"] += [SOURCE] * n
         # A full fetch (first load, or a changed primary ticker) replaces only from the source's
         # first row: a renamed symbol's history can start at the rename, and the stored history
-        # before it must not be deleted (MGPI -> CASK, 2026-11-07). A refresh window stays as is.
-        windows.append((cik, start if refresh else raw.index[0].date()))
+        # before it must not be deleted (MGPI -> CASK, 2026-11-07). A refresh window also stops
+        # at the first row stored under this ticker, unless the source itself reaches earlier,
+        # so another ticker's rows inside the overlap week survive (review C1 edge).
+        windows.append((cik, ticker, start, raw.index[0].date(), refresh))
         keep += [(cik, d.date()) for d in raw.index[raw["close_raw"].isna()]]
         splits += [(cik, d.date(), float(r), SOURCE) for d, r in ratios.items()]
         divs += [(cik, d.date(), float(v), SOURCE) for d, v in raw["dividend_raw"].items() if v > 0]
@@ -243,8 +245,12 @@ def _store(con: duckdb.DuckDBPyConnection, batch: list[tuple[int, str, date]],
     con.begin()
     try:
         if windows:
-            con.register("windows", pa.table({"cik": pa.array([c for c, _ in windows], pa.int32()),
-                                              "start": pa.array([d for _, d in windows], pa.date32())}))
+            cur = dict(con.execute(
+                "SELECT cik, min(price_date) FROM prices WHERE list_contains(?, cik || ':' || ticker) GROUP BY cik",
+                [[f"{c}:{t}" for c, t, _, _, r in windows if r]]).fetchall())
+            cuts = [(c, max(s, min(cur.get(c, s), first)) if r else first) for c, t, s, first, r in windows]
+            con.register("windows", pa.table({"cik": pa.array([c for c, _ in cuts], pa.int32()),
+                                              "start": pa.array([d for _, d in cuts], pa.date32())}))
             con.register("keep", pa.table({"cik": pa.array([c for c, _ in keep], pa.int32()),
                                            "price_date": pa.array([d for _, d in keep], pa.date32())}))
             # One set-based delete per table and batch: a DELETE per company would rescan prices.
