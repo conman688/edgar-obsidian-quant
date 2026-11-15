@@ -362,3 +362,42 @@ def test_dividend_on_a_null_quote_from_installed_yfinance_history_survives_a_ref
     assert con.execute(DIVS).fetchall() == [(1, date(2026, 11, 3), 0.25)]
     assert con.execute("SELECT close_raw FROM prices WHERE cik = 1 ORDER BY price_date").fetchall() == \
         [(10.0,), (10.0,), (11.0,)]                             # Nov 3's stored close kept
+
+
+# --- Ticker change (2026-11-14 reconciliation): MGPI -> CASK lost 4,232 price rows and 48 dividends ---
+
+def _rename_nvda(con, new="NVDX"):
+    con.execute("DELETE FROM tickers WHERE cik = 2")
+    con.execute(f"INSERT INTO tickers VALUES (2, '{new}', 'Nvidia', 'Nasdaq', DATE '2026-11-07')")
+    con.execute(f"UPDATE companies SET tickers = ['{new}'] WHERE cik = 2")
+
+
+def test_ticker_change_keeps_history_before_the_new_symbol():
+    # A renamed symbol whose source history starts at the rename must not wipe what is stored
+    # before that day: the refetch is a full window, but only its returned dates are replaced.
+    con = connect(":memory:")
+    seed(con)
+    prices.load(con, pause_s=0, download=FakeYahoo({"NVDA": NVDA}))
+    _rename_nvda(con)
+    renamed = yahoo([("2026-10-26", 100.0, 1e6, 0.0, 0.0), ("2026-11-06", 101.0, 1e6, 0.05, 0.0)])
+    prices.load(con, pause_s=0, download=FakeYahoo({"NVDX": renamed}))
+    q = lambda s: con.execute(s).fetchall()
+    assert q("SELECT count(*) FROM prices WHERE cik = 2 AND price_date < DATE '2026-10-26'") == [(4,)]
+    assert q("SELECT count(*) FROM prices WHERE cik = 2 AND price_date >= DATE '2026-10-26'") == [(2,)]
+    assert q("SELECT ex_date FROM dividends WHERE cik = 2 ORDER BY 1") == [(date(2024, 6, 11),), (date(2026, 11, 6),)]
+    assert q("SELECT ratio FROM splits WHERE cik = 2") == [(10.0,)]
+    assert q("SELECT ticker, first_date, last_date FROM price_status WHERE cik = 2") == \
+        [("NVDX", date(2024, 6, 6), date(2026, 11, 6))]
+
+
+def test_ticker_change_with_full_source_history_still_replaces_it():
+    # A new primary symbol whose source covers the stored dates is authoritative for them.
+    con = connect(":memory:")
+    seed(con)
+    prices.load(con, pause_s=0, download=FakeYahoo({"NVDA": NVDA}))
+    _rename_nvda(con)
+    full = yahoo([("2024-06-06", 50.0, 1e6, 0.0, 0.0), ("2024-06-11", 51.0, 1e6, 0.0, 0.0)])
+    prices.load(con, pause_s=0, download=FakeYahoo({"NVDX": full}))
+    assert con.execute("SELECT price_date, close_raw FROM prices WHERE cik = 2 ORDER BY 1").fetchall() == \
+        [(date(2024, 6, 6), 50.0), (date(2024, 6, 11), 51.0)]
+    assert con.execute("SELECT count(*) FROM dividends WHERE cik = 2").fetchall() == [(0,)]
