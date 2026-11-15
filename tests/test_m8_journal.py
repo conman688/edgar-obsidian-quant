@@ -187,3 +187,17 @@ def test_timestamps_in_a_journal_do_not_stop_sync_or_fetch_text(con, tmp_path): 
     sync_vault(con, tmp_path, LATER)
     row = next(line for line in (tmp_path / "Dashboard.md").read_text().splitlines() if f"[[ACME-{AS_OF}]]" in line)
     assert "| 2024-09-03 |" in row and "(due)" in row and "+58.3%" in row
+
+
+def test_return_across_a_ticker_change_is_unknown(con, tmp_path):   # review PRICES-ticker-change C1
+    # The snapshot's close is ACME's; the latest close is ACMX's, which may be another security.
+    folder = tmp_path / "Journal"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "ACME-2024-09-03.md").write_text(
+        f"---\ntype: journal\ncik: {CIK}\ndecided: 2024-09-03\n"
+        "snapshot:\n  close_raw: 12.0\n  price_date: 2024-08-30\n---\ntext\n")
+    con.execute("INSERT INTO prices (cik, ticker, price_date, close_raw, source) "
+                "VALUES (?, 'ACMX', DATE '2024-09-09', 6.0, 't')", [CIK])
+    r = since(con, read_journals(folder, date(2024, 9, 9)), date(2024, 9, 9))[0]
+    assert r["close_raw"] == 6.0
+    assert r["price_change"] is None and r["total_return"] is None
