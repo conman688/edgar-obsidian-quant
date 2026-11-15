@@ -217,7 +217,7 @@ acceptance treatment of the operational defect is unresolved.
   the fix: `[('NVDA', 1), ('NVDX', 3)] != [('NVDA', 4), ('NVDX', 3)]`. After: 4 NVDA and 3 NVDX
   quotes, the 2024-06-10 split and 2024-06-11 dividend kept, and the 2024-06-06 source dividend
   held. Still held after the refresh.
-- Change (HEAD of this response):
+- Change (b5c668f):
   - Cut: a full fetch, and a refresh after a rename, now cut at the source's **first close**
     (`days[0]`), not its first row. An action-only row proves no quote coverage, so it cannot
     pull the delete back over older history. A same-ticker refresh still cuts at its window
