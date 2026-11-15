@@ -405,3 +405,24 @@ def test_ticker_change_with_full_source_history_still_replaces_it():
     assert con.execute("SELECT price_date, close_raw FROM prices WHERE cik = 2 ORDER BY 1").fetchall() == \
         [(date(2024, 6, 6), 50.0), (date(2024, 6, 11), 51.0)]
     assert con.execute("SELECT count(*) FROM dividends WHERE cik = 2").fetchall() == [(0,)]
+
+
+def test_refresh_after_a_rename_keeps_old_rows_inside_its_window():
+    # Codex, C1 edge 1: only an OLD quote on 10-30, NEW from 11-05. The next normal refresh
+    # starts at 11-06 - 7 days = 10-30; it must not delete the OLD row or its dividend (which
+    # would also clear the two-ticker signal the screen reads).
+    con = connect(":memory:")
+    seed(con)
+    prices.load(con, pause_s=0, download=FakeYahoo({"NVDA": yahoo([("2026-10-30", 100.0, 1e6, 1.0, 0.0)])}))
+    _rename_nvda(con)
+    fake = FakeYahoo({"NVDX": yahoo([("2026-11-05", 50.0, 1e6, 0.0, 0.0), ("2026-11-06", 51.0, 1e6, 0.0, 0.0)])})
+    prices.load(con, pause_s=0, download=fake)
+    fake.frames["NVDX"] = yahoo([("2026-11-05", 50.0, 1e6, 0.0, 0.0), ("2026-11-06", 51.5, 1e6, 0.0, 0.0),
+                                 ("2026-11-09", 52.0, 1e6, 0.0, 0.0)])
+    prices.load(con, pause_s=0, download=fake)
+    assert fake.calls[-1][1] == date(2026, 10, 30)                 # the refresh window reaches the OLD row
+    q = lambda s: con.execute(s).fetchall()
+    assert q("SELECT ticker, price_date, close_raw FROM prices WHERE cik = 2 ORDER BY price_date") == [
+        ("NVDA", date(2026, 10, 30), 100.0), ("NVDX", date(2026, 11, 5), 50.0),
+        ("NVDX", date(2026, 11, 6), 51.5), ("NVDX", date(2026, 11, 9), 52.0)]
+    assert q("SELECT ex_date FROM dividends WHERE cik = 2") == [(date(2026, 10, 30),)]
