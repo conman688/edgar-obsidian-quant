@@ -39,6 +39,17 @@ Status: awaiting-review
 - A primary-ticker change to a **different security** whose source history starts later: old
   rows stay before the new first date. Mixed-security prices would then be caught by the
   existing 10x `price_break` guard only if the jump is that large.
+  This is a real pattern, not hypothetical. The 11-14 weekly moved CIK 1406234's primary
+  from BIPH (a listed debt-like security, history from 2021-05-26) to BIP (common units, from
+  2010). Warrant-to-common moves also happened: BEATW -> BEAT, SWAGW -> SWAG
+  (`reconcile-2026-11-14/detail_check.txt`).
+  - In those cases the new symbol's history reaches further back, so this fix replaces all of
+    it, as main does.
+  - The reverse case is the trade-off. If the primary moves to a symbol whose history starts
+    later and belongs to a different security, main loses the old history while this fix
+    keeps the old security's rows before the new start (mixed securities).
+  - Please weigh this. A possible alternative: keep the old rows but give that company an
+    issue until reviewed.
 - `raw.index[0]` includes source rows without a close (C5). Deleting from the first row, not
   the first close, keeps the C5 "keep a stored close on null-close days" behaviour.
 - `price_status.first_date` uses `least()`, so it stays the oldest kept date. That is now true
