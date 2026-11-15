@@ -1,5 +1,5 @@
 # Review: PRICES-ticker-change A ticker change keeps stored price history
-Status: awaiting-recheck
+Status: resolved
 
 ## Request (Claude)
 
@@ -56,9 +56,11 @@ Status: awaiting-recheck
   again.
 
 ### Known gaps (not findings unless they are worse than stated)
-- No live data repair here. Restoring CIK 835011's 4,222 rows and 48 dividends from
-  `edgar-2026-11-07.duckdb` is a separate data fix, the user's call (defer, or fix now and
-  restart the window).
+- No live data repair here. The observed price count fell by a net 4,222, but the key-level
+  comparison identifies 4,228 old-only price dates and 48 old-only dividends for CIK 835011.
+  A future repair must derive an exact missing-key manifest against the then-current state,
+  preserve current rows/corrections, and be reviewed and explicitly authorized separately.
+  No fixed restoration count or data-write authorization follows from this review.
 - The stored rows before the rename keep ticker `MGPI` in `prices.ticker`. Screens join on
   `cik`.
 
@@ -263,6 +265,36 @@ acceptance treatment of the operational defect is unresolved.
 - `git diff --check b8e8c0c..HEAD` passes. C2 is a newly verified deletion case in these
   fixes and requires a response, so the overall review remains unresolved. Run success,
   historical repair, deployment approval, and M9 acceptance remain separate gates.
+
+### C2: agree (re-check round 2, head 88d86de)
+- Reviewed exact head `88d86de7d9be1b6b1ab8a25f4bbe7895857de4ff`, including `b5c668f`,
+  migration 9, consumer guards, and the failing-first regression commit `cb0d03b`.
+- Independently reran the original action-only-prefix replay in memory: after the rename,
+  all four old NVDA quotes, the June 10 split and June 11 dividend remain, alongside the two
+  NVDX quotes. The explicit June 6 source dividend is retained in `price_actions_held` with
+  its kind/date/value/ticker, rather than applied to an unproved security or discarded.
+  A second normal refresh preserves the same old rows/actions and the held record.
+- Reviewed the guards' actual screen, journal, and backtest queries and their regressions.
+  Held source actions remain unresolved across refreshes; screen issues cover the relevant
+  year of history, and returns crossing a held action are unavailable. Same-ticker source
+  corrections/removals and first-load null-close action handling remain covered.
+- Independently ran the full suite at this exact head: **217 passed in 37.74s**. The run
+  permitted the existing localhost HTTP fixture; no SEC/provider request or production DB
+  access occurred. `git diff --check b8e8c0c..HEAD` passes.
+- Independently exercised the canonical schema-8 to schema-9 upgrade in an in-memory 2 GB
+  database: applied `[9]`, retained the seeded existing price row, created an empty held
+  table, and a second migration call applied `[]`. This is not a live migration or a
+  backed-up production replay. Main remains on schema 8 and unchanged runtime.
+- C1 remains agreed after these changes. The narrow code review is resolved; neither the
+  existing historical data defect nor the primary-ticker selection problem is repaired by
+  this sign-off. Genuine partial-history renames are conservatively guarded, not proved by
+  matching prices. Held actions require separate review before resolution, and legacy
+  notes without an immutable ticker still use the documented current-row fallback.
+- PR #25 independently uses migration 9: the second branch deployed must renumber/rebase
+  its migration and receive an exact-head re-check. PR #15 also needs its normal integration
+  review if journal changes conflict. Do not merge either based on this review.
+- No live DB, vault, backup, or schedule was written or migrated. Runtime deployment and
+  any data repair still require the user's separate authorization and acceptance accounting.
 
 ## Outcome (user)
 
