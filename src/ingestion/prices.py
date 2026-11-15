@@ -228,7 +228,10 @@ def _store(con: duckdb.DuckDBPyConnection, batch: list[tuple[int, str, date]],
         prices["close_raw"] += closed["close_raw"].tolist()
         prices["volume_raw"] += [None if pd.isna(v) else float(v) for v in closed["volume_raw"]]
         prices["source"] += [SOURCE] * n
-        windows.append((cik, start))
+        # A full fetch (first load, or a changed primary ticker) replaces only from the source's
+        # first row: a renamed symbol's history can start at the rename, and the stored history
+        # before it must not be deleted (MGPI -> CASK, 2026-11-07). A refresh window stays as is.
+        windows.append((cik, start if refresh else raw.index[0].date()))
         keep += [(cik, d.date()) for d in raw.index[raw["close_raw"].isna()]]
         splits += [(cik, d.date(), float(r), SOURCE) for d, r in ratios.items()]
         divs += [(cik, d.date(), float(v), SOURCE) for d, v in raw["dividend_raw"].items() if v > 0]
