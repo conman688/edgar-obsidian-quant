@@ -167,6 +167,23 @@ acceptance treatment of the operational defect is unresolved.
     the C5 null-close keep, unproven.
   - This is a further live data observation for the user, beside CIK 835011. Primary-ticker
     selection picking warrants (HTZWW, BEATW, SWAGW) is a separate issue, not in this PR.
+- C1 edges you added. Tests first (5846dca), each failed on the previous head and passes on
+  bf32d64; 212 tests pass:
+  - Refresh overlap, `tests/test_prices.py::test_refresh_after_a_rename_keeps_old_rows_inside_its_window`.
+    With only an OLD close (and dividend) on 10-30 and NEW from 11-05, the next refresh
+    window starts 10-30. Before the fix it deleted the OLD row (`At index 0 diff`), losing
+    history and the two-ticker signal. Now each refresh window's delete starts at the later of
+    (a) its own start and (b) the earlier of the first row stored under this ticker and the
+    source's first row. So other tickers' rows and actions in the overlap week survive,
+    unless the source itself covers those dates. Normal companies are unchanged: all their
+    rows are under one ticker.
+  - Journal identity: `test_journal_ticker_wins_when_todays_rows_were_relabelled` and
+    `test_journal_without_its_snapshot_row_is_still_checked_by_ticker`. Before, both returned
+    -0.5. Now `since()` takes the snapshot's ticker from the note's own `ticker` (written once,
+    never changed). The return is None when any close after the snapshot, or the latest close,
+    is under another ticker. A note without a ticker falls back to the stored row on or
+    before the snapshot date, and has no return if that row is gone. Guard:
+    `test_journal_with_its_own_ticker_unchanged_still_has_a_return` (+10%).
 - Correction to my earlier report, as you noted: the 27 added dividend keys from 11-07 are 25
   on 2026-11-06, 1 on 2026-11-03 and 1 on 2022-10-14. The reconciliation tool's printed list
   shows the same.
