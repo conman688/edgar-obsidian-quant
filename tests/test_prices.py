@@ -372,22 +372,78 @@ def _rename_nvda(con, new="NVDX"):
     con.execute(f"UPDATE companies SET tickers = ['{new}'] WHERE cik = 2")
 
 
-def test_ticker_change_keeps_history_before_the_new_symbol():
-    # A renamed symbol whose source history starts at the rename must not wipe what is stored
-    # before that day: the refetch is a full window, but only its returned dates are replaced.
+def _old_nvda():
+    return yahoo([("2026-10-01", 100.0, 1e6, 0.0, 0.0), ("2026-10-02", 99.0, 1e6, 1.0, 0.0)])
+
+
+def test_ticker_change_to_an_unproved_security_moves_old_history_aside():
+    # Review C1: old NVDA closes and dividend, then a different security NVDX starting later at
+    # half the price. Nothing is deleted, but the old rows leave the series the screen and the
+    # returns read, and the move is recorded; a later normal refresh does not bring them back.
     con = connect(":memory:")
     seed(con)
-    prices.load(con, pause_s=0, download=FakeYahoo({"NVDA": NVDA}))
+    prices.load(con, pause_s=0, download=FakeYahoo({"NVDA": _old_nvda()}))
     _rename_nvda(con)
-    renamed = yahoo([("2026-10-26", 100.0, 1e6, 0.0, 0.0), ("2026-11-06", 101.0, 1e6, 0.05, 0.0)])
-    prices.load(con, pause_s=0, download=FakeYahoo({"NVDX": renamed}))
+    nvdx = yahoo([("2026-11-05", 50.0, 1e6, 0.0, 0.0), ("2026-11-06", 51.0, 1e6, 0.0, 0.0)])
+    fake = FakeYahoo({"NVDX": nvdx})
+    prices.load(con, pause_s=0, download=fake)
     q = lambda s: con.execute(s).fetchall()
-    assert q("SELECT count(*) FROM prices WHERE cik = 2 AND price_date < DATE '2026-10-26'") == [(4,)]
-    assert q("SELECT count(*) FROM prices WHERE cik = 2 AND price_date >= DATE '2026-10-26'") == [(2,)]
-    assert q("SELECT ex_date FROM dividends WHERE cik = 2 ORDER BY 1") == [(date(2024, 6, 11),), (date(2026, 11, 6),)]
-    assert q("SELECT ratio FROM splits WHERE cik = 2") == [(10.0,)]
-    assert q("SELECT ticker, first_date, last_date FROM price_status WHERE cik = 2") == \
-        [("NVDX", date(2024, 6, 6), date(2026, 11, 6))]
+    assert q("SELECT price_date, close_raw FROM prices WHERE cik = 2 ORDER BY 1") == \
+        [(date(2026, 11, 5), 50.0), (date(2026, 11, 6), 51.0)]
+    assert q("SELECT count(*) FROM dividends WHERE cik = 2") == [(0,)]
+    assert q("""SELECT kind, ticker, on_date, value, new_ticker FROM prices_superseded
+                WHERE cik = 2 ORDER BY kind, on_date""") == [
+        ("dividend", "NVDA", date(2026, 10, 2), 1.0, "NVDX"),
+        ("price", "NVDA", date(2026, 10, 1), 100.0, "NVDX"),
+        ("price", "NVDA", date(2026, 10, 2), 99.0, "NVDX")]
+    ticker, status, first, message = q("SELECT ticker, status, first_date, message FROM price_status WHERE cik = 2")[0]
+    assert (ticker, status, first) == ("NVDX", "ok", date(2026, 11, 5))
+    assert "NVDA -> NVDX" in message and "continuity not proved" in message
+    # Next week's normal refresh keeps the series as it is.
+    fake.frames["NVDX"] = yahoo([("2026-11-05", 50.0, 1e6, 0.0, 0.0), ("2026-11-06", 51.0, 1e6, 0.0, 0.0),
+                                 ("2026-11-09", 52.0, 1e6, 0.0, 0.0)])
+    prices.load(con, pause_s=0, download=fake)
+    assert q("SELECT count(*), min(price_date) FROM prices WHERE cik = 2") == [(3, date(2026, 11, 5))]
+    assert q("SELECT count(*) FROM prices_superseded WHERE cik = 2") == [(3,)]
+    assert q("SELECT first_date FROM price_status WHERE cik = 2") == [(date(2026, 11, 5),)]
+
+
+def test_genuine_rename_proved_by_overlapping_closes_keeps_one_series():
+    # MGPI -> CASK: the new symbol's first days repeat the old symbol's closes, so the stored
+    # history before them is the same security and stays in the series.
+    con = connect(":memory:")
+    seed(con)
+    old = yahoo([("2026-10-26", 20.0, 1e6, 0.0, 0.0), ("2026-10-27", 20.5, 1e6, 0.12, 0.0),
+                 ("2026-10-28", 21.0, 1e6, 0.0, 0.0), ("2026-10-29", 21.2, 1e6, 0.0, 0.0),
+                 ("2026-10-30", 21.4, 1e6, 0.0, 0.0)])
+    prices.load(con, pause_s=0, download=FakeYahoo({"NVDA": old}))
+    _rename_nvda(con)
+    new = yahoo([("2026-10-28", 21.0, 1e6, 0.0, 0.0), ("2026-10-29", 21.2, 1e6, 0.0, 0.0),
+                 ("2026-10-30", 21.4, 1e6, 0.0, 0.0), ("2026-11-02", 21.9, 1e6, 0.0, 0.0)])
+    prices.load(con, pause_s=0, download=FakeYahoo({"NVDX": new}))
+    q = lambda s: con.execute(s).fetchall()
+    assert q("SELECT count(*), min(price_date), max(price_date) FROM prices WHERE cik = 2") == \
+        [(6, date(2026, 10, 26), date(2026, 11, 2))]
+    assert q("SELECT ex_date FROM dividends WHERE cik = 2") == [(date(2026, 10, 27),)]
+    assert q("SELECT count(*) FROM prices_superseded") == [(0,)]
+    ticker, first, message = q("SELECT ticker, first_date, message FROM price_status WHERE cik = 2")[0]
+    assert (ticker, first) == ("NVDX", date(2026, 10, 26))
+    assert "NVDA -> NVDX" in message and "continuity proved on 3 days" in message
+
+
+def test_rename_whose_overlap_disagrees_is_not_proved():
+    con = connect(":memory:")
+    seed(con)
+    old = yahoo([("2026-10-26", 20.0, 1e6, 0.0, 0.0), ("2026-10-28", 21.0, 1e6, 0.0, 0.0),
+                 ("2026-10-29", 21.2, 1e6, 0.0, 0.0), ("2026-10-30", 21.4, 1e6, 0.0, 0.0)])
+    prices.load(con, pause_s=0, download=FakeYahoo({"NVDA": old}))
+    _rename_nvda(con)
+    new = yahoo([("2026-10-28", 21.0, 1e6, 0.0, 0.0), ("2026-10-29", 25.0, 1e6, 0.0, 0.0),
+                 ("2026-10-30", 21.4, 1e6, 0.0, 0.0)])
+    prices.load(con, pause_s=0, download=FakeYahoo({"NVDX": new}))
+    assert con.execute("SELECT on_date FROM prices_superseded WHERE cik = 2 AND kind = 'price'").fetchall() == \
+        [(date(2026, 10, 26),)]
+    assert con.execute("SELECT min(price_date) FROM prices WHERE cik = 2").fetchall() == [(date(2026, 10, 28),)]
 
 
 def test_ticker_change_with_full_source_history_still_replaces_it():
