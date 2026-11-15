@@ -404,3 +404,11 @@ def test_ticker_change_over_a_year_ago_is_not_an_issue(con):
     con.execute("INSERT INTO prices (cik, ticker, price_date, close_raw, source) "
                 "VALUES (?, 'OLD', DATE '2023-06-01', 30.0, 't')", [CIK])
     assert "ticker_change" not in val_row(con)["issues"]
+
+
+def test_held_source_action_inside_the_year_is_an_issue(con):   # review PRICES-ticker-change C2
+    add_company(con, CIK, "ACME", cheap_company())
+    add_buy(con, CIK, "f4")
+    con.execute("INSERT INTO price_actions_held VALUES (?, 'split', DATE '2024-05-01', 2.0, 'ACMX', 't', now())", [CIK])
+    assert "held_source_action" in val_row(con)["issues"]
+    assert screen_rows(con)["ACME"]["status"] == "quarantine"

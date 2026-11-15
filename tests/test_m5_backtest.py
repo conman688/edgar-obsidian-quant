@@ -256,3 +256,13 @@ def test_return_across_a_ticker_change_is_unknown(con):   # review PRICES-ticker
     rel = con.sql(bt.returns_sql("snap"))
     r = dict(zip(rel.columns, rel.fetchall()[0]))
     assert r["ret_1m"] is None and r["price_break_1m"] is True
+
+
+def test_return_across_a_held_source_action_is_unknown(con):   # review PRICES-ticker-change C2
+    px(con, CIK, [("2024-01-31", 10.0), ("2024-02-29", 10.0)])
+    con.execute("INSERT INTO price_actions_held VALUES (?, 'dividend', DATE '2024-02-10', 1.0, 'Y', 't', now())", [CIK])
+    con.execute("CREATE TABLE snap AS SELECT ?::INTEGER AS cik, DATE '2024-01-31' AS as_of, "
+                "DATE '2024-01-31' AS price_date, 10.0 AS close_raw", [CIK])
+    rel = con.sql(bt.returns_sql("snap"))
+    r = dict(zip(rel.columns, rel.fetchall()[0]))
+    assert r["ret_1m"] is None and r["price_break_1m"] is True

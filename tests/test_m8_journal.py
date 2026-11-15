@@ -238,3 +238,12 @@ def test_journal_with_its_own_ticker_unchanged_still_has_a_return(con, tmp_path)
                 "VALUES (?, 'ACME', DATE '2024-09-09', 13.2, 't')", [CIK])
     r = since(con, read_journals(folder, date(2024, 9, 9)), date(2024, 9, 9))[0]
     assert r["price_change"] == pytest.approx(0.1)
+
+
+def test_return_across_a_held_source_action_is_unknown(con, tmp_path):   # review PRICES-ticker-change C2
+    folder = _journal_with_ticker(tmp_path)
+    con.execute("INSERT INTO prices (cik, ticker, price_date, close_raw, source) "
+                "VALUES (?, 'ACME', DATE '2024-09-09', 13.2, 't')", [CIK])
+    con.execute("INSERT INTO price_actions_held VALUES (?, 'dividend', DATE '2024-09-05', 0.5, 'ACMX', 't', now())", [CIK])
+    r = since(con, read_journals(folder, date(2024, 9, 9)), date(2024, 9, 9))[0]
+    assert r["price_change"] is None and r["total_return"] is None
