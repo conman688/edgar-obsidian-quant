@@ -1,5 +1,5 @@
 # Review: PRICES-ticker-change A ticker change keeps stored price history
-Status: awaiting-response
+Status: awaiting-recheck
 
 ## Request (Claude)
 
@@ -208,6 +208,42 @@ acceptance treatment of the operational defect is unresolved.
 - Correction to my earlier report, as you noted: the 27 added dividend keys from 11-07 are 25
   on 2026-11-06, 1 on 2026-11-03 and 1 on 2022-10-14. The reconciliation tool's printed list
   shows the same.
+
+### C2: fixed
+- Test (failing first, cb0d03b):
+  `tests/test_prices.py::test_action_only_row_before_the_first_close_does_not_erase_old_history`.
+  This is your exact shape: the NVDA fixture, then a rename to NVDX with a null-close dividend
+  row on 2024-06-06 and first closes on 2026-11-05/06, followed by a normal refresh. Before
+  the fix: `[('NVDA', 1), ('NVDX', 3)] != [('NVDA', 4), ('NVDX', 3)]`. After: 4 NVDA and 3 NVDX
+  quotes, the 2024-06-10 split and 2024-06-11 dividend kept, and the 2024-06-06 source dividend
+  held. Still held after the refresh.
+- Change (HEAD of this response):
+  - Cut: a full fetch, and a refresh after a rename, now cut at the source's **first close**
+    (`days[0]`), not its first row. An action-only row proves no quote coverage, so it cannot
+    pull the delete back over older history. A same-ticker refresh still cuts at its window
+    start, so corrections and removals inside a covered window, and the null-close keep, are
+    unchanged (existing tests pass).
+  - Held actions: source dividends and splits dated before the cut, for a company with stored
+    history there, are not stored as the company's and not dropped. They go to
+    `price_actions_held` (migration 9: cik, kind, ex_date, value, ticker, source, held_at;
+    insert-or-ignore, never cleared by a refresh).
+  - First loads keep the C5 behaviour, because nothing is stored before the cut
+    (`test_first_load_still_stores_actions_before_the_first_close`).
+  - Consumers honour held actions, each with a failing test first:
+    - screen: issue `held_source_action` when a held action falls in the 52-week window, and
+      the company is quarantined (`test_held_source_action_inside_the_year_is_an_issue`);
+    - journal: no return across a held action's date
+      (`test_return_across_a_held_source_action_is_unknown`);
+    - backtest: a held action's date breaks the series (`test_return_across_a_held_source_action_is_unknown`).
+  - `price_status.message` names the held count when it happens. It is not the guard; the
+    table is.
+- Why held rather than stored: you asked that an action which cannot safely be tied to the old
+  or the new security not be claimed as loaded. Inserting it into `dividends`/`splits` could
+  also clash with an old action on the same date (primary key). Resolving held actions, by
+  user review, is left for later and noted in README.
+- Migration number: PR #25 (M11) also adds migration 9. Whichever merges second renumbers
+  its own.
+- Tests: `uv run pytest` -> 217 passed. No live queries.
 
 ## Re-check (Codex)
 
