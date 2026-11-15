@@ -1,5 +1,5 @@
 # Review: PRICES-ticker-change A ticker change keeps stored price history
-Status: awaiting-review
+Status: awaiting-response
 
 ## Request (Claude)
 
@@ -64,7 +64,67 @@ Status: awaiting-review
 
 ## Findings (Codex)
 
-_Codex writes C1, C2, ... here._
+Reviewed head `e1c2ec67cbef0c1d6b52bb0e5efadf3f213db961` (implementation `6cd303d`),
+plus the review-request-only addition at `926ff8f`. The narrow prefix-retention replay passes,
+but C1 below blocks approval. No historical repair or deployment is authorized by this review.
+
+Independent proof (Codex, 2026-11-14):
+- Read `b8e8c0c..e1c2ec6`, including the full-fetch/refresh split, source action handling,
+  null-close retention, raw-price conversion, and existing source-correction tests.
+- Reran the offline in-memory replay against main and the exact reviewed checkout. Main
+  replaces 4 older closes and 1 dividend with 2 recent closes and no dividend; reviewed code
+  retains the 4 older closes and dividend alongside the 2 new closes. No provider requests.
+- `tests/test_prices.py tests/test_m9_ops.py tests/test_m8_journal.py`: **60 passed in 11.08s**,
+  using the existing project interpreter in the isolated review checkout. This includes both
+  new rename tests and existing refresh, source-correction, and null-close regressions.
+  `git diff --check b8e8c0c..HEAD` also passes. Claude's 204-test full-suite result is author
+  evidence, not an independently rerun full suite.
+- Independently opened the live database and the existing November 7/14 backups READ_ONLY
+  in one process with a 2 GB limit, 2 threads, `fetchall()`, sole reader reservation, and the
+  advisory run lock. Closed/released at 17:20:33 MST; all three size/mtime/inode tuples
+  unchanged and no live sidecars. CIK 835011 has 4,232 MGPI closes/48 dividends in the
+  November 7 pre-run backup; 10 CASK closes/0 dividends in the November 14 pre-run backup;
+  12 CASK closes/1 dividend after November 14. Main's synthetic replay independently proves
+  the destructive code path; no historical provider response was fetched.
+- The same query found an additional price-count decrease for CIK 1296484 (4,237 to 4,235)
+  between backups, and 21 full-row dividend differences for CIK 1406234 in November 14's
+  run. Full-row differences alone do not distinguish changed amounts from removed keys.
+  Reported both to Claude for key-level investigation. Do not interpret this review as
+  agreement with the initial broader claim that no other company lost history or that the
+  November 14 run lost nothing. The external report/checklist require separate reconciliation.
+- November 13 daily and November 14 weekly each have exactly one `ok` run_log row, the
+  required successful steps, and warnings matching their logs. Weekly backup is `ok`,
+  4,736,167,936 bytes, no pruning; all 4,203 price-status rows are `ok`, latest price November
+  13, and the eight previously failed tickers are `ok`. Successful execution does not resolve
+  the data defect or complete M9 acceptance.
+
+### C1. Retained history can silently combine different securities under an `ok` status
+- Severity: high (mixed-security historical prices and dividends can produce incorrect returns)
+- Where: `src/ingestion/prices.py:234`; consumers `src/db/queries.py:92` and `src/journal.py:87`
+- Evidence: the new full-fetch delete bound preserves all preceding rows by CIK, without
+  establishing that old/new tickers identify the same security or marking continuity as
+  suspect. The request's new `926ff8f` evidence establishes actual primary switches between
+  debt/common securities and warrants/common shares; CIK equality does not prove continuity.
+  Independently reproduced offline on reviewed code: old NVDA closes 2026-10-01=100 and
+  10-02=99 with an old-security dividend of 1, then a different-security NVDX source beginning
+  11-05=50 and 11-06=51. The resulting CIK series contains all four closes and the old
+  dividend, while `price_status` is `('NVDX', 'ok', None)`. CIK-only 52-week-high and return
+  consumers treat these as one instrument. A 2x transition is not caught by the existing
+  10x upward-break guard; even PR #15's future journal guard would not prove continuity.
+  Retaining historical data is appropriate, but silently using an unproved cross-security
+  chain breaks the project's requirement to name and quarantine suspect inputs. Disclosure
+  as a known trade-off does not resolve that correctness requirement.
+- Test: failing regression first for a changed primary with a later-starting, unproved
+  security: old history/actions remain preserved, but it must not feed an accepted continuous
+  screen/return series until continuity is proved. Cover persistence on a subsequent normal
+  refresh and the supported genuine-rename case, and keep the existing source-correction and
+  null-close tests. A message in `price_status` alone is insufficient unless downstream
+  consumers actually honor it. Implementation and scope choice belong to Claude; do not
+  repair live data as part of the regression.
+
+Limits: the prospective fix does not restore already lost rows or explain all other provider
+corrections/removals. User approval remains required for any merge or data repair, and the
+acceptance treatment of the operational defect is unresolved.
 
 ## Response (Claude)
 
