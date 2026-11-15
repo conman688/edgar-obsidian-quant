@@ -77,7 +77,9 @@ def since(con: duckdb.DuckDBPyConnection, journals: list[dict], as_of: date) -> 
     The total adds dividends with ex-date after the decision date, up to the latest close: a
     decision made on an ex-date or later does not get that dividend. When the snapshot's close is
     older than the decision and a dividend went ex in between, that close still included the
-    dividend, so the total return is unknown (None). None also when either close is missing."""
+    dividend, so the total return is unknown (None). None also when either close is missing, and
+    when a close after the snapshot was priced under another ticker than the snapshot's: that may
+    be another security (review PRICES-ticker-change C1)."""
     if not journals:
         return []
     snaps = [j["snapshot"] for j in journals]
@@ -91,10 +93,15 @@ def since(con: duckdb.DuckDBPyConnection, journals: list[dict], as_of: date) -> 
                      (SELECT sum(d.amount_raw / split_factor(d.cik, d.ex_date)) FROM dividends d
                       WHERE d.cik = j.cik AND d.ex_date > j.dec AND d.ex_date <= n.d1) AS divs,
                      EXISTS (SELECT 1 FROM dividends d
-                             WHERE d.cik = j.cik AND d.ex_date > j.d0 AND d.ex_date <= j.dec) AS gap
+                             WHERE d.cik = j.cik AND d.ex_date > j.d0 AND d.ex_date <= j.dec) AS gap,
+                     EXISTS (SELECT 1 FROM prices p0 JOIN prices p1 ON p1.cik = p0.cik
+                             WHERE p0.cik = j.cik AND p0.price_date <= j.d0 AND p1.price_date > j.d0
+                               AND p1.price_date <= n.d1 AND p1.ticker <> p0.ticker
+                               AND p0.price_date = (SELECT max(price_date) FROM prices q
+                                                    WHERE q.cik = j.cik AND q.price_date <= j.d0)) AS switched
               FROM j LEFT JOIN n USING (cik))
-        SELECT d1, c1, a1 / nullif(a0, 0) - 1,
-               CASE WHEN NOT gap THEN (a1 + coalesce(divs, 0)) / nullif(a0, 0) - 1 END
+        SELECT d1, c1, CASE WHEN NOT switched THEN a1 / nullif(a0, 0) - 1 END,
+               CASE WHEN NOT gap AND NOT switched THEN (a1 + coalesce(divs, 0)) / nullif(a0, 0) - 1 END
         FROM r ORDER BY i
     """, {"i": list(range(len(journals))), "cik": [j["cik"] for j in journals],
           "dec": [j["decided"] for j in journals],

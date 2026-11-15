@@ -99,6 +99,12 @@ def valuation_sql(policy: Policy = "as_last_known") -> str:
             FROM prices WHERE price_date BETWEEN $as_of - INTERVAL 365 DAY AND $as_of
         ) WHERE adj >= {PRICE_BREAK} * prev
     ),
+    tkc AS (
+        -- Rows priced under more than one ticker in the year may be two securities (a primary
+        -- switch from debt or warrants to common, or a rename). Never one series until reviewed.
+        SELECT cik FROM prices WHERE price_date BETWEEN $as_of - INTERVAL 365 DAY AND $as_of
+        GROUP BY cik HAVING count(DISTINCT ticker) > 1
+    ),
     bs AS (
         -- Balance-sheet date: the newest period among the items EV is built from. An item
         -- last reported before it is stale (the filer stopped tagging it or moved tags).
@@ -173,6 +179,7 @@ def valuation_sql(policy: Policy = "as_last_known") -> str:
         SELECT px.cik, px.price_date, px.close_raw,
                datediff('day', px.price_date, $as_of) AS price_age_days,
                brk.cik IS NOT NULL AS price_break,
+               tkc.cik IS NOT NULL AS ticker_change,
                -- Cover shares are counted before the price date; a split in between
                -- (NVDA: May 24 count, June 10 split) must scale them to the price's basis.
                px.close_raw * sh.value * split_factor(px.cik, sh.period_end)
@@ -213,7 +220,7 @@ def valuation_sql(policy: Policy = "as_last_known") -> str:
         LEFT JOIN cash USING (cik) LEFT JOIN sti USING (cik) LEFT JOIN debt USING (cik)
         LEFT JOIN gw USING (cik) LEFT JOIN eq USING (cik)
         LEFT JOIN ebit USING (cik) LEFT JOIN cfo USING (cik) LEFT JOIN capex USING (cik)
-        LEFT JOIN hi USING (cik) LEFT JOIN brk USING (cik)
+        LEFT JOIN hi USING (cik) LEFT JOIN brk USING (cik) LEFT JOIN tkc USING (cik)
     )
     SELECT *,
         mcap + debt - cash_like AS ev,
@@ -229,6 +236,7 @@ def valuation_sql(policy: Policy = "as_last_known") -> str:
             CASE WHEN price_age_days > {STALE_PRICE_DAYS} THEN 'stale_price' END,
             CASE WHEN close_raw < {MIN_PRICE} THEN 'penny_price' END,
             CASE WHEN price_break THEN 'price_break' END,
+            CASE WHEN ticker_change THEN 'ticker_change' END,
             CASE WHEN foreign_filer THEN 'foreign_filer' END,
             CASE WHEN cash_like IS NULL THEN 'missing_cash' WHEN cash_period_end < bs_date THEN 'stale_cash' END,
             CASE WHEN debt IS NULL THEN 'missing_debt'
