@@ -590,6 +590,62 @@ Open questions:
    second case.
 3. Ship Phase 1 on its own first (no network, no screen change)? Recommendation: yes.
 
+### Ideas E1-E12: EDGAR techniques for later (not planned; user, 2026-11-16)
+
+Possible additions, from published research and practitioner use of EDGAR. None is scheduled.
+Each starts only after M9 acceptance passes, M10 and M11 are done, and the user picks it. Each
+then gets its own plan, review and failing tests first. A signal that changes the screen needs
+a point-in-time backtest in both halves first, and the backtest needs the trading-time audit
+(E1) before its verdicts are relied on. Well-known signals tend to weaken after publication.
+
+Already in place: numbers as first reported, kept with their accession and filing date (`pit.py`);
+share counts from the cover page, split-adjusted; the year-over-year Risk Factors redline (M7,
+after Cohen, Malloy and Nguyen's "Lazy Prices"); and 10b5-1 plan flags on Form 4 rows.
+
+Timing:
+- **E1. Trading-time audit.** Forms 3/4/5 accepted until 10 p.m. ET keep that day's date, and
+  most other forms filed after 5:30 p.m. ET get the next business day's (17 CFR 232.13). The
+  backtest enters at the latest close on or before `as_of`, so a filing dated the entry day can
+  leak. Measure the exposure first, then enter after every input is known, with exit, rebalance,
+  benchmark, dividends and costs on the same dates. Revalidate the current filters afterwards.
+
+Insider filings:
+- **E2. Routine vs opportunistic insiders.** Insiders who trade in the same calendar month year
+  after year carry little information; the others do (Cohen, Malloy and Pomorski). Classify each
+  owner from Form 4 history known by `as_of` and test excluding routine buyers.
+- **E3. Form 144 notices of proposed sales** (electronic since 2023). They can come before the
+  Form 4. Context only, for vault companies.
+- **E4. 10b5-1 plan adoptions and terminations by officers and directors**, disclosed in 10-Q and
+  10-K filings since 2023 (Item 408). Display only.
+
+Event filings:
+- **E5. Late-filing notices** (NT 10-K, NT 10-Q; Form 12b-25). Often followed by bad news.
+  Candidate quarantine issue.
+- **E6. 8-K items.** 4.02 (non-reliance on earlier financial statements): quarantine, cleared
+  only by a manual, dated resolution naming the affected periods and the repair evidence, after
+  an independent policy review. 4.01 (auditor change) and 5.02 (officer changes): display only;
+  5.02 is too frequent to flag (CIK 835011: 22 of 99 8-Ks since 2017).
+- **E7. SC 13D vs 13G.** A 13D holder of 5%+ may act (activism); 13G holders are passive.
+  Amendments track stake changes. Display, for vault companies.
+- **E8. SEC comment letters** (CORRESP and UPLOAD, released after a review closes). Comments on
+  revenue recognition or non-GAAP measures can come before restatements. Display.
+
+Text:
+- **E9. EDGAR full-text search** for phrases such as "substantial doubt", "material weakness" or
+  "covenant waiver" in vault companies' filings, beyond what XBRL tags and M10 cover.
+
+Data plumbing:
+- **E10. Dimensional XBRL facts.** `companyfacts` holds only facts without dimensions, so segment
+  and per-class figures need the filing's own instance document or SEC's Financial Statement and
+  Notes data sets. M11 meets this for per-class share counts.
+- **E11. Cover-page status flags** (`EntityFilerCategory`, `IcfrAuditorAttestationFlag` and
+  similar). A change in filer status is itself a fact to show.
+- **E12. EDGAR server log files** (anonymized download logs, published with a lag). Research finds
+  information in who reads which filings. Research only; large files.
+
+First step for any of them: a read-only yield test on the vault and shortlist companies. Count
+how often the item occurs and how often it would change a decision. Build only if that is material.
+
 ### Research R1: suggested repositories (from 2026-11-06)
 
 GitHub's AI suggested 11 repositories to study (SEC/XBRL parsing, Form 4, DuckDB ingestion,
