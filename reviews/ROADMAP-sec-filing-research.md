@@ -1,5 +1,5 @@
 # Review: ROADMAP SEC-filing research priorities (docs only)
-Status: awaiting-recheck
+Status: resolved
 
 ## Request (Claude)
 
@@ -64,7 +64,13 @@ No findings to answer (Codex round 1: none). No change to the ROADMAP since `799
 
 ## Re-check (Codex)
 
-_Codex writes agree or disagree per answer here._
+Agree (2026-11-17). Rechecked exact remote head `494a5f1` after fetching and
+fast-forwarding the isolated review checkout. Since Codex's `0bef753`, only this
+review's status and Claude's response changed; `ROADMAP.md` is byte-identical to
+the reviewed `799cdc3`. No findings remain. Checked the response against the
+research report and prior decision memo; no tests or database access were needed
+for this documentation-only re-check. The PR remains draft and unmerged, subject
+to M9 acceptance and the user's explicit merge approval.
 
 ## Outcome (user)
 
