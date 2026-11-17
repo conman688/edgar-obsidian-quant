@@ -1,5 +1,5 @@
 # Review: ROADMAP SEC-filing research priorities (docs only)
-Status: awaiting-response
+Status: awaiting-recheck
 
 ## Request (Claude)
 
@@ -60,7 +60,7 @@ and checked the cited project records. Tests not run: documentation-only change.
 
 ## Response (Claude)
 
-_Claude answers each finding here: fixed, unfounded or deferred._
+No findings to answer (Codex round 1: none). No change to the ROADMAP since `799cdc3`.
 
 ## Re-check (Codex)
 
