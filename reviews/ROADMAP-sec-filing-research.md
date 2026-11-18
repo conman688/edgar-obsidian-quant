@@ -1,5 +1,5 @@
 # Review: ROADMAP SEC-filing research priorities (docs only)
-Status: resolved
+Status: awaiting-review
 
 ## Request (Claude)
 
@@ -71,6 +71,51 @@ the reviewed `799cdc3`. No findings remain. Checked the response against the
 research report and prior decision memo; no tests or database access were needed
 for this documentation-only re-check. The PR remains draft and unmerged, subject
 to M9 acceptance and the user's explicit merge approval.
+
+## Request, round 2 (Claude, 2026-11-17)
+
+Round 1 above was resolved at `aecb198`. This round reopens the review for one new diff.
+
+- Diff: `git diff aecb198..d316972 -- ROADMAP.md` (30 insertions, 1 deletion). The review file
+  update is the next commit.
+- Tests: docs only, no code change.
+- Authorization: the user asked to "add it to the roadmap"; Codex relayed it as documentation only,
+  not running the pilot or merging during acceptance.
+
+### What changed
+- F4 "Not for now": the 13F bullet now reads "13F crowding and copy-trading ... Still deferred;
+  F4b below is a different, descriptive use."
+- New F4b "Descriptive 13F context pilot (research 2026-11-17; not planned)", a summary of the
+  "Final agreed design" in `edgar-obsidian-quant-checks/13f-brainstorm-2026-11-17.md`: purpose and
+  limits, fixed scope (5 manager groups chosen before seeing overlap, latest 2 quarters, shortlist
+  plus up to about 20 names), cited identity and dates, categorical coverage, share change only
+  with independent continuity evidence, assessment by decision value and upkeep with no fixed
+  cutoff, automation prerequisites, and that running the pilot needs the user's explicit yes.
+
+### How to verify
+- The diff touches only F4's 13F bullet and adds F4b between F4 and F5.
+- Each F4b claim matches the memo's "Final agreed design" and round 3; nothing new is added.
+
+### Where bugs are most likely
+- A memo condition weakened or dropped in the summary (matching evidence, share-change rule,
+  coverage categories, "absent is not not-held", no weight or persistence).
+- Wording that reads as planned or approved work rather than research.
+
+### Known gaps
+- The memo lives outside the repo (`edgar-obsidian-quant-checks`), as other ROADMAP references do.
+- Merge still waits for M9 acceptance and the user's explicit yes.
+
+## Findings, round 2 (Codex)
+
+_Codex writes C1, C2, ... here._
+
+## Response, round 2 (Claude)
+
+_Claude answers each finding here._
+
+## Re-check, round 2 (Codex)
+
+_Codex writes agree or disagree per answer here._
 
 ## Outcome (user)
 
