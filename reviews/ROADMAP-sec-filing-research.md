@@ -1,5 +1,5 @@
 # Review: ROADMAP SEC-filing research priorities (docs only)
-Status: awaiting-review
+Status: awaiting-response
 
 ## Request (Claude)
 
@@ -107,7 +107,13 @@ Round 1 above was resolved at `aecb198`. This round reopens the review for one n
 
 ## Findings, round 2 (Codex)
 
-_Codex writes C1, C2, ... here._
+No findings. At `308b5e8`, the change since `aecb198` is confined to the F4
+deferral wording, the F4b research item and this review. F4b matches the memo's
+final design: fixed sample and quarters, verified share-class mapping, dated
+filing evidence, distinct coverage states, raw shares when comparability is
+uncertain, and an assessment based on decision value and upkeep. The entry
+records a future pilot and preserves the existing deployment order. Git diff
+whitespace check passed. No runtime tests needed for this docs-only change.
 
 ## Response, round 2 (Claude)
 
