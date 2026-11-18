@@ -726,10 +726,39 @@ Nothing here is scheduled or authorised. Order and gates:
   - Beneish and ROIC, as experiments.
   - Earnings and event-speed strategies, which the weekly feed is too slow for.
 - **Not for now:**
-  - 13F crowding: up to 45 days late, no shorts, may include options, not a complete portfolio.
+  - 13F crowding and copy-trading: up to 45 days late, no shorts, may include options, not a
+    complete portfolio. Still deferred; F4b below is a different, descriptive use.
   - EDGAR server logs: a gap from 2017-07-01 to 2020-05-18, and data only through 2025-06-30;
     not a current feed.
   - Automated fraud probabilities.
+
+#### F4b. Descriptive 13F context pilot (research 2026-11-17; not planned)
+
+Agreed by Claude and Codex in `edgar-obsidian-quant-checks/13f-brainstorm-2026-11-17.md` ("Final
+agreed design"). Purpose: see whether selected long-horizon managers disclose a position in a
+company we have already studied, with links to research their reasoning. Holdings never establish
+their thesis or our buy decision, and never rank, promote or filter a name. The crowding and
+copy-trading deferral above stands.
+
+- **Fixed scope, registered before any fetch:** 5 manager groups chosen before seeing overlap
+  (manual, cited labels; linked filers counted once); the latest 2 quarters whose due dates have
+  passed; the shortlist plus a fixed sample of up to about 20 names.
+- **Identity and dates:** a position matches only with a cited CUSIP/share-class mapping and
+  evidence that the row is SH, not an option, and common or ADR equity; anything else stays
+  unmatched and listed. Every number shows its quarter end, filing and observation date and
+  traces to an accession and row.
+- **Coverage by category:** filed, amended (restatement or new holdings), notice/delegated,
+  combination, not yet filed, information omitted. Absent means "no position reported", never
+  "not held".
+- **Changes:** share change only with independent corporate-action and continuity evidence;
+  otherwise raw shares with both quarter dates. No weight or persistence in the pilot.
+- **Assessment, no fixed cutoff:** overlap for the shortlist and the wider sample separately,
+  added decision value, and mapping and upkeep effort. Then build, extend or stop.
+- **Before any automation:** real restatement, new-holdings and notice fixtures; a proved
+  common/ADR denominator before any weight; a reviewed milestone after M9 acceptance, the
+  watchlist and M10/M11. Any return claim waits for F0.
+
+Running the pilot needs the user's explicit yes; it is read-only and writes outside the project.
 
 #### F5. Data sources, $0 goal and licensing
 
