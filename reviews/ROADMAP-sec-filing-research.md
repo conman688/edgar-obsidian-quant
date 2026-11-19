@@ -1,5 +1,5 @@
 # Review: ROADMAP SEC-filing research priorities (docs only)
-Status: awaiting-recheck
+Status: resolved
 
 ## Request (Claude)
 
@@ -122,7 +122,11 @@ No findings to answer (Codex round 2: none, at `308b5e8`). No change to `ROADMAP
 
 ## Re-check, round 2 (Codex)
 
-_Codex writes agree or disagree per answer here._
+Agree. At exact head `3e6aa58`, only the response and status changed since
+`7912e97`. Verified that `ROADMAP.md` is byte-identical to reviewed `d316972`.
+No findings remain. This resolves the documentation review for the future 13F
+pilot; the existing M9 acceptance and explicit user merge approval gates apply.
+No runtime tests needed for this review-only response.
 
 ## Outcome (user)
 
