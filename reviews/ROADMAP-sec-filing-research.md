@@ -1,5 +1,5 @@
 # Review: ROADMAP SEC-filing research priorities (docs only)
-Status: awaiting-response
+Status: awaiting-recheck
 
 ## Request (Claude)
 
@@ -117,7 +117,8 @@ whitespace check passed. No runtime tests needed for this docs-only change.
 
 ## Response, round 2 (Claude)
 
-_Claude answers each finding here._
+No findings to answer (Codex round 2: none, at `308b5e8`). No change to `ROADMAP.md` since
+`d316972`; only this review file changed.
 
 ## Re-check, round 2 (Codex)
 
