@@ -590,6 +590,212 @@ Open questions:
    second case.
 3. Ship Phase 1 on its own first (no network, no screen change)? Recommendation: yes.
 
+### SEC-filing research: priorities and ideas for later (research 2026-11-16; not planned)
+
+Claude and Codex researched, independently and then together, how SEC filings are used to find
+a measurable edge, and what could improve this project. The full record is outside the repo:
+`edgar-obsidian-quant-checks/sec-filings-market-edge-2026-11-16.md` and
+`decision-external-reviews-2026-11-14.md`.
+
+The main conclusion: **no source establishes a present-day, net-of-cost edge for this screen.**
+The backtest can't establish one either until the timing audit and the price and security
+checks below are done. Published figures mostly describe historical long-short portfolios, not
+what buying this shortlist would earn. Predictors also weaken outside their original sample and
+after publication (McLean and Pontiff, 2016).
+
+Nothing here is scheduled or authorised. Order and gates:
+- M9 acceptance first. Then the committed work: PR #30 and the CIK 835011 repair, Hertz/warrant
+  ticker triage, `STALE_RUN_DAYS`, docs, then M10, then M11.
+- Each item below then needs the user's pick, its own plan and review, and failing tests first.
+- A study changes the screen only after a pre-registered test: hypothesis and data vintage frozen
+  first, then a chronological development period and a later untouched holdout. It runs on the
+  same eligible universe, long-only, after costs, and is compared with the screen without the
+  new signal.
+
+#### F0. Backtest honesty: timing, prices, costs, survivorship (prerequisite, not a signal)
+
+- **Timing (S2).** The backtest enters at the latest close on or before `as_of`, but admits any
+  input filed on or before `as_of`. So an input can be newer than the **actual entry close**:
+  - when the month end is a weekend or holiday;
+  - when the latest close is stale;
+  - when a filing lands after the close on the same day.
+
+  Rules: 17 CFR 232.13 dates most filings sent after 5:30 p.m. ET to the next business day, but
+  Forms 3/4/5 sent by 10 p.m. ET keep the same date. SEC acceptance is not proof of first public
+  availability, and the SEC records no first-availability time. The project's weekly processing
+  adds its own lag. How many picks this touches is **unmeasured**.
+
+  Steps: first measure every input against each actual entry close. Then, as a reviewed change,
+  move entry, exit, rebalance, benchmark, dividend entitlement and costs together. Then
+  revalidate the current filters, which were judged without this. A next-session close is a
+  conservative test convention, not proof of timely access or fill quality.
+- **Prices and security identity.** These come first (PR #30, Hertz/warrants): a timing fix
+  doesn't repair a wrong security or missing history.
+- **Costs.** The backtest assumes 50 bps each way (`backtest.py`). Whether that reflects real
+  spreads and impact for these small, cheap stocks is open.
+  - A high-low spread estimate needs daily highs and lows. Yahoo's download includes them, but
+    `prices.py` keeps only close and volume.
+  - Storing them would be a reviewed schema change, and it would cover only the names Yahoo
+    prices. It is an estimate, not proof of a cost level.
+  - A close-only estimate (Roll) is noisier. The choice is a design question.
+- **Survivorship.** About 57% of active non-financial filers lack historical prices on an
+  average date, because Yahoo drops delisted tickers. Picks and benchmark both lose those names,
+  so the **sign and size of the bias are not established**.
+  - Form 25/15 filings and 8-K Item 3.01 or 2.01 can help find vanished companies and suggest
+    reasons, but they supply no returns and don't prove why a security vanished.
+  - A missing price or a ticker change is not proof of delisting.
+  - Results under assumed delisting returns are **scenarios**, not bounds. They become bounds only
+    with justified coverage and assumptions.
+
+#### F1. 8-K Item 4.02 non-reliance (S3: data trust, not a return signal)
+
+- **Meaning.** 4.02(a) is management's conclusion that earlier statements can't be relied on.
+  4.02(b) concerns the auditor's report or review, and does not by itself say the statements are
+  unreliable (SEC Financial Reporting Manual §§4610-4620). Any label must keep that difference.
+- **Timing.** In this project an event is a **weekly observation**: `submissions.zip` is read only
+  by the weekly job. Announcement-window returns can't be captured. Restatement announcements
+  were about -9% over two days in 1995-99 (Palmrose et al., 2004), which shows materiality, not a
+  weekly trade.
+- **Policy, for independent review before any build.**
+  - An unresolved event holds the company, cited by accession.
+  - The hold clears only through a manual, dated resolution that names the affected periods and
+    the repair or restatement evidence, effective from that evidence's date.
+  - It never clears automatically on a later 10-Q/10-K.
+  - Unknown history is not absence of an event.
+- **First: frequency and coverage review.**
+  - Prove the bulk ZIP's paged history is complete.
+  - Count 4.02 events among past shortlist and vault names.
+  - Hand-code (a) versus (b), and whether the facts used for valuation were affected.
+  - Measure the review burden.
+  A low yield should not hold up unrelated work.
+- Related leads, to be read by hand and never treated as uniformly bad news:
+  - late-filing notices (NT 10-K/10-Q);
+  - 8-K 4.01 (auditor change) and 5.02 (officer changes; frequent, so never flagged);
+  - SEC comment letters, made public at least 20 business days after a review ends (Dechow,
+    Lawrence and Ryans, 2016, 2006-12 sample).
+
+#### F2. Insider purchase context (hypothesis; extends the existing cluster rule)
+
+- **Evidence.** Cohen, Malloy and Pomorski (*JF* 2012, US 1986-2007) report about 82 bp/month
+  value-weighted for opportunistic **buy-minus-sell** portfolios, and about zero for routine trades.
+  - It is long-short, not a buy-only net result.
+  - Portfolios use trades in month t and returns in t+1, on the strength of a three-day median
+    reporting lag.
+  - Post-filing execution and costs were not established for that figure.
+  - Code P includes private purchases.
+- **Classification.**
+  - Routine status comes from prior history only (at least three prior years).
+  - An insider without enough history is **unknown**, never opportunistic by default.
+  - The project's owner-level history depth (bulk Form 4 data from 2011q4) has not been measured,
+    so no first usable year is asserted.
+- **Test.** A coverage-matched comparison of value-only, the existing cluster rule, and one
+  pre-specified context overlay, such as purchase size versus prior holdings. It uses the latest
+  availability of every cluster input, realistic processing and next eligible execution, and
+  costs. If the benefit disappears under reasonable delays or rests on a few issuers, illiquidity
+  or missing history, the context stays descriptive only.
+
+#### F3. MD&A and covenant changes (bounded usefulness pilot; deferred)
+
+- **Evidence.** "Lazy Prices" (Cohen, Malloy and Nguyen, *JF* 2020, 1995-2014) uses monthly
+  long-short portfolios entered after release, comparing 10-K to 10-K and 10-Q to the same quarter
+  a year earlier.
+  - Its strongest result (risk-factor section, about 188 bp/month) is a long-short factor alpha,
+    not a long-only net return.
+  - An unaudited current-S&P-500, annual-only replication reports about +12 bp/month after costs
+    for Item 1A (t = 1.31).
+  - Neither settles small caps.
+- **Pilot.** A small, pre-registered, human-judged comparison of the two latest annual filings for
+  some vault companies.
+  - It keeps **material numeric changes** and accessions.
+  - It records reader time, misses, false positives and disagreement between two readers.
+  - It is a usefulness study, not a returns backtest.
+  - M7's Risk Factors redline masks numbers and dates; its semantics stay unchanged, so this would
+    be a separate mode.
+  - The M10 yield test (going-concern and default phrases) says nothing about MD&A.
+
+#### F4. Selected display items and deferred scores
+
+- **Already selected, display first** (2026-11-14 decision):
+  - S4: SBC-adjusted FCF, from total-scope SBC only; otherwise unknown.
+  - S4b: consolidated operating accruals. NCI reconciliation is open; a missing NCI tag doesn't
+    prove zero NCI. The accrual effect also appears to have weakened (Green, Hand and Soliman,
+    2011).
+- **Deferred:**
+  - Piotroski F (1976-96, high book-to-market, its 23% figure is long-short; later replications
+    are weaker) and Altman Z, only as backtested variants after F0.
+  - Beneish and ROIC, as experiments.
+  - Earnings and event-speed strategies, which the weekly feed is too slow for.
+- **Not for now:**
+  - 13F crowding and copy-trading: up to 45 days late, no shorts, may include options, not a
+    complete portfolio. Still deferred; F4b below is a different, descriptive use.
+  - EDGAR server logs: a gap from 2017-07-01 to 2020-05-18, and data only through 2025-06-30;
+    not a current feed.
+  - Automated fraud probabilities.
+
+#### F4b. Descriptive 13F context pilot (research 2026-11-17; not planned)
+
+Agreed by Claude and Codex in `edgar-obsidian-quant-checks/13f-brainstorm-2026-11-17.md` ("Final
+agreed design"). Purpose: see whether selected long-horizon managers disclose a position in a
+company we have already studied, with links to research their reasoning. Holdings never establish
+their thesis or our buy decision, and never rank, promote or filter a name. The crowding and
+copy-trading deferral above stands.
+
+- **Fixed scope, registered before any fetch:** 5 manager groups chosen before seeing overlap
+  (manual, cited labels; linked filers counted once); the latest 2 quarters whose due dates have
+  passed; the shortlist plus a fixed sample of up to about 20 names.
+- **Identity and dates:** a position matches only with a cited CUSIP/share-class mapping and
+  evidence that the row is SH, not an option, and common or ADR equity; anything else stays
+  unmatched and listed. Every number shows its quarter end, filing and observation date and
+  traces to an accession and row.
+- **Coverage by category:** filed, amended (restatement or new holdings), notice/delegated,
+  combination, not yet filed, information omitted. Absent means "no position reported", never
+  "not held".
+- **Changes:** share change only with independent corporate-action and continuity evidence;
+  otherwise raw shares with both quarter dates. No weight or persistence in the pilot.
+- **Assessment, no fixed cutoff:** overlap for the shortlist and the wider sample separately,
+  added decision value, and mapping and upkeep effort. Then build, extend or stop.
+- **Before any automation:** real restatement, new-holdings and notice fixtures; a proved
+  common/ADR denominator before any weight; a reviewed milestone after M9 acceptance, the
+  watchlist and M10/M11. Any return claim waits for F0.
+
+Running the pilot needs the user's explicit yes; it is read-only and writes outside the project.
+
+#### F5. Data sources, $0 goal and licensing
+
+- **SEC data** is free and reusable, with an identifying User-Agent and at most 10 requests a
+  second (the project uses 8).
+  - `companyfacts` holds only whole-entity facts, so segment and per-class figures need the
+    filing's own XBRL.
+  - Frames return the last-filed fact and are not a point-in-time snapshot.
+  - Today's bulk financial-statement data sets don't prove what a backtest could have had on a
+    past date.
+- **A $0 SEC feed doesn't solve** exchange calendars, delisted returns, security-class mapping,
+  spreads, storage or upkeep.
+- **Yahoo (yfinance)** is unofficial, and its use is governed by Yahoo's terms (personal use).
+  Confirm terms and historical coverage before relying on any price source.
+- **FMP probe, 2026-11-16** (one key, the user's plan at the time, 7 calls). These are dated,
+  limited observations, not a general result:
+  - AAPL daily OHLC returned, capped at 5,000 rows from 2007-01-03.
+  - CASK, MGPI, HTZ and two delisted symbols returned 402, "not available under your current
+    subscription".
+  - The free delisted-companies list returned symbols with delisting dates, including non-US
+    listings and future dates.
+  - Paid plans, coverage and FMP's storage terms were not checked.
+  - Any paid source would break the README's $0-a-month goal; that is the user's decision.
+
+#### Other EDGAR leads (unvalidated; read by hand)
+
+- Form 144 notices of proposed sales.
+- 10b5-1 plan disclosures in 10-Q/10-K (Item 408).
+- SC 13D vs 13G.
+- EDGAR full-text search for phrases such as "substantial doubt" or "material weakness".
+- Cover-page status flags (`EntityFilerCategory`, `IcfrAuditorAttestationFlag`).
+
+None of these is a validated edge for this screen.
+
+First step for any item: a read-only yield and coverage check on vault and shortlist companies.
+Build only if it is material.
+
 ### Research R1: suggested repositories (from 2026-11-06)
 
 GitHub's AI suggested 11 repositories to study (SEC/XBRL parsing, Form 4, DuckDB ingestion,
@@ -615,7 +821,7 @@ M1 and M3 can run in parallel. M5 (backtest) should finish before trusting M4's 
 | Risk | Impact | Mitigation |
 |---|---|---|
 | yfinance is unofficial and can break or rate-limit | No prices, no screen | Wrap behind one loader; Stooq or Tiingo free tier as fallback |
-| Survivorship bias from missing delisted prices | Backtest looks better than reality | Report the gap; treat results as an upper bound |
+| Survivorship bias from missing delisted prices | Backtest results can be misstated; picks and benchmark both lose delisted names, so sign and size are unknown | Report the gap; run delisting-return scenarios (not bounds) after the F0 timing audit |
 | 10b5-1 XML element unconfirmed | Plan trades counted as conviction | Verify on real filings in M3; footnote check stays as backup |
 | Multi-class share counts unreliable in companyfacts | Wrong market cap | Flag multi-class filers; manual check for shortlisted ones |
 | Filer tagging errors | Silent bad ratios | Quarantine rules plus accession-level traceability |
