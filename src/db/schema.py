@@ -327,6 +327,23 @@ CREATE TABLE IF NOT EXISTS run_log (
     warnings   VARCHAR   NOT NULL
 );
 """),
+    (9, """
+-- Review PRICES-ticker-change C2: source corporate actions dated before a new symbol's first
+-- close, when the company already has stored history there (a ticker change). They cannot be
+-- tied to the old or the new security, so they are held here instead of being stored as the
+-- company's or dropped. Screens, journals and backtests treat them as unresolved.
+-- kind: 'dividend' (value = amount_raw) | 'split' (value = ratio). Never cleared by a refresh.
+CREATE TABLE IF NOT EXISTS price_actions_held (
+    cik      INTEGER   NOT NULL,
+    kind     VARCHAR   NOT NULL,
+    ex_date  DATE      NOT NULL,
+    value    DOUBLE    NOT NULL,
+    ticker   VARCHAR   NOT NULL,
+    source   VARCHAR   NOT NULL,
+    held_at  TIMESTAMP NOT NULL,
+    PRIMARY KEY (cik, kind, ex_date, ticker)
+);
+"""),
 ]
 
 # Macros and views are code, not data: recreated on every connect so edits take effect.
