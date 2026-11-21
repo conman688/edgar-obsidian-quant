@@ -457,3 +457,33 @@ def test_weekly_run_with_a_drive_error_still_logs_and_reports(tmp_path, monkeypa
     assert "backup failed:" in note and "Input/output error" in note
     with duckdb.connect(str(db), read_only=True) as c:
         assert c.execute("SELECT job, status FROM run_log").fetchall() == [("weekly", "ok")]
+
+
+# --- open-file limit (2026-11-07) ------------------------------------------------------
+# launchd starts the jobs with a soft limit of 256 open files (`launchctl limit maxfiles`).
+# Out of file handles, yfinance's SQLite cache fails with "unable to open database file".
+
+def test_raise_open_files_lifts_a_low_soft_limit_within_the_hard_limit():
+    import resource
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    try:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (256, hard))
+        got = ops.raise_open_files(4096)
+        want = 4096 if hard == resource.RLIM_INFINITY else min(4096, hard)
+        assert got == want == resource.getrlimit(resource.RLIMIT_NOFILE)[0]
+        assert ops.raise_open_files(1024) == want          # never lowers it
+    finally:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
+
+
+def test_run_command_raises_the_open_file_limit_first(tmp_path, monkeypatch):
+    from src import cli, config
+    db = make_db(tmp_path)
+    monkeypatch.setattr(config, "DATA_DIR", db.parent)
+    monkeypatch.setattr(config, "DB_PATH", db)
+    monkeypatch.setattr(config, "VAULT_DIR", None)
+    monkeypatch.setitem(cli.RUN_STEPS, "daily", [["stats"]])
+    seen = []
+    monkeypatch.setattr(ops, "raise_open_files", lambda *a: seen.append(a) or 4096)
+    cli.main(["run", "daily"])
+    assert seen == [()]

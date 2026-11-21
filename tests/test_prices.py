@@ -1,4 +1,6 @@
 """M2 prices: raw-price rebuild from Yahoo's split-adjusted data, incremental refresh, coverage."""
+import json
+import warnings
 from datetime import date
 
 import pandas as pd
@@ -110,3 +112,352 @@ def test_failed_batch_is_recorded_and_others_continue():
     s = prices.load(con, batch_size=1, pause_s=0, download=flaky)
     assert s.errors == 1 and s.priced == 1
     assert dict(con.execute("SELECT ticker, status FROM price_status").fetchall())["GOOGL"] == "error"
+
+
+# --- M9 C2 (2026-11-07): per-ticker errors that yfinance swallows ---------------------------
+# yfinance.download() catches each ticker's exception, logs it and returns no frame for it.
+# These tests go through the installed yfinance download path (no network, no cache): only its
+# Ticker, session and YfData are replaced.
+
+import sqlite3                                          # noqa: E402
+from unittest.mock import patch                         # noqa: E402
+
+from src import ops                                     # noqa: E402
+
+FRESH = yahoo([("2026-10-30", 100.0, 10_000, 0.0, 0.0), ("2026-11-06", 101.0, 11_000, 0.0, 0.0)])
+
+
+def _seeded_refresh():
+    """GOOGL and NVDA priced once, so the next load is a refresh of both."""
+    con = connect(":memory:")
+    seed(con)
+    prices.load(con, tickers=["GOOGL", "NVDA"], pause_s=0, download=lambda ts, start: {t: FRESH for t in ts})
+    return con
+
+
+def _through_yfinance(con, fail: dict[str, int], soft: dict[str, str] | None = None):
+    """Run prices.load with the real _download_with_retry. `fail[t]` = how many calls of ticker t
+    raise sqlite's 'unable to open database file'; `soft[t]` = a yfinance soft error (no data)."""
+    calls: list[str] = []
+    soft = soft or {}
+
+    class History:
+        def __init__(self, err):
+            self._last_error = err
+
+    class FakeTicker:
+        def __init__(self, ticker):
+            self.ticker, self._price_history = ticker, None
+
+        def history(self, **kwargs):
+            calls.append(self.ticker)
+            if fail.get(self.ticker, 0) > 0:
+                fail[self.ticker] -= 1
+                raise sqlite3.OperationalError("unable to open database file")
+            if self.ticker in soft:
+                self._price_history = History(f"${self.ticker}: {soft[self.ticker]}")
+                return FRESH.iloc[0:0]
+            return FRESH
+
+    with patch("yfinance.multi.Ticker", FakeTicker), patch("yfinance.multi.new_session", return_value=object()), \
+            patch("yfinance.multi.YfData"), patch("src.ingestion.prices.time.sleep") as backoff:
+        stats = prices.load(con, tickers=["GOOGL", "NVDA"], pause_s=0)
+    return stats, calls, backoff.call_count
+
+
+def _status(con, ticker):
+    return con.execute("SELECT status, message, last_date FROM price_status WHERE ticker = ?", [ticker]).fetchall()[0]
+
+
+def test_swallowed_ticker_error_is_retried_then_reported_as_error():
+    con = _seeded_refresh()
+    before = con.execute("SELECT count(*) FROM prices WHERE cik = 2").fetchall()[0][0]
+    stats, calls, backoffs = _through_yfinance(con, fail={"NVDA": 99})
+    assert (stats.priced, stats.no_data, stats.errors) == (1, 0, 1)
+    assert calls.count("NVDA") == 1 + prices.TICKER_RETRIES and calls.count("GOOGL") == 1
+    assert backoffs == prices.TICKER_RETRIES
+    status, message, last = _status(con, "NVDA")
+    assert status == "error" and "unable to open database file" in message and last == date(2026, 11, 6)
+    assert con.execute("SELECT count(*) FROM prices WHERE cik = 2").fetchall()[0][0] == before
+    assert _status(con, "GOOGL")[0] == "ok"
+    assert "1 companies failed their price refresh" in ops._warnings(con, date(2026, 11, 7), {}, {}, [], 0, 0, None)
+
+
+def test_swallowed_ticker_error_that_clears_on_retry_is_priced():
+    con = _seeded_refresh()
+    stats, calls, backoffs = _through_yfinance(con, fail={"NVDA": 1})
+    assert (stats.priced, stats.no_data, stats.errors) == (2, 0, 0)
+    assert calls.count("NVDA") == 2 and backoffs == 1
+    assert _status(con, "NVDA")[0] == "ok"
+
+
+def test_yfinance_no_data_stays_no_data_and_is_not_retried():
+    con = connect(":memory:")
+    seed(con)
+    stats, calls, backoffs = _through_yfinance(
+        con, fail={}, soft={"NVDA": "possibly delisted; no price data found  (1d 2010-01-01 -> 2026-11-07)"})
+    assert (stats.priced, stats.no_data, stats.errors) == (1, 1, 0)
+    assert calls.count("NVDA") == 1 and backoffs == 0
+    assert _status(con, "NVDA")[0] == "no_data"
+
+
+def _scripted(con, answers):
+    """prices.load with the real _download_with_retry and `_download` answering from `answers`:
+    each item is a dict to return or an exception to raise, in call order."""
+    answers, calls = list(answers), []
+
+    def fake(tickers, start):
+        calls.append(sorted(tickers))
+        a = answers.pop(0)
+        if isinstance(a, Exception):
+            raise a
+        return {t: v for t, v in a.items() if t in tickers}
+
+    with patch("src.ingestion.prices._download", fake), patch("src.ingestion.prices.time.sleep"):
+        stats = prices.load(con, tickers=["GOOGL", "NVDA"], pause_s=0)
+    return stats, calls
+
+
+def test_retry_that_raises_keeps_the_healthy_tickers_of_the_first_answer():     # Codex, pre-handoff
+    con = _seeded_refresh()
+    err = prices.TickerError("OperationalError('unable to open database file')")
+    stats, calls = _scripted(con, [{"GOOGL": FRESH, "NVDA": err}] + [RuntimeError("Too Many Requests")] * 3)
+    assert calls == [["GOOGL", "NVDA"], ["NVDA"], ["NVDA"], ["NVDA"]]
+    assert (stats.priced, stats.no_data, stats.errors) == (1, 0, 1)
+    assert _status(con, "GOOGL")[0] == "ok" and _status(con, "NVDA")[0] == "error"
+    assert "Too Many Requests" in _status(con, "NVDA")[1]
+
+
+def test_retry_that_finds_no_data_replaces_the_old_error():                    # Codex, pre-handoff
+    con = connect(":memory:")
+    seed(con)
+    err = prices.TickerError("OperationalError('unable to open database file')")
+    stats, calls = _scripted(con, [{"GOOGL": FRESH, "NVDA": err}, {}])
+    assert calls == [["GOOGL", "NVDA"], ["NVDA"]]
+    assert (stats.priced, stats.no_data, stats.errors) == (1, 1, 0)
+    assert _status(con, "NVDA")[0] == "no_data"
+
+
+# --- M9 C5 (2026-11-07): actions on source rows without a close -----------------------------
+# yfinance 1.7.0 (keepna=False) keeps a row whose Close is NaN when it carries a dividend or a
+# split, and appends such rows for events outside the price range. Actions are kept on every
+# source row; prices only where there is a close; a stored close is never deleted by a source
+# row that has none.
+NAN = float("nan")
+DIVS = "SELECT cik, ex_date, amount_raw FROM dividends ORDER BY 1, 2"
+PRICES = "SELECT cik, price_date, close_raw FROM prices ORDER BY 1, 2"
+ORIGINAL = [("2026-11-02", 10.0, 100.0, 0.0, 0.0), ("2026-11-03", 10.0, 100.0, 0.25, 0.0),
+            ("2026-11-04", 11.0, 100.0, 0.0, 0.0)]
+
+
+def _c5_status(con, ticker):
+    return con.execute("SELECT status, first_date, last_date, message FROM price_status WHERE ticker = ?",
+                       [ticker]).fetchall()[0]
+
+
+def _c5_seeded():
+    """GOOGL and NVDA loaded once from healthy frames (Codex's C5 seed)."""
+    con = connect(":memory:")
+    seed(con)
+    healthy = yahoo([("2026-11-02", 50.0, 10.0, 0.0, 0.0), ("2026-11-04", 51.0, 10.0, 0.0, 0.0)])
+    prices.load(con, tickers=["GOOGL", "NVDA"], pause_s=0,
+                download=lambda tickers, start: {"GOOGL": yahoo(ORIGINAL), "NVDA": healthy})
+    return con, healthy
+
+
+def _refresh(con, googl, nvda):
+    return prices.load(con, tickers=["GOOGL", "NVDA"], pause_s=0,
+                       download=lambda tickers, start: {"GOOGL": googl, "NVDA": nvda})
+
+
+def test_refresh_keeps_a_dividend_reported_on_a_day_without_a_close():              # Codex C5
+    con, healthy = _c5_seeded()
+    before_divs, before_prices = con.execute(DIVS).fetchall(), con.execute(PRICES).fetchall()
+    assert before_divs == [(1, date(2026, 11, 3), 0.25)]
+    no_close = yahoo([ORIGINAL[0], ("2026-11-03", NAN, 0.0, 0.25, 0.0), ORIGINAL[2]])
+    for _ in range(2):                                                              # idempotent
+        s = _refresh(con, no_close, healthy)
+        assert (s.priced, s.no_data, s.errors) == (2, 0, 0)
+        assert con.execute(DIVS).fetchall() == before_divs
+        assert con.execute(PRICES).fetchall() == before_prices      # stored Nov 3 close kept, no NaN row
+    assert _c5_status(con, "GOOGL")[:3] == ("ok", date(2026, 11, 2), date(2026, 11, 4))
+    assert _c5_status(con, "NVDA")[:3] == ("ok", date(2026, 11, 2), date(2026, 11, 4))
+
+
+def test_refresh_still_removes_and_updates_dividends_the_source_changed():         # C5 control
+    con, healthy = _c5_seeded()
+    removed = yahoo([ORIGINAL[0], ("2026-11-03", 10.0, 100.0, 0.0, 0.0), ORIGINAL[2]])
+    _refresh(con, removed, healthy)
+    assert con.execute(DIVS).fetchall() == []
+    changed = yahoo([ORIGINAL[0], ("2026-11-03", NAN, 0.0, 0.30, 0.0), ORIGINAL[2]])
+    _refresh(con, changed, healthy)
+    assert con.execute(DIVS).fetchall() == [(1, date(2026, 11, 3), 0.30)]
+
+
+def test_split_on_a_day_without_a_close_adjusts_earlier_prices_and_is_stored():    # C5 control
+    con = connect(":memory:")
+    seed(con)
+    df = yahoo([("2026-11-02", 5.0, 200.0, 0.0, 0.0), ("2026-11-03", NAN, 0.0, 0.0, 2.0),
+                ("2026-11-04", 6.0, 100.0, 0.1, 0.0)])
+    prices.load(con, tickers=["GOOGL"], pause_s=0, download=lambda tickers, start: {"GOOGL": df})
+    assert con.execute(PRICES).fetchall() == [(1, date(2026, 11, 2), 10.0), (1, date(2026, 11, 4), 6.0)]
+    assert con.execute("SELECT cik, ex_date, ratio FROM splits").fetchall() == [(1, date(2026, 11, 3), 2.0)]
+    assert con.execute(DIVS).fetchall() == [(1, date(2026, 11, 4), 0.1)]
+
+
+def test_dividend_after_the_last_close_is_stored_without_a_price():                # C5 out-of-range
+    con, healthy = _c5_seeded()
+    later = yahoo(ORIGINAL + [("2026-11-06", NAN, 0.0, 0.40, 0.0)])     # yfinance's appended event row
+    _refresh(con, later, healthy)
+    assert con.execute(DIVS).fetchall() == [(1, date(2026, 11, 3), 0.25), (1, date(2026, 11, 6), 0.40)]
+    assert con.execute("SELECT max(price_date) FROM prices WHERE cik = 1").fetchall() == [(date(2026, 11, 4),)]
+    assert _c5_status(con, "GOOGL")[:3] == ("ok", date(2026, 11, 2), date(2026, 11, 4))
+
+
+def test_window_with_no_closes_keeps_stored_history_and_says_so():                 # C5 control
+    con, healthy = _c5_seeded()
+    before = con.execute(DIVS).fetchall(), con.execute(PRICES).fetchall()
+    blank = yahoo([("2026-11-03", NAN, 0.0, 0.30, 0.0), ("2026-11-04", NAN, 0.0, 0.0, 0.0)])
+    s = _refresh(con, blank, healthy)
+    assert (s.priced, s.no_data, s.errors) == (1, 0, 0)
+    assert (con.execute(DIVS).fetchall(), con.execute(PRICES).fetchall()) == before
+    status, first, last, message = _c5_status(con, "GOOGL")
+    assert (status, first, last) == ("ok", date(2026, 11, 2), date(2026, 11, 4))   # window re-read next run
+    assert "no closes" in message and "1 source action(s) not stored" in message
+
+
+def test_dividend_on_a_null_quote_from_installed_yfinance_history_survives_a_refresh():  # C5
+    """The frame comes from yfinance's own PriceHistory.history (defaults keepna=False, repair=False)
+    on a synthetic chart reply whose Nov 3 quote is null but carries a 0.25 dividend. No network."""
+    from yfinance.scrapers.history import PriceHistory
+    ts = [int(pd.Timestamp(f"2026-11-0{d} 14:30", tz="UTC").timestamp()) for d in (2, 3, 4)]
+    reply = {"chart": {"error": None, "result": [{
+        "meta": {"currency": "USD", "symbol": "GOOGL", "exchangeName": "NMS", "instrumentType": "EQUITY",
+                 "exchangeTimezoneName": "America/New_York", "timezone": "EST", "gmtoffset": -18000,
+                 "dataGranularity": "1d", "range": "", "priceHint": 2, "regularMarketPrice": 11.0,
+                 "firstTradeDate": ts[0], "validRanges": ["1d", "max"]},
+        "timestamp": ts,
+        "events": {"dividends": {str(ts[1]): {"amount": 0.25, "date": ts[1]}}},
+        "indicators": {"quote": [{"open": [10, None, 11], "high": [10, None, 11], "low": [10, None, 11],
+                                  "close": [10, None, 11], "volume": [100, None, 100]}],
+                       "adjclose": [{"adjclose": [10, None, 11]}]}}]}}
+
+    class Reply:
+        text = json.dumps(reply)
+        def json(self): return reply
+
+    class Data:
+        def get(self, **kw): return Reply()
+        cache_get = get
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        frame = PriceHistory(Data(), "GOOGL", "America/New_York", session=object()).history(
+            start="2026-11-02", end="2026-11-05", auto_adjust=False, actions=True, raise_errors=True)
+    frame.index = frame.index.tz_localize(None)                 # yf.download's default ignore_tz=True
+    assert frame.loc["2026-11-03", "Dividends"] == 0.25 and pd.isna(frame.loc["2026-11-03", "Close"])
+    con, healthy = _c5_seeded()
+    s = _refresh(con, frame, healthy)
+    assert (s.priced, s.no_data, s.errors) == (2, 0, 0)
+    assert con.execute(DIVS).fetchall() == [(1, date(2026, 11, 3), 0.25)]
+    assert con.execute("SELECT close_raw FROM prices WHERE cik = 1 ORDER BY price_date").fetchall() == \
+        [(10.0,), (10.0,), (11.0,)]                             # Nov 3's stored close kept
+
+
+# --- Ticker change (2026-11-14 reconciliation): MGPI -> CASK lost 4,232 price rows and 48 dividends ---
+
+def _rename_nvda(con, new="NVDX"):
+    con.execute("DELETE FROM tickers WHERE cik = 2")
+    con.execute(f"INSERT INTO tickers VALUES (2, '{new}', 'Nvidia', 'Nasdaq', DATE '2026-11-07')")
+    con.execute(f"UPDATE companies SET tickers = ['{new}'] WHERE cik = 2")
+
+
+def test_ticker_change_keeps_both_series_with_their_tickers():
+    # Review C1: a later-starting new symbol may be another security. Nothing stored is deleted,
+    # each row keeps the ticker it was priced under, and a normal refresh leaves that as it is:
+    # the ticker change stays visible in the data for the screen, journal and backtest checks.
+    con = connect(":memory:")
+    seed(con)
+    old = yahoo([("2026-10-01", 100.0, 1e6, 0.0, 0.0), ("2026-10-02", 99.0, 1e6, 1.0, 0.0)])
+    prices.load(con, pause_s=0, download=FakeYahoo({"NVDA": old}))
+    _rename_nvda(con)
+    fake = FakeYahoo({"NVDX": yahoo([("2026-11-05", 50.0, 1e6, 0.0, 0.0), ("2026-11-06", 51.0, 1e6, 0.0, 0.0)])})
+    prices.load(con, pause_s=0, download=fake)
+    fake.frames["NVDX"] = yahoo([("2026-11-05", 50.0, 1e6, 0.0, 0.0), ("2026-11-06", 51.0, 1e6, 0.0, 0.0),
+                                 ("2026-11-09", 52.0, 1e6, 0.0, 0.0)])
+    prices.load(con, pause_s=0, download=fake)
+    q = lambda s: con.execute(s).fetchall()
+    assert q("SELECT ticker, price_date, close_raw FROM prices WHERE cik = 2 ORDER BY price_date") == [
+        ("NVDA", date(2026, 10, 1), 100.0), ("NVDA", date(2026, 10, 2), 99.0),
+        ("NVDX", date(2026, 11, 5), 50.0), ("NVDX", date(2026, 11, 6), 51.0), ("NVDX", date(2026, 11, 9), 52.0)]
+    assert q("SELECT ex_date FROM dividends WHERE cik = 2") == [(date(2026, 10, 2),)]
+    assert q("SELECT ticker FROM price_status WHERE cik = 2") == [("NVDX",)]
+
+
+def test_ticker_change_with_full_source_history_still_replaces_it():
+    # A new primary symbol whose source covers the stored dates is authoritative for them.
+    con = connect(":memory:")
+    seed(con)
+    prices.load(con, pause_s=0, download=FakeYahoo({"NVDA": NVDA}))
+    _rename_nvda(con)
+    full = yahoo([("2024-06-06", 50.0, 1e6, 0.0, 0.0), ("2024-06-11", 51.0, 1e6, 0.0, 0.0)])
+    prices.load(con, pause_s=0, download=FakeYahoo({"NVDX": full}))
+    assert con.execute("SELECT price_date, close_raw FROM prices WHERE cik = 2 ORDER BY 1").fetchall() == \
+        [(date(2024, 6, 6), 50.0), (date(2024, 6, 11), 51.0)]
+    assert con.execute("SELECT count(*) FROM dividends WHERE cik = 2").fetchall() == [(0,)]
+
+
+def test_refresh_after_a_rename_keeps_old_rows_inside_its_window():
+    # Codex, C1 edge 1: only an OLD quote on 10-30, NEW from 11-05. The next normal refresh
+    # starts at 11-06 - 7 days = 10-30; it must not delete the OLD row or its dividend (which
+    # would also clear the two-ticker signal the screen reads).
+    con = connect(":memory:")
+    seed(con)
+    prices.load(con, pause_s=0, download=FakeYahoo({"NVDA": yahoo([("2026-10-30", 100.0, 1e6, 1.0, 0.0)])}))
+    _rename_nvda(con)
+    fake = FakeYahoo({"NVDX": yahoo([("2026-11-05", 50.0, 1e6, 0.0, 0.0), ("2026-11-06", 51.0, 1e6, 0.0, 0.0)])})
+    prices.load(con, pause_s=0, download=fake)
+    last = [r for r in prices.universe(con) if r[0] == 2][0][2]
+    assert last - prices.REFRESH_OVERLAP == date(2026, 10, 30)     # the refresh window reaches the OLD row
+    fake.frames["NVDX"] = yahoo([("2026-11-05", 50.0, 1e6, 0.0, 0.0), ("2026-11-06", 51.5, 1e6, 0.0, 0.0),
+                                 ("2026-11-09", 52.0, 1e6, 0.0, 0.0)])
+    prices.load(con, pause_s=0, download=fake)
+    q = lambda s: con.execute(s).fetchall()
+    assert q("SELECT ticker, price_date, close_raw FROM prices WHERE cik = 2 ORDER BY price_date") == [
+        ("NVDA", date(2026, 10, 30), 100.0), ("NVDX", date(2026, 11, 5), 50.0),
+        ("NVDX", date(2026, 11, 6), 51.5), ("NVDX", date(2026, 11, 9), 52.0)]
+    assert q("SELECT ex_date FROM dividends WHERE cik = 2") == [(date(2026, 10, 30),)]
+
+
+def test_action_only_row_before_the_first_close_does_not_erase_old_history():
+    # Review C2: the renamed source's first row is an action without a close (C5 shape), and
+    # its first usable quotes come two years later. That action proves no quote coverage: the
+    # old quotes, split and dividend stay, and the action is held (not stored as the company's,
+    # not dropped) because it cannot be tied to either security. A later refresh keeps it so.
+    con = connect(":memory:")
+    seed(con)
+    prices.load(con, pause_s=0, download=FakeYahoo({"NVDA": NVDA}))
+    _rename_nvda(con)
+    src = yahoo([("2024-06-06", float("nan"), float("nan"), 0.1, 0.0),
+                 ("2026-11-05", 50.0, 100.0, 0.0, 0.0), ("2026-11-06", 51.0, 100.0, 0.0, 0.0)])
+    fake = FakeYahoo({"NVDX": src})
+    prices.load(con, pause_s=0, download=fake)
+    fake.frames["NVDX"] = yahoo([("2026-11-05", 50.0, 100.0, 0.0, 0.0), ("2026-11-06", 51.0, 100.0, 0.0, 0.0),
+                                 ("2026-11-09", 52.0, 100.0, 0.0, 0.0)])
+    prices.load(con, pause_s=0, download=fake)
+    q = lambda s: con.execute(s).fetchall()
+    assert q("SELECT ticker, count(*) FROM prices WHERE cik = 2 GROUP BY 1 ORDER BY 1") == [("NVDA", 4), ("NVDX", 3)]
+    assert q("SELECT ex_date, ratio FROM splits WHERE cik = 2") == [(date(2024, 6, 10), 10.0)]
+    assert q("SELECT ex_date FROM dividends WHERE cik = 2") == [(date(2024, 6, 11),)]
+    assert q("SELECT kind, ex_date, value, ticker FROM price_actions_held WHERE cik = 2") == \
+        [("dividend", date(2024, 6, 6), 0.1, "NVDX")]
+
+
+def test_first_load_still_stores_actions_before_the_first_close():
+    # C5 unchanged when nothing is stored: a new company's source actions are its own.
+    con = connect(":memory:")
+    seed(con)
+    src = yahoo([("2026-11-04", float("nan"), float("nan"), 0.2, 0.0), ("2026-11-05", 50.0, 100.0, 0.0, 0.0)])
+    prices.load(con, pause_s=0, download=FakeYahoo({"NVDA": src}))
+    assert con.execute("SELECT ex_date FROM dividends WHERE cik = 2").fetchall() == [(date(2026, 11, 4),)]
+    assert con.execute("SELECT count(*) FROM price_actions_held").fetchall() == [(0,)]

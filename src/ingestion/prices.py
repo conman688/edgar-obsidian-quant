@@ -15,6 +15,10 @@ stays in this module.
 """
 from __future__ import annotations
 
+import ast
+import gc
+import logging
+import re
 import time
 import warnings
 from dataclasses import dataclass, field
@@ -70,10 +74,13 @@ def universe(con: duckdb.DuckDBPyConnection, exchanges: tuple[str, ...] = EXCHAN
 def to_raw(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
     """Undo Yahoo's split adjustment for one ticker.
 
-    `df` is indexed by date with Close, Volume, Dividends and Stock Splits columns.
+    `df` is indexed by date with Close, Volume, Dividends and Stock Splits columns. A row may have
+    no Close: yfinance (keepna=False) keeps a row whose quote is null when it carries a dividend or
+    a split, and adds one for an event outside the price range. Splits and dividends are read from
+    every row; close_raw is NaN where the source has no close, and callers store prices only where
+    it is set.
     Returns (frame with close_raw, volume_raw, dividend_raw; split ratios by ex_date).
     """
-    df = df[df["Close"].notna()]
     ratios = df["Stock Splits"].fillna(0.0)
     ratios = ratios[ratios > 0]
     factor = pd.Series(1.0, index=df.index)
@@ -87,35 +94,90 @@ def to_raw(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
     return out, ratios
 
 
-def _download(tickers: list[str], start: date) -> dict[str, pd.DataFrame]:
+TICKER_RETRIES = 3          # a ticker yfinance failed is fetched again this many times, alone
+# yfinance's own words for "this ticker has no prices": not an error, nothing to retry.
+_NO_DATA = ("possibly delisted", "no price data found", "no data found")
+_FAILED = re.compile(r"\[([^\]]*)\]:\s*(.+)$")
+
+
+class TickerError(Exception):
+    """One ticker's download failed (yfinance logged an exception for it and returned no frame)."""
+
+
+class _Failures(logging.Handler):
+    """Collects the per-ticker errors yfinance.download logs (`['A', 'B']: <error>`) instead of
+    raising: without them a failed ticker looks the same as a ticker with no prices."""
+
+    def __init__(self):
+        super().__init__(logging.ERROR)
+        self.errors: dict[str, str] = {}
+
+    def emit(self, record):
+        m = _FAILED.search(record.getMessage())
+        if not m or any(h in m.group(2).lower() for h in _NO_DATA):
+            return
+        try:
+            syms = ast.literal_eval(f"[{m.group(1)}]")
+        except (ValueError, SyntaxError):
+            return
+        for t in syms:
+            self.errors[str(t).upper()] = m.group(2).strip()
+
+
+def _download(tickers: list[str], start: date) -> dict[str, pd.DataFrame | TickerError]:
+    """Frames by ticker; a ticker whose download raised inside yfinance maps to a TickerError."""
     import yfinance as yf
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")   # yfinance trips pandas 3 deprecation warnings
-        df = yf.download(tickers, start=start.isoformat(), auto_adjust=False, actions=True,
-                         group_by="ticker", progress=False, threads=True, multi_level_index=True,
-                         timeout=30)
-    out = {}
+    failures, log = _Failures(), logging.getLogger("yfinance")
+    log.addHandler(failures)
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")   # yfinance trips pandas 3 deprecation warnings
+            df = yf.download(tickers, start=start.isoformat(), auto_adjust=False, actions=True,
+                             group_by="ticker", progress=False, threads=True, multi_level_index=True,
+                             timeout=30)
+    finally:
+        log.removeHandler(failures)
+    out: dict[str, pd.DataFrame | TickerError] = {
+        t: TickerError(failures.errors[t]) for t in tickers if t.upper() in failures.errors}
     if df is None or df.empty:
         return out
     present = set(df.columns.get_level_values(0))
     for t in tickers:
-        if t in present:
+        if t in present and t not in out:
             sub = df[t]
             if sub["Close"].notna().any():
                 out[t] = sub
     return out
 
 
-def _download_with_retry(tickers: list[str], start: date, retries: int = 4) -> dict[str, pd.DataFrame]:
+def _download_with_retry(tickers: list[str], start: date, retries: int = 4) -> dict[str, pd.DataFrame | TickerError]:
     for attempt in range(retries):
         try:
-            return _download(tickers, start)
+            frames = _download(tickers, start)
+            break
         except Exception:
             if attempt == retries - 1:
                 raise
             time.sleep(30 * 2 ** attempt)   # Yahoo rate limits: back off hard
-    return {}
+    else:
+        return {}
+    for attempt in range(TICKER_RETRIES):
+        failed = [t for t, v in frames.items() if isinstance(v, TickerError)]
+        if not failed:
+            break
+        gc.collect()        # yfinance leaves a cache connection open per finished thread
+        time.sleep(5 * 2 ** attempt)
+        try:
+            again = _download(failed, start)
+        except Exception as e:     # the retry failed as a whole: the healthy frames above stand
+            again = {t: TickerError(repr(e)) for t in failed}
+        for t in failed:           # the retry's answer replaces the old one, including "no data"
+            if t in again:
+                frames[t] = again[t]
+            else:
+                del frames[t]
+    return frames
 
 
 PRICE_SCHEMA = pa.schema([("cik", pa.int32()), ("ticker", pa.string()), ("price_date", pa.date32()),
@@ -130,34 +192,53 @@ def _store(con: duckdb.DuckDBPyConnection, batch: list[tuple[int, str, date]],
     window (no trading that week, or a batch start earlier than the company's) must
     not delete what is stored. Yahoo's view of the window is authoritative, so a
     split or dividend it no longer reports is removed with the window.
+
+    Source rows without a close (C5): their splits and dividends are stored like any other, and a
+    close already stored for that day is kept, not deleted, since a null quote is not a correction.
+    A window with rows but no close at all is left as stored, with its status and dates unchanged
+    so the next run reads it again; the status message says how many actions were not stored.
     """
     now = datetime.now()
     prices: dict[str, list] = {f.name: [] for f in PRICE_SCHEMA}
-    windows, splits, divs, status, touched = [], [], [], [], []
+    windows, keep, splits, divs, status, touched, tick = [], [], [], [], [], [], {}
     for cik, ticker, start in batch:
         refresh = start != HISTORY_START
         df = frames.get(ticker)
         raw, ratios = to_raw(df) if df is not None else (None, None)
-        if raw is None or raw.empty:
+        closed = raw[raw["close_raw"].notna()] if raw is not None else None
+        if closed is None or closed.empty:
             if refresh and df is not None:
-                touched.append(("no rows in refresh window", now, cik))  # keep status and dates
+                if raw.empty:
+                    touched.append(("no rows in refresh window", now, cik))  # keep status and dates
+                else:
+                    n = int((raw["dividend_raw"] > 0).sum()) + len(ratios)
+                    touched.append((f"no closes in refresh window: stored data kept, "
+                                    f"{n} source action(s) not stored", now, cik))
                 continue
             reason = "no rows from source" if df is None else "no closes"
             status.append((cik, ticker, "no_data", None, None, reason, now))
             stats.no_data += 1
             stats.missing.append(ticker)
             continue
-        days = [d.date() for d in raw.index]
+        days = [d.date() for d in closed.index]
         n = len(days)
         prices["cik"] += [cik] * n
         prices["ticker"] += [ticker] * n
         prices["price_date"] += days
-        prices["close_raw"] += raw["close_raw"].tolist()
-        prices["volume_raw"] += [None if pd.isna(v) else float(v) for v in raw["volume_raw"]]
+        prices["close_raw"] += closed["close_raw"].tolist()
+        prices["volume_raw"] += [None if pd.isna(v) else float(v) for v in closed["volume_raw"]]
         prices["source"] += [SOURCE] * n
-        windows.append((cik, start))
+        # A full fetch (first load, or a changed primary ticker) replaces only from the source's
+        # first close: a renamed symbol's history can start at the rename, and an action-only
+        # row before it proves no quote coverage (review C2), so the stored history before it
+        # must not be deleted (MGPI -> CASK, 2026-11-07). A refresh window also stops at the
+        # first row stored under this ticker, unless the source's quotes reach earlier, so another
+        # ticker's rows inside the overlap week survive (review C1 edge).
+        windows.append((cik, ticker, start, days[0], refresh))
+        keep += [(cik, d.date()) for d in raw.index[raw["close_raw"].isna()]]
         splits += [(cik, d.date(), float(r), SOURCE) for d, r in ratios.items()]
         divs += [(cik, d.date(), float(v), SOURCE) for d, v in raw["dividend_raw"].items() if v > 0]
+        tick[cik] = ticker
         status.append((cik, ticker, "ok", days[0], days[-1], None, now))
         stats.priced += 1
         stats.price_rows += n
@@ -166,10 +247,32 @@ def _store(con: duckdb.DuckDBPyConnection, batch: list[tuple[int, str, date]],
     con.begin()
     try:
         if windows:
-            con.register("windows", pa.table({"cik": pa.array([c for c, _ in windows], pa.int32()),
-                                              "start": pa.array([d for _, d in windows], pa.date32())}))
+            cur = dict(con.execute(
+                "SELECT cik, min(price_date) FROM prices WHERE list_contains(?, cik || ':' || ticker) GROUP BY cik",
+                [[f"{c}:{t}" for c, t, _, _, r in windows if r]]).fetchall())
+            cuts = [(c, max(s, min(cur.get(c, s), first)) if r else first) for c, t, s, first, r in windows]
+            con.register("windows", pa.table({"cik": pa.array([c for c, _ in cuts], pa.int32()),
+                                              "start": pa.array([d for _, d in cuts], pa.date32())}))
+            # Source actions before the cut, where history is already stored, cannot be tied to
+            # the old or the new security: held, not stored as the company's (review C2).
+            cut = dict(cuts)
+            before = {c for (c,) in con.execute("SELECT DISTINCT p.cik FROM prices p JOIN windows w USING (cik) "
+                                                "WHERE p.price_date < w.start").fetchall()}
+            unsure = lambda c, d: c in before and d < cut[c]
+            held = [(c, "split", d, r, tick[c], s, now) for c, d, r, s in splits if unsure(c, d)] + \
+                   [(c, "dividend", d, v, tick[c], s, now) for c, d, v, s in divs if unsure(c, d)]
+            splits = [x for x in splits if not unsure(x[0], x[1])]
+            divs = [x for x in divs if not unsure(x[0], x[1])]
+            if held:
+                con.executemany("INSERT INTO price_actions_held VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING", held)
+            con.register("keep", pa.table({"cik": pa.array([c for c, _ in keep], pa.int32()),
+                                           "price_date": pa.array([d for _, d in keep], pa.date32())}))
             # One set-based delete per table and batch: a DELETE per company would rescan prices.
-            con.execute("DELETE FROM prices USING windows w WHERE prices.cik = w.cik AND prices.price_date >= w.start")
+            # Days the source sent without a close keep their stored close.
+            con.execute("""DELETE FROM prices USING windows w WHERE prices.cik = w.cik AND prices.price_date >= w.start
+                           AND NOT EXISTS (SELECT 1 FROM keep k WHERE k.cik = prices.cik
+                                           AND k.price_date = prices.price_date)""")
+            con.unregister("keep")
             for table in ("splits", "dividends"):
                 con.execute(f"""DELETE FROM {table} USING windows w WHERE {table}.cik = w.cik
                                 AND {table}.ex_date >= w.start AND {table}.source = '{SOURCE}'""")
@@ -192,16 +295,33 @@ def _store(con: duckdb.DuckDBPyConnection, batch: list[tuple[int, str, date]],
             """, status)
         if touched:
             con.executemany("UPDATE price_status SET message = ?, fetched_at = ? WHERE cik = ?", touched)
+        if windows and held:
+            n_held: dict[int, int] = {}
+            for c, *_ in held:
+                n_held[c] = n_held.get(c, 0) + 1
+            con.executemany("UPDATE price_status SET message = ? WHERE cik = ?",
+                            [(f"{n} source action(s) before the first close held in price_actions_held: "
+                              f"not tied to a security", c) for c, n in n_held.items()])
         con.commit()
     except BaseException:
         con.rollback()
         raise
 
 
+def _mark_error(con: duckdb.DuckDBPyConnection, failed: list[tuple[int, str, Exception]]) -> None:
+    """status says the last attempt failed; first/last_date keep the stored coverage."""
+    con.executemany("""INSERT INTO price_status VALUES (?, ?, 'error', NULL, NULL, ?, ?)
+                       ON CONFLICT (cik) DO UPDATE SET status = 'error',
+                       message = excluded.message, fetched_at = excluded.fetched_at""",
+                    [(cik, t, (str(e) if isinstance(e, TickerError) else repr(e))[:300], datetime.now())
+                     for cik, t, e in failed])
+
+
 def load(con: duckdb.DuckDBPyConnection, exchanges: tuple[str, ...] = EXCHANGES,
          tickers: list[str] | None = None, batch_size: int = 50, pause_s: float = 1.0,
          progress: Callable[[PriceStats], None] | None = None,
-         download: Callable[[list[str], date], dict[str, pd.DataFrame]] = _download_with_retry) -> PriceStats:
+         download: Callable[[list[str], date], dict[str, pd.DataFrame | TickerError]] = _download_with_retry,
+         ) -> PriceStats:
     """Fetch new companies from HISTORY_START and refresh known ones from their last date.
 
     Each batch commits on its own, so an interrupted run resumes where it stopped.
@@ -217,14 +337,15 @@ def load(con: duckdb.DuckDBPyConnection, exchanges: tuple[str, ...] = EXCHANGES,
             frames = download([t for _, t, _ in batch], start)
         except Exception as e:
             stats.errors += len(batch)
-            # status says the last attempt failed; first/last_date keep the stored coverage.
-            con.executemany("""INSERT INTO price_status VALUES (?, ?, 'error', NULL, NULL, ?, ?)
-                               ON CONFLICT (cik) DO UPDATE SET status = 'error',
-                               message = excluded.message, fetched_at = excluded.fetched_at""",
-                            [(cik, t, repr(e)[:300], datetime.now()) for cik, t, _ in batch])
+            _mark_error(con, [(cik, t, e) for cik, t, _ in batch])
             continue
+        failed = {t: v for t, v in frames.items() if isinstance(v, TickerError)}
+        if failed:
+            _mark_error(con, [(cik, t, failed[t]) for cik, t, _ in batch if t in failed])
+            stats.errors += len(failed)
+            batch = [b for b in batch if b[1] not in failed]
         # A batch downloads from its earliest start; trim each company to its own window.
-        frames = {t: df[df.index >= pd.Timestamp(s)] for t, df in frames.items()
+        frames = {t: df[df.index >= pd.Timestamp(s)] for t, df in frames.items() if t not in failed
                   for _, tk, s in batch if tk == t}
         _store(con, batch, frames, stats)
         if progress:

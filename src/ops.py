@@ -16,6 +16,7 @@ import json
 import os
 import plistlib
 import re
+import resource
 import shutil
 import time
 from contextlib import contextmanager
@@ -121,6 +122,20 @@ def backup(db_path: Path, dest: Path | None, today: date, keep: int = KEEP,
         removed, errors = [], [f"could not list {dest} to remove old backups: {e.strerror or e}"]
     notes += errors
     return out("ok", f"{_gb(size)} copied to {target}", path=str(target), bytes=size_copied, removed=removed)
+
+
+OPEN_FILES = 4096
+
+
+def raise_open_files(target: int = OPEN_FILES) -> int:
+    """Lift the soft open-file limit to `target` (within the hard limit; never lower it) and
+    return it. launchd starts jobs at 256, and yfinance's threads each keep a SQLite cache
+    connection open: out of handles, its cache fails with "unable to open database file"."""
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    want = target if hard == resource.RLIM_INFINITY else min(target, hard)
+    if soft != resource.RLIM_INFINITY and soft < want:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (want, hard))
+    return resource.getrlimit(resource.RLIMIT_NOFILE)[0]
 
 
 class RunLocked(RuntimeError):

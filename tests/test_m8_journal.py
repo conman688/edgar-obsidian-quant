@@ -318,3 +318,63 @@ def test_small_revision_of_the_snapshot_day_close_keeps_the_return(con, tmp_path
                 "VALUES (?, 'ACME', DATE '2024-09-03', 6.0, 't')", [CIK])   # a real -50% move
     got = since(con, read_journals(tmp_path / "Journal", LATER), LATER)[0]
     assert got["price_change"] == pytest.approx(6 / 12 - 1)
+
+
+def test_return_across_a_ticker_change_is_unknown(con, tmp_path):   # review PRICES-ticker-change C1
+    # The snapshot's close is ACME's; the latest close is ACMX's, which may be another security.
+    folder = tmp_path / "Journal"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "ACME-2024-09-03.md").write_text(
+        f"---\ntype: journal\ncik: {CIK}\ndecided: 2024-09-03\n"
+        "snapshot:\n  close_raw: 12.0\n  price_date: 2024-08-30\n---\ntext\n")
+    con.execute("INSERT INTO prices (cik, ticker, price_date, close_raw, source) "
+                "VALUES (?, 'ACMX', DATE '2024-09-09', 6.0, 't')", [CIK])
+    r = since(con, read_journals(folder, date(2024, 9, 9)), date(2024, 9, 9))[0]
+    assert r["close_raw"] == 6.0
+    assert r["price_change"] is None and r["total_return"] is None
+
+
+def _journal_with_ticker(tmp_path, ticker="ACME"):
+    folder = tmp_path / "Journal"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "ACME-2024-09-03.md").write_text(
+        f"---\ntype: journal\nticker: {ticker}\ncik: {CIK}\ndecided: 2024-09-03\n"
+        "snapshot:\n  close_raw: 12.0\n  price_date: 2024-08-30\n---\ntext\n")
+    return folder
+
+
+def test_journal_ticker_wins_when_todays_rows_were_relabelled(con, tmp_path):   # Codex C1 edge 2
+    # A full refetch can rewrite the snapshot day's row under the new ticker: the note's own
+    # ticker (ACME) still says the snapshot close is another symbol's.
+    folder = _journal_with_ticker(tmp_path)
+    con.execute("UPDATE prices SET ticker = 'ACMX' WHERE cik = ?", [CIK])
+    con.execute("INSERT INTO prices (cik, ticker, price_date, close_raw, source) "
+                "VALUES (?, 'ACMX', DATE '2024-09-09', 6.0, 't')", [CIK])
+    r = since(con, read_journals(folder, date(2024, 9, 9)), date(2024, 9, 9))[0]
+    assert r["price_change"] is None and r["total_return"] is None
+
+
+def test_journal_without_its_snapshot_row_is_still_checked_by_ticker(con, tmp_path):   # Codex C1 edge 2
+    folder = _journal_with_ticker(tmp_path)
+    con.execute("DELETE FROM prices WHERE cik = ?", [CIK])
+    con.execute("INSERT INTO prices (cik, ticker, price_date, close_raw, source) "
+                "VALUES (?, 'ACMX', DATE '2024-09-09', 6.0, 't')", [CIK])
+    r = since(con, read_journals(folder, date(2024, 9, 9)), date(2024, 9, 9))[0]
+    assert r["price_change"] is None and r["total_return"] is None
+
+
+def test_journal_with_its_own_ticker_unchanged_still_has_a_return(con, tmp_path):
+    folder = _journal_with_ticker(tmp_path)
+    con.execute("INSERT INTO prices (cik, ticker, price_date, close_raw, source) "
+                "VALUES (?, 'ACME', DATE '2024-09-09', 13.2, 't')", [CIK])
+    r = since(con, read_journals(folder, date(2024, 9, 9)), date(2024, 9, 9))[0]
+    assert r["price_change"] == pytest.approx(0.1)
+
+
+def test_return_across_a_held_source_action_is_unknown(con, tmp_path):   # review PRICES-ticker-change C2
+    folder = _journal_with_ticker(tmp_path)
+    con.execute("INSERT INTO prices (cik, ticker, price_date, close_raw, source) "
+                "VALUES (?, 'ACME', DATE '2024-09-09', 13.2, 't')", [CIK])
+    con.execute("INSERT INTO price_actions_held VALUES (?, 'dividend', DATE '2024-09-05', 0.5, 'ACMX', 't', now())", [CIK])
+    r = since(con, read_journals(folder, date(2024, 9, 9)), date(2024, 9, 9))[0]
+    assert r["price_change"] is None and r["total_return"] is None
