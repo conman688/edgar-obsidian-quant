@@ -562,3 +562,20 @@ def test_rollback_stops_on_any_ambiguity(tmp_path, capsys, gate):
         code, out = run(argv, capsys)
     assert code in (2, 3) and "nothing replaced" in out, out
     assert sha(db) == db_sha and sorted(p.name for p in db.parent.iterdir()) == names
+
+
+def test_rollback_keeps_writers_out_until_the_swap(tmp_path, capsys, monkeypatch):
+    """Apply C3 (Codex, fixture): a writer that ignores the run lock and commits while the backup is
+    being staged must be shut out, not silently lost behind the swap. The rollback holds a
+    read-only DuckDB connection, which blocks writers, from its sha256 gate to the os.replace."""
+    src, db, before, res = written(tmp_path, capsys)
+    r = json.loads(res.read_text())
+    attempts = []
+    monkeypatch.setattr(repair, "_before_swap", lambda: attempts.append(
+        subprocess.run([sys.executable, "-c", INTRUDER, str(db)], capture_output=True, text=True)), raising=False)
+    code, out = run(args(db, src, "--rollback", "--result-of", str(res)), capsys)
+    assert len(attempts) == 1 and attempts[0].returncode != 0 and "lock" in attempts[0].stderr.lower()
+    assert code == 0, out
+    assert sha(db) == r["backup"]["sha256"] and snapshot(db) == before
+    kept = [p for p in db.parent.iterdir() if p.name.startswith("edgar.duckdb.repaired-")]
+    assert len(kept) == 1 and sha(kept[0]) == r["post_sha256"]
