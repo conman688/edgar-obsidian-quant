@@ -327,3 +327,16 @@ def test_out_must_be_a_new_file(tmp_path, capsys, target):
     assert code == 2 and "already exists" in msg and "nothing read" in msg
     assert {p: hashlib.sha256(p.read_bytes()).hexdigest() for p in watched} == before
     assert not (tmp_path / "would-be-created.json").exists()
+
+
+def test_out_created_between_the_check_and_the_write_is_still_refused(tmp_path, capsys, monkeypatch):
+    """Review C1: the final write is an exclusive create, so a path that appears after the early
+    check (or that the check missed) is refused, not truncated."""
+    src = write_source(tmp_path / "src", SOURCE_PRICES, SOURCE_DIVIDENDS)
+    db = live_db(tmp_path)
+    out = tmp_path / "late.json"
+    out.write_text("someone else's file\n")
+    monkeypatch.setattr(repair.os.path, "lexists", lambda p: False)
+    code, msg = run(args(db, src, "--out", str(out)), capsys)
+    assert code == 2 and "already exists" in msg and "nothing written" in msg
+    assert out.read_text() == "someone else's file\n"

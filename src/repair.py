@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 from datetime import date
 from pathlib import Path
 
@@ -263,6 +264,17 @@ def summary(m: dict) -> str:
                               f"blocked: {p['blocked']}", f"manifest sha256: {m['hash']}"])
 
 
+def _refuse_out(path: str) -> str:
+    return f"refused: --out {path} already exists (or is a link); nothing read or written"
+
+
+def write_new(path: str, text: str) -> None:
+    """Create `path` and write `text`; never truncate or follow an existing name (review C1)."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+    with os.fdopen(fd, "w") as f:
+        f.write(text)
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m src.repair", description=__doc__.split("\n")[0])
     ap.add_argument("--db", required=True, help="the database file, e.g. data/edgar.duckdb")
@@ -270,12 +282,15 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--prices", required=True, help="preserved prices Parquet (SHA256SUMS beside it)")
     ap.add_argument("--dividends", required=True)
     ap.add_argument("--splits", required=True)
-    ap.add_argument("--out", help="write the manifest JSON here")
+    ap.add_argument("--out", help="write the manifest JSON to this new file (an existing path is refused)")
     ap.add_argument("--write", action="store_true", help="write the plan (default: dry run)")
     ap.add_argument("--expect-hash", help="the reviewed manifest sha256; required with --write")
     a = ap.parse_args(argv)
     if a.write and not a.expect_hash:
         ap.error("--write needs --expect-hash, the reviewed manifest sha256")
+    if a.out and os.path.lexists(a.out):      # the database, an input, a link: never overwritten
+        print(_refuse_out(a.out))
+        return 2
     try:
         source = read_source({"prices": a.prices, "dividends": a.dividends, "splits": a.splits}, a.cik)
     except SourceError as e:
@@ -305,7 +320,12 @@ def main(argv: list[str] | None = None) -> int:
         return 3
     m["context"]["db"] = str(db)
     if a.out:
-        Path(a.out).write_text(json.dumps(m, indent=1, sort_keys=True, allow_nan=False) + "\n")
+        try:
+            write_new(a.out, json.dumps(m, indent=1, sort_keys=True, allow_nan=False) + "\n")
+        except FileExistsError:                # appeared after the check above
+            print(f"refused: --out {a.out} already exists (or is a link); the database was read "
+                  f"only, nothing written")
+            return 2
     print(summary(m))
     print("dry run: nothing written" + (f"; manifest in {a.out}" if a.out else ""))
     return 0
