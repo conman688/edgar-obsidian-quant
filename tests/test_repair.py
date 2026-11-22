@@ -3,9 +3,13 @@
 Fixtures only: temporary DuckDB files and Parquet snapshots in tmp_path. No live database.
 """
 import hashlib
+import itertools
 import json
 import os
+import subprocess
+import sys
 from datetime import date
+from pathlib import Path
 
 import duckdb
 import pandas as pd
@@ -96,6 +100,27 @@ def args(db, src, *extra):
             "--dividends", str(src["dividends"]), "--splits", str(src["splits"]), *extra]
 
 
+_n = itertools.count()
+
+
+def wargs(db, src, h, *extra):
+    """Write mode: the reviewed hash, a backup folder and a new result file (review apply C1, C2)."""
+    root = db.parent.parent
+    (root / "backups").mkdir(exist_ok=True)
+    return args(db, src, "--write", "--expect-hash", h, "--backup-dir", str(root / "backups"),
+                "--result", str(root / f"result-{next(_n)}.json"), *extra)
+
+
+@pytest.fixture(autouse=True)
+def _backups_may_share_the_test_disk(monkeypatch):
+    """Fixtures live on one disk; production refuses that (test_write_refuses_a_backup_on_the_database_disk)."""
+    monkeypatch.setattr(repair, "REQUIRE_OTHER_DISK", False, raising=False)
+
+
+def sha(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
 def run(argv, capsys):
     code = repair.main(argv)
     return code, capsys.readouterr().out
@@ -164,7 +189,7 @@ def test_write_refuses_without_the_reviewed_hash(tmp_path, capsys):
     before = snapshot(db)
     with pytest.raises(SystemExit):
         repair.main(args(db, src, "--write"))                   # --write needs --expect-hash
-    code, out = run(args(db, src, "--write", "--expect-hash", "0" * 64), capsys)
+    code, out = run(wargs(db, src, "0" * 64), capsys)
     assert code == 2 and "does not match" in out
     assert snapshot(db) == before
 
@@ -177,7 +202,7 @@ def test_write_applies_exactly_the_plan_and_leaves_other_ciks_untouched(tmp_path
     con = duckdb.connect(str(db), read_only=True)
     h = repair.plan(con, CIK, repair.read_source(src, CIK))["hash"]
     con.close()
-    code, out = run(args(db, src, "--write", "--expect-hash", h), capsys)
+    code, out = run(wargs(db, src, h), capsys)
     assert code == 0, out
     after = snapshot(db)
     con = duckdb.connect(str(db), read_only=True)
@@ -211,9 +236,9 @@ def test_write_twice_is_a_no_op(tmp_path, capsys):
     con = duckdb.connect(str(db), read_only=True)
     h = repair.plan(con, CIK, repair.read_source(src, CIK))["hash"]
     con.close()
-    assert run(args(db, src, "--write", "--expect-hash", h), capsys)[0] == 0
+    assert run(wargs(db, src, h), capsys)[0] == 0
     once = snapshot(db)
-    code, out = run(args(db, src, "--write", "--expect-hash", h), capsys)
+    code, out = run(wargs(db, src, h), capsys)
     assert code == 0 and "nothing to write" in out
     assert snapshot(db) == once
     con = duckdb.connect(str(db), read_only=True)
@@ -235,7 +260,7 @@ def test_live_change_after_review_refuses_the_write(tmp_path, capsys):
     con.execute("UPDATE prices SET close_raw = 13.6 WHERE cik = ? AND price_date = DATE '2026-11-02'", [CIK])
     con.close()
     before = snapshot(db)
-    code, out = run(args(db, src, "--write", "--expect-hash", h), capsys)
+    code, out = run(wargs(db, src, h), capsys)
     assert code == 2 and "does not match" in out
     assert snapshot(db) == before
 
@@ -252,7 +277,7 @@ def test_live_split_inside_the_restored_range_blocks(tmp_path, capsys):
     assert m["plan"]["blocked"] == ["live split 2026-10-22 (ratio 2.0) is inside the restored range "
                                     "and not in the source"]
     before = snapshot(db)
-    code, out = run(args(db, src, "--write", "--expect-hash", m["hash"]), capsys)
+    code, out = run(wargs(db, src, m["hash"]), capsys)
     assert code == 2 and "blocked" in out
     assert snapshot(db) == before
 
@@ -288,7 +313,7 @@ def test_restored_history_survives_the_next_refresh_with_its_own_ticker(tmp_path
     con = duckdb.connect(str(db), read_only=True)
     h = repair.plan(con, CIK, repair.read_source(src, CIK))["hash"]
     con.close()
-    assert run(args(db, src, "--write", "--expect-hash", h), capsys)[0] == 0
+    assert run(wargs(db, src, h), capsys)[0] == 0
     con = connect(str(db))
     con.execute("INSERT INTO tickers VALUES (?, 'CASK', 'MGP Ingredients', 'Nasdaq', DATE '2026-11-21')", [CIK])
     con.execute("INSERT INTO companies VALUES (?, 'MGP Ingredients', 2080, NULL, NULL, NULL, NULL, [], ['CASK'], "
@@ -381,3 +406,159 @@ def test_out_json_suffix_is_case_insensitive(tmp_path, capsys):
     code, msg = run(args(db, src, "--out", str(out)), capsys)
     assert code == 0, msg
     assert json.loads(out.read_text())["hash"] in msg
+
+
+# --- review PRICES-cik835011-apply: backup and write bound together, outcome, rollback ----------
+
+INTRUDER = ("import duckdb, sys; c = duckdb.connect(sys.argv[1]); "
+            "c.execute(\"UPDATE prices SET close_raw = 122 WHERE cik = 2 AND price_date = DATE '2026-10-22'\")")
+
+
+def reviewed(tmp_path, db, src, capsys):
+    """The reviewed manifest file and hash, from a dry run."""
+    out = tmp_path / f"reviewed-{next(_n)}.json"
+    assert run(args(db, src, "--out", str(out)), capsys)[0] == 0
+    return out, json.loads(out.read_text())
+
+
+def result_of(argv):
+    return Path(argv[argv.index("--result") + 1])
+
+
+def test_backup_and_write_share_one_lock_and_one_connection(tmp_path, capsys, monkeypatch):
+    """C1: another writer cannot commit between the backup and the write, and the backup is the
+    exact state the plan was derived from (its fingerprints are the result's pre-write baseline)."""
+    src = write_source(tmp_path / "src", SOURCE_PRICES, SOURCE_DIVIDENDS)
+    db = live_db(tmp_path)
+    _, m = reviewed(tmp_path, db, src, capsys)
+    attempts = []
+    monkeypatch.setattr(repair, "_after_backup", lambda: attempts.append(
+        subprocess.run([sys.executable, "-c", INTRUDER, str(db)], capture_output=True, text=True)), raising=False)
+    argv = wargs(db, src, m["hash"])
+    code, out = run(argv, capsys)
+    assert code == 0, out
+    assert len(attempts) == 1 and attempts[0].returncode != 0 and "lock" in attempts[0].stderr.lower()
+    r = json.loads(result_of(argv).read_text())
+    assert r["status"] == "committed" and r["plan_hash"] == m["hash"]
+    assert r["pre"]["other_ciks"] == m["context"]["other_ciks"]
+    assert r["pre"]["target_fingerprints"] == m["context"]["target_fingerprints"]
+    backup = Path(r["backup"]["path"])
+    assert backup.parent == db.parent.parent / "backups" and sha(backup) == r["backup"]["sha256"]
+    assert not repair.ops.BACKUP_NAME.match(backup.name)          # never pruned by the weekly rotation
+    con = duckdb.connect(str(backup), read_only=True)
+    b = repair.plan(con, CIK, repair.read_source(src, CIK))
+    con.close()
+    assert b["hash"] == m["hash"] and b["context"]["other_ciks"] == r["pre"]["other_ciks"]
+    con = duckdb.connect(str(db), read_only=True)
+    assert con.execute("SELECT close_raw FROM prices WHERE cik = 2 AND price_date = DATE '2026-10-22'").fetchall() == [(120.0,)]
+    con.close()
+    assert r["post_sha256"] == sha(db) and r["post"]["other_ciks"] == r["pre"]["other_ciks"]
+
+
+def test_write_refuses_a_backup_on_the_database_disk(tmp_path, capsys, monkeypatch):
+    src = write_source(tmp_path / "src", SOURCE_PRICES, SOURCE_DIVIDENDS)
+    db = live_db(tmp_path)
+    _, m = reviewed(tmp_path, db, src, capsys)
+    monkeypatch.setattr(repair, "REQUIRE_OTHER_DISK", True)
+    before = snapshot(db)
+    argv = wargs(db, src, m["hash"])
+    code, out = run(argv, capsys)
+    assert code == 2 and "same disk" in out
+    assert snapshot(db) == before and list((tmp_path / "backups").iterdir()) == []
+    assert json.loads(result_of(argv).read_text())["status"] == "refused"
+
+
+def test_write_refuses_while_a_wal_exists(tmp_path, capsys):
+    """An existing WAL means a writer did not finish: stop and escalate, never replay or delete it."""
+    src = write_source(tmp_path / "src", SOURCE_PRICES, SOURCE_DIVIDENDS)
+    db = live_db(tmp_path)
+    _, m = reviewed(tmp_path, db, src, capsys)
+    wal = db.parent / "edgar.duckdb.wal"
+    wal.write_bytes(b"not ours")
+    before = sha(db)
+    code, out = run(wargs(db, src, m["hash"]), capsys)
+    assert code == 2 and "WAL" in out
+    assert sha(db) == before and wal.read_bytes() == b"not ours"
+    assert list((tmp_path / "backups").iterdir()) == []
+
+
+def test_write_needs_a_backup_folder_and_a_result_file(tmp_path, capsys):
+    src = write_source(tmp_path / "src", SOURCE_PRICES, SOURCE_DIVIDENDS)
+    db = live_db(tmp_path)
+    for extra in (["--backup-dir", str(tmp_path)], ["--result", str(tmp_path / "r.json")]):
+        with pytest.raises(SystemExit):
+            repair.main(args(db, src, "--write", "--expect-hash", "0" * 64, *extra))
+
+
+def test_interrupted_success_output_is_classified_from_the_database(tmp_path, capsys, monkeypatch):
+    """C2: the outcome is the database state, not stdout. The result file is written before the
+    success line, and --classify (read-only) names the state against the reviewed manifest."""
+    src = write_source(tmp_path / "src", SOURCE_PRICES, SOURCE_DIVIDENDS)
+    db = live_db(tmp_path)
+    rev, m = reviewed(tmp_path, db, src, capsys)
+    assert "state: not_applied" in run(args(db, src, "--classify", str(rev)), capsys)[1]
+
+    def broken(*a, **k):
+        if a and str(a[0]).startswith("written"):
+            raise BrokenPipeError(32, "Broken pipe")
+    monkeypatch.setattr(repair, "print", broken, raising=False)
+    argv = wargs(db, src, m["hash"])
+    try:
+        repair.main(argv)
+    except BrokenPipeError:
+        pass                                   # the old behaviour; the state below is what counts
+    monkeypatch.undo()
+    monkeypatch.setattr(repair, "REQUIRE_OTHER_DISK", False, raising=False)
+    assert json.loads(result_of(argv).read_text())["status"] == "committed"
+    assert "state: applied" in run(args(db, src, "--classify", str(rev)), capsys)[1]
+    con = duckdb.connect(str(db))
+    con.execute("DELETE FROM prices WHERE cik = ? AND price_date = DATE '2026-10-21'", [CIK])
+    con.close()
+    assert "state: unknown" in run(args(db, src, "--classify", str(rev)), capsys)[1]
+
+
+def written(tmp_path, capsys):
+    src = write_source(tmp_path / "src", SOURCE_PRICES, SOURCE_DIVIDENDS)
+    db = live_db(tmp_path)
+    before = snapshot(db)
+    _, m = reviewed(tmp_path, db, src, capsys)
+    argv = wargs(db, src, m["hash"])
+    assert run(argv, capsys)[0] == 0
+    return src, db, before, result_of(argv)
+
+
+def test_rollback_restores_the_backup_atomically_and_keeps_the_repaired_file(tmp_path, capsys):
+    """C3: verified rollback point, no intervening write, staged same-volume copy, the repaired
+    state preserved under a new name, then one atomic rename."""
+    src, db, before, res = written(tmp_path, capsys)
+    r = json.loads(res.read_text())
+    code, out = run(args(db, src, "--rollback", "--result-of", str(res)), capsys)
+    assert code == 0, out
+    assert sha(db) == r["backup"]["sha256"] and snapshot(db) == before
+    kept = [p for p in db.parent.iterdir() if p.name.startswith("edgar.duckdb.repaired-")]
+    assert len(kept) == 1 and sha(kept[0]) == r["post_sha256"] and str(kept[0]) in out
+    assert not [p for p in db.parent.iterdir() if p.name.endswith(".part") or p.name.endswith(".wal")]
+
+
+@pytest.mark.parametrize("gate", ["intervening_write", "wal", "backup_changed", "lock", "not_committed"])
+def test_rollback_stops_on_any_ambiguity(tmp_path, capsys, gate):
+    src, db, _, res = written(tmp_path, capsys)
+    r = json.loads(res.read_text())
+    if gate == "intervening_write":
+        subprocess.run([sys.executable, "-c", INTRUDER, str(db)], check=True)
+    if gate == "wal":
+        (db.parent / "edgar.duckdb.wal").write_bytes(b"not ours")
+    if gate == "backup_changed":
+        with open(r["backup"]["path"], "ab") as f:
+            f.write(b"x")
+    if gate == "not_committed":
+        res.write_text(json.dumps({**r, "status": "refused"}))
+    names, db_sha = sorted(p.name for p in db.parent.iterdir()), sha(db)
+    argv = args(db, src, "--rollback", "--result-of", str(res))
+    if gate == "lock":
+        with ops.run_lock(db.parent / ".run.lock"):
+            code, out = run(argv, capsys)
+    else:
+        code, out = run(argv, capsys)
+    assert code in (2, 3) and "nothing replaced" in out, out
+    assert sha(db) == db_sha and sorted(p.name for p in db.parent.iterdir()) == names
