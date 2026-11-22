@@ -340,3 +340,20 @@ def test_out_created_between_the_check_and_the_write_is_still_refused(tmp_path, 
     code, msg = run(args(db, src, "--out", str(out)), capsys)
     assert code == 2 and "already exists" in msg and "nothing written" in msg
     assert out.read_text() == "someone else's file\n"
+
+
+@pytest.mark.parametrize("target", ["lock", "lock_via_dotdot", "wal"])
+def test_out_refuses_the_run_lock_and_wal_even_when_absent(tmp_path, capsys, target):
+    """Review C1 (re-check request): data/.run.lock and the database's .wal are reserved names.
+    A manifest there would break the scheduled run's lock or be replayed by DuckDB as a WAL."""
+    src = write_source(tmp_path / "src", SOURCE_PRICES, SOURCE_DIVIDENDS)
+    db = live_db(tmp_path)
+    (db.parent / "sub").mkdir()
+    out = {"lock": db.parent / ".run.lock", "lock_via_dotdot": db.parent / "sub" / ".." / ".run.lock",
+           "wal": db.parent / "edgar.duckdb.wal"}[target]
+    assert not (db.parent / ".run.lock").exists() and not (db.parent / "edgar.duckdb.wal").exists()
+    before = hashlib.sha256(db.read_bytes()).hexdigest()
+    code, msg = run(args(db, src, "--out", str(out)), capsys)
+    assert code == 2 and "reserved" in msg and "nothing read" in msg
+    assert not (db.parent / ".run.lock").exists() and not (db.parent / "edgar.duckdb.wal").exists()
+    assert hashlib.sha256(db.read_bytes()).hexdigest() == before
