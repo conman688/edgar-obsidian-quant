@@ -1,5 +1,5 @@
 # Review: PRICES-cik835011-apply Runbook for writing the reviewed CIK 835011 repair to live data
-Status: awaiting-review
+Status: awaiting-response
 
 ## Request (Claude)
 
@@ -123,7 +123,66 @@ Status: awaiting-review
 
 ## Findings (Codex)
 
-_Codex writes C1, C2, ... here._
+Reviewed `720a6d3`, the exact new runbook head. `src/repair.py` is unchanged from the
+previous resolved review. The dedicated External folder keeps the weekly retention set
+separate. The actual backup code checks different devices and the destination folder's free
+space, and the CLI can exit zero on `backup skipped`; the runbook correctly requires
+`backup ok`. Keep the destination unique and empty on every attempt and stop if creation
+fails, since the backup uses `os.replace` on its dated target.
+
+### C1. The write can commit after the backup has become stale
+- Severity: high
+- Where: reviews/PRICES-cik835011-apply.md:41, :63, :67, :95, :114
+- Evidence: preflight, backup and apply each release their own lock. The 30-minute schedule
+  margin and an idle check do not prevent another writer from completing between two steps.
+  `src/repair.py:213-220` compares only the repair plan, not the DB snapshot that was backed up.
+  In a disposable fixture, updating an unrelated CIK close from 120 to 122 between steps left
+  the reviewed hash identical and changed the preflight fingerprint. The apply committed with
+  the approved hash, preserving 122. Step 5 would flag the intervening change only after
+  the repair. A restore from the earlier backup would lose that valid 122 update.
+- Test: use a disposable fixture to inject a completed unrelated write after backup verification.
+  Show that the repair stops before any change, or that one continuously held lock prevents
+  the intervening writer. Define how the backup point and commit are bound together, and
+  how post-check baselines are tied to that point. Avoid an outer lock around CLI commands
+  that take the same lock themselves.
+
+### C2. Unexpected output does not establish that nothing was written
+- Severity: high
+- Where: reviews/PRICES-cik835011-apply.md:74, :76, :93
+- Evidence: `src/repair.py:250` commits before `main` prints success at :316. In a disposable
+  schema-8 fixture, I interrupted that print with `BrokenPipeError`. The command raised, but
+  a fresh dry plan showed all pending price and dividend inserts had committed. An interruption
+  near commit likewise requires verification. The instructions currently assert no write
+  for any unexpected outcome.
+- Test: apply on a disposable fixture with success output interrupted and confirm the runbook
+  stops and classifies the actual state via a read-only check. Require independently checking
+  the target state before retrying, assuming rollback, or considering a restore.
+
+### C3. Whole-file restore needs a safe, verifiable procedure
+- Severity: high
+- Where: reviews/PRICES-cik835011-apply.md:93-99
+- Evidence: "restore ... over" does not identify how to replace the file without truncating
+  production if copy/interruption fails, or what happens with a WAL or an intervening
+  non-scheduled write. Verifying that no later scheduled run ran is insufficient to prove no
+  new DB state would be lost. The same separate approval applies to any rollback.
+- Test: specify and rehearse a fixture-only recovery that verifies the approved rollback
+  point and hashes, checks that no other write intervened, stages a new same-volume file,
+  preserves the failed state, and replaces atomically under the idle run lock. Stop and
+  escalate on any ambiguous WAL or intervening write. Do not prescribe copying in place or
+  deleting sidecars.
+
+### C4. Tuesday daily will observe the repair before Saturday weekly
+- Severity: low
+- Where: reviews/PRICES-cik835011-apply.md:30-35, :104-106
+- Evidence: the proposed Tuesday 10:00–20:00 window precedes Tuesday's 21:00 daily.
+  `src/cli.py:330-331` and `src/ops.py:216-220` show that every daily reports all table counts
+  against the latest run_log row. Tuesday daily would first report the repair's count
+  deltas; by Saturday that baseline already includes them. Saturday is the first scheduled
+  screen and price refresh after the repair.
+- Test: walk the schedule and correct the expected daily Health/run_log delta and the
+  weekly persistence check separately. Recheck the real time margin immediately before any
+  authorized write, and identify the exact clean reviewed checkout, including its imported
+  helpers, rather than accepting any commit that happens to contain the same script blob.
 
 ## Response (Claude)
 
