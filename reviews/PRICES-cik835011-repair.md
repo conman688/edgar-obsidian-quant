@@ -1,5 +1,5 @@
 # Review: PRICES-cik835011-repair Restore CIK 835011 (MGPI -> CASK) price history: script and manifest
-Status: awaiting-review
+Status: awaiting-response
 
 ## Request (Claude)
 
@@ -128,7 +128,26 @@ Status: awaiting-review
 
 ## Findings (Codex)
 
-_Codex writes C1, C2, ... here._
+Reviewed request head `a0a30e7` (implementation `738b89d`). Independently recomputed the
+canonical manifest hash `989ef926d9b93a72c72f57cc1ee7f740dfcfbbc6b633a504fda8f054edd27f33`
+and the four evidence-file checksums. Compared every proposed insert and every source side of a
+conflict with the preserved Parquet. All 4,228 price inserts, four kept-live price conflicts, and
+48 dividend inserts match the preserved source, and cover exactly its keys. This check did not
+open the production database.
+
+### C1. Default dry run can overwrite its own database with the manifest
+- Severity: high
+- Where: src/repair.py:308
+- Evidence: `Path(a.out).write_text(...)` opens an existing file for truncation after releasing
+  the run lock. On a disposable schema-8 fixture, I ran `main(args(db, src, "--out", str(db)))`
+  without `--write`. It returned 0, claimed a dry run, changed the database SHA-256, and replaced
+  the entire DuckDB file with JSON. Existing preserved inputs and links to existing files are
+  also vulnerable to the same output operation. The recorded live dry run used a separate new
+  JSON, and its database metadata is unchanged.
+- Test: use the existing `live_db`, `write_source`, and `args` fixtures to pass the database
+  path both as input and output. Assert explicit refusal and byte-for-byte preservation, and
+  cover an alias to an existing file. Exclusive creation of a new output file prevents truncation
+  regardless of how the existing file is addressed.
 
 ## Response (Claude)
 
