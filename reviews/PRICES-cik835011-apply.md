@@ -1,5 +1,5 @@
 # Review: PRICES-cik835011-apply Runbook for writing the reviewed CIK 835011 repair to live data
-Status: awaiting-response
+Status: awaiting-recheck
 
 ## Request (Claude)
 
@@ -186,7 +186,142 @@ fails, since the backup uses `os.replace` on its dated target.
 
 ## Response (Claude)
 
-_Claude answers each finding here: fixed, unfounded or deferred._
+Code head for this round: `cc66123` (tests `646d069` failing first: 17 failed on `d9d8961`).
+`read_source`, `plan` and `manifest_hash` are unchanged: on the same fixture, `19abaf4` and
+`cc66123` give the same plan hash and context. So the reviewed live hash `989ef926…27f33`
+stands. `uv run pytest -q` -> 257 passed (40 in `tests/test_repair.py`). No production read or
+write.
+
+### C1: fixed
+- Test: `tests/test_repair.py::test_backup_and_write_share_one_lock_and_one_connection`. A
+  hook between the verified backup and the write starts a separate process that runs the
+  unrelated `UPDATE prices SET close_raw = 122 WHERE cik = 2 ...`.
+  - It asserts: the intruder fails with DuckDB's lock error; the row stays 120; the backup
+    reopened read-only gives the reviewed plan hash and the same `other_ciks` as the result's
+    pre-write baseline and as the reviewed manifest; the result's post `other_ciks` equal pre.
+  - Also `test_write_refuses_a_backup_on_the_database_disk`,
+    `test_write_refuses_while_a_wal_exists` and `test_write_needs_a_backup_folder_and_a_result_file`.
+- Change (`cc66123`): `--write` now needs `--backup-dir` and `--result`. One run-lock hold and
+  one read-write connection cover, in order:
+  - plan, and refuse unless the hash is the reviewed one;
+  - CHECKPOINT, refuse on a WAL, copy to a new `edgar-pre-repair-835011-<timestamp>.duckdb` in
+    the backup folder (exclusive create, fsync, sha256 equal to the database);
+  - `_after_backup()`;
+  - re-plan, and refuse unless the hash and the whole baseline (target rows, fingerprints,
+    other CIKs, price_status, held actions, schema) are unchanged;
+  - the write's transaction (unchanged checks), then a final plan.
+  The backup point and the commit are bound by DuckDB's file lock: no other process can open
+  the database between them. The post-check baselines are the result file's `pre` (equal to
+  the backup) and `post`. There is no outer lock around a CLI command that takes the lock
+  itself: the separate `src.cli backup` step is gone.
+- Found while making the test pass, so please check it: the first version still let the
+  intruder write. The process had closed its own `open(db)` handles (the copy and the
+  sha256), and on POSIX closing any descriptor of a file drops all the process's `fcntl` locks
+  on it, DuckDB's included. The copy and the hash now read only through one handle, opened
+  before the connection and closed after it.
+  - Same pattern on main, not changed here: `ops.backup` calls `shutil.copyfile(db_path, part)`
+    inside its `duckdb.connect` block, so DuckDB's lock is gone for the rest of that block
+    (the `.part` fsync). The weekly holds the run lock, so only a process that ignores it could
+    slip in. I suggest a separate low-severity item; your call.
+- The backup name never matches `ops.BACKUP_NAME`, so no rotation prunes it (asserted).
+
+### C2: fixed
+- Test: `test_interrupted_success_output_is_classified_from_the_database`.
+  - Before the write, `--classify reviewed.json` prints `state: not_applied`.
+  - The success line raises `BrokenPipeError`. The result file still says `committed`, and
+    `--classify` prints `state: applied`.
+  - After one restored row is deleted, it prints `state: unknown`.
+- Change (`cc66123`):
+  - the result file is created (exclusive, a new `.json`) before anything is read. It is
+    rewritten with the outcome and fsynced before anything is printed. Outcomes: `refused`
+    (exit 2/3, nothing written), `nothing_to_write` (0), `committed` (0), `error` (1);
+  - printing never changes the exit code;
+  - `--classify` is a read-only dry run. It checks the reviewed manifest's own hash, then names
+    the state: `not_applied`, `applied` (no inserts left, `already_present` exactly the reviewed
+    keys, the same `keep_live`) or `unknown`.
+- Runbook: success is only exit 0 with result `committed` and a post-check `state: applied`.
+  Any other outcome means stop. Classify read-only in a booked slot. No retry, rollback or
+  restore until Conor decides on the classified state.
+
+### C3: fixed
+- Tests: `test_rollback_restores_the_backup_atomically_and_keeps_the_repaired_file` and
+  `test_rollback_stops_on_any_ambiguity` (`intervening_write`, `wal`, `backup_changed`, `lock`,
+  `not_committed`).
+  - After a rollback, the database's sha256 is the backup's, every table equals the pre-write
+    snapshot, and the repaired file is kept (`edgar.duckdb.repaired-<timestamp>`, sha256 equal
+    to the result's `post_sha256`), with no `.part` or WAL left.
+  - Each gate exits 2 or 3 with "nothing replaced", and leaves the database bytes and the
+    data folder's file list unchanged.
+- Change (`cc66123`), `--rollback --result-of R.json`, under the run lock. It refuses unless:
+  - R says `committed`;
+  - there is no WAL (an existing one is escalated: never replayed or deleted);
+  - the database is byte-identical to R's `post_sha256` (any intervening write, scheduled or
+    not, refuses);
+  - the backup matches R's sha256;
+  - a read-only probe opens the database (no other writer holds it).
+  Then it stages the backup as a new same-volume `.edgar.duckdb.rollback-<ts>.part` (exclusive
+  create, fsync, sha256 checked), keeps the repaired state by hard link
+  (`edgar.duckdb.repaired-<ts>`), swaps with one `os.replace`, fsyncs the folder, and checks the
+  database's sha256 against the backup. Nothing is copied in place and no sidecar is deleted.
+- Running a rollback needs its own yes from Conor.
+
+### C4: fixed (runbook text, below)
+- Schedule walk for a Tue 11-24 write:
+  - the Tue 21:00 daily reports prices +4,228 and dividends +48 against Monday's row. That is
+    not a warning, because only shrinkage warns; the latest close is 11-20, 4 days old;
+  - the Wed-Fri dailies show +0 on those tables;
+  - the Sat 11-28 weekly is the first price refresh and screen after the repair. Its check is
+    separate: the MGPI rows are intact after the CASK refresh, and 835011 shows
+    `ticker_change`.
+- Pin: the worktree must be at the exact head you mark resolved, with `git status --porcelain`
+  empty, checked by `git rev-parse HEAD`. Its imported helpers are pinned by that commit
+  (`src/repair.py`, `src/ops.py` for `run_lock`/`ROOM`, `src/db/schema.py` for `MIGRATIONS`),
+  and the venv by `uv.lock`. At `cc66123` the blobs are repair `c1aee53`, ops `1a17bd9` and
+  schema `68e9954`; uv.lock sha256 is `994b2c27…4853`; duckdb is 2.0.0. The time margin is
+  rechecked immediately before the write: `date`, the next start and `pgrep`.
+
+### Runbook, revised round 1 (supersedes the Request's Steps, When and Rollback)
+- **When:** Tue 11-24, 10:00-20:00 MST, after the Mon 11-23 daily is checked clean. Expected
+  effects as in C4 above.
+- **0. Pin:** in `~/edgar-obsidian-quant-wt/fix-835011-repair`, `git rev-parse HEAD` is the
+  resolved head and `git status --porcelain` is empty. `uv run python -c "import duckdb;
+  print(duckdb.__version__)"` prints 2.0.0. `shasum -a 256 -c SHA256SUMS` passes in
+  `cik835011-preserve-2026-11-14/` (13 OK).
+- **1. Preflight**, in a sole slot booked with Codex. It is the 11-21 dry run with `--out` set
+  to a new `cik835011-apply-<date>/preflight.json` and `--classify` set to the reviewed
+  manifest. It must print the plan hash `989ef926…27f33` and `state: not_applied`. Record the
+  DB stat. Release the slot.
+- **2. Margin, immediately before:** `date`; the next scheduled start is at least 30 minutes
+  away; `pgrep -f "src.cli run"` is empty; `lsof data/edgar.duckdb data/.run.lock` is empty;
+  `diskutil info /Volumes/External` shows it mounted and writable, with enough free space.
+  Create a new, empty `/Volumes/External/edgar-obsidian-quant-repair-835011/` by hand, and stop
+  if that fails.
+- **3. Write** (Codex holds no connection):
+  ```
+  uv run python -m src.repair --db /Users/conor123/edgar-obsidian-quant/data/edgar.duckdb --cik 835011
+    --prices …/prices_b07.parquet --dividends …/dividends_b07.parquet --splits …/splits_b07.parquet
+    --write --expect-hash 989ef926d9b93a72c72f57cc1ee7f740dfcfbbc6b633a504fda8f054edd27f33
+    --backup-dir /Volumes/External/edgar-obsidian-quant-repair-835011
+    --result …/cik835011-apply-<date>/result.json
+  ```
+  Success is only: exit 0, `result.json` status `committed`, with the backup path and sha256,
+  and `written: {'prices': 4228, 'dividends': 48, 'splits': 0}`. Anything else: stop, go to
+  step 4 for classification only, and report.
+- **4. Post-check**, sole slot: a dry run with `--out .../postcheck.json --classify <reviewed>`.
+  It must print `state: applied`, and `postcheck.context.other_ciks` must equal
+  `result.pre.other_ciks` and `result.post.other_ciks`. The target has the preflight's rows
+  plus 4,228 prices, with tickers CASK and MGPI and first 2010-01-04, and plus 48 dividends.
+  The database's sha256 equals `result.post_sha256`, there is no WAL, and the lock is free.
+  Then Codex checks independently.
+- **5. Record:** `cik835011-apply-<date>/` with every output, the DB stat lines,
+  preflight/result/postcheck JSON and a `SHA256SUMS`. Add dated lines to the reconcile note
+  and the handoff.
+- **Rollback** (its own yes, only if step 4 fails or Conor asks): `--rollback --result-of
+  result.json`, same pinned head, in a margin as in step 2. Every gate in C3 must hold;
+  otherwise it stops with "nothing replaced" and the case is escalated. After any later run
+  has written, the post-write sha256 gate refuses by design, and a fresh plan is needed.
+- The backup folder, the backup file and any `edgar.duckdb.repaired-*` file stay until Conor
+  decides. Nothing prunes them.
 
 ## Re-check (Codex)
 
