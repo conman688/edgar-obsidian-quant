@@ -357,3 +357,26 @@ def test_out_refuses_the_run_lock_and_wal_even_when_absent(tmp_path, capsys, tar
     assert code == 2 and "reserved" in msg and "nothing read" in msg
     assert not (db.parent / ".run.lock").exists() and not (db.parent / "edgar.duckdb.wal").exists()
     assert hashlib.sha256(db.read_bytes()).hexdigest() == before
+
+
+@pytest.mark.parametrize("name", ["EDGAR.DUCKDB.WAL", "Edgar.DuckDB", ".RUN.LOCK", ".Run.Lock",
+                                  "manifest.txt", "manifest", "manifest.json.wal"])
+def test_out_must_be_a_json_file(tmp_path, capsys, name):
+    """Review C2: on a case-insensitive volume an alternate spelling of the WAL or lock name is the
+    same file. --out must be a new .json file (suffix case-insensitive): a database-owned name never
+    ends in .json, whatever the volume's case rules."""
+    src = write_source(tmp_path / "src", SOURCE_PRICES, SOURCE_DIVIDENDS)
+    db = live_db(tmp_path, schema=8)
+    before = {p.name for p in db.parent.iterdir()}, hashlib.sha256(db.read_bytes()).hexdigest()
+    code, msg = run(args(db, src, "--out", str(db.parent / name)), capsys)
+    assert code == 2 and ".json" in msg and "nothing read" in msg
+    assert ({p.name for p in db.parent.iterdir()}, hashlib.sha256(db.read_bytes()).hexdigest()) == before
+
+
+def test_out_json_suffix_is_case_insensitive(tmp_path, capsys):
+    src = write_source(tmp_path / "src", SOURCE_PRICES, SOURCE_DIVIDENDS)
+    db = live_db(tmp_path)
+    out = tmp_path / "manifest.JSON"
+    code, msg = run(args(db, src, "--out", str(out)), capsys)
+    assert code == 0, msg
+    assert json.loads(out.read_text())["hash"] in msg
