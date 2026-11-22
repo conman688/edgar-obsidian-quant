@@ -1,5 +1,5 @@
 # Review: M10 Footnote checks (plan)
-Status: resolved
+Status: awaiting-review
 
 ## Request (Claude)
 
@@ -317,3 +317,79 @@ The revised rule selects by entity, dimensions and reporting period, handles con
 
 ### C6: agree
 The plan now distinguishes conflicting current company-wide notes from blocks found only in another context, and keeps absence and errors separate. Independently ran the supplied message test: 4 cases passed, and the updated evidence checksums match. This resolves the plan review only; the implementation and its acceptance checks remain future work.
+
+
+## Request round 4 (Claude): build
+
+- Branch: `feat/m10-related-party`  PR: https://github.com/conman688/edgar-obsidian-quant/pull/34 (draft)
+- Diff: `git diff a993b70..464c07d` (code and tests). This review file is the only later change.
+- Tests: `uv run pytest` -> 269 passed (222 before + 47 in `tests/test_m10_related_party.py`).
+  The tests were committed first (b516b33) and failed at import; the code is 464c07d.
+- Offline only: fixtures, synthetic instances, a fake SEC client. No live DB, no network, no
+  `ingest`/`run`/`backup`/live `fetch-text`/`sync-vault`.
+
+### What changed
+- `src/ingestion/related_party.py` (new): `select_block` (context rule C5/C6), `read_filing`
+  (index.json -> one `*_htm.xml` -> instance; every failure is status `error` with its message),
+  `fetch_related_party` (ledger: a row is skipped only when its status is ok/not_found/ambiguous
+  at the current `PARSER`; `error` and older-parser rows are fetched again).
+- Storage: `filing_sections`, section `fn_related_party`, `PARSER = 1`, no migration. One row per
+  filing in one statement. For `ambiguous`, `text` holds the reason (`elsewhere`|`conflict`); for
+  `error`, the error. `url` is the instance (or the index, when the instance was not found).
+- `src/redline.py`: `related_party_redline` (latest two rows filed by `as_of`, M7 `redline` as is,
+  compared only when both are `ok`, `stale` over `STALE_FY_DAYS` = 470 or an unknown report
+  date, `RP_MESSAGES` with the plan's exact wording). `risk_factor_redline` now shares the
+  latest-two query (`_latest_two`); its results are unchanged (M7 tests pass).
+- `src/cli.py`: `cmd_fetch_text` calls `fetch_related_party` after `fetch_sections` and prints
+  the counts. `RUN_STEPS` is unchanged.
+- `src/ops.py`: health warning "N related-party XBRL instances could not be read (retried next
+  run): accns" for `error` rows rewritten during this run (`fetched_at >= started`).
+- Vault: "Related parties" section in `company.md.j2`; frontmatter `related_party_new` (count,
+  empty without a comparison); Filing notes list "related parties". README and ROADMAP status.
+
+### How to verify
+- `uv run pytest -q tests/test_m10_related_party.py` -> 47 passed. Plan check -> test:
+  - Context (C5): `test_short_current_block_wins_over_a_longer_block_in_another_context`
+    (prior, subsidiary LegalEntityAxis, scenario, other entity; both orders),
+    `test_identical_repeats_count_once`.
+  - `elsewhere` / `conflict` (C5, C6): `test_blocks_only_in_other_contexts_are_ambiguous_elsewhere`,
+    `test_two_different_current_blocks_are_a_conflict`,
+    `test_ambiguous_current_10k_is_never_absent_and_has_its_own_message`,
+    `test_an_ambiguous_prior_10k_means_no_comparison`.
+  - Current-only block, `not_found` final: `test_a_block_only_in_the_current_10k_shows_its_text_with_no_comparison`,
+    `test_a_10k_without_the_tag_is_not_found_shown_as_untagged_and_not_fetched_again`.
+  - `error` (failed index or instance request, 0 or 2 `*_htm.xml`, malformed XML, entity
+    declaration): `test_failed_reads_leave_an_error_row_that_is_retried_and_reported`.
+  - Crash between families: `test_a_crash_after_risk_factors_commit_fills_related_party_next_run_without_the_document`,
+    `test_complete_related_party_rows_never_stop_missing_risk_factors_and_the_other_way_round`.
+  - Point-in-time: `test_fetch_reads_only_10ks_filed_by_as_of_and_never_twice`,
+    `test_comparison_uses_the_latest_two_10ks_filed_by_as_of`.
+  - Idempotent: second `fetch-text` downloads 0 documents
+    (`test_fetch_text_runs_related_party_and_the_weekly_steps_do_not_change`); second
+    `sync-vault` writes 0 files (`test_company_note_shows_related_parties_and_resync_writes_nothing`).
+  - Screen unchanged: `test_screen_and_notes_status_rank_are_identical_with_and_without_m10_data`.
+  - Stale: `test_stale_when_the_report_date_is_more_than_470_days_before_as_of`,
+    `test_stale_10k_is_marked_in_the_note`. Journal: `test_sync_never_touches_journal_notes`.
+
+### Where bugs are most likely
+- `select_block`: namespace matching (any `http://fasb.org/us-gaap/<year>`, any
+  `http://xbrl.sec.gov/dei/<year>`), context end = `endDate` or `instant` compared as text with
+  DocumentPeriodEndDate, entity identifier compared as an integer with the CIK.
+- Blocks present but zero or several different DocumentPeriodEndDate values: `error` (retried),
+  not `ambiguous`. A nil or empty block is ignored.
+- The health warning counts only rows this run rewrote, so an old `error` row of a company that
+  left the vault, or of a 10-K that is now third-latest, is no longer reported.
+- `read_filing` catches every `Exception` (so one bad instance never stops the weekly run);
+  DB writes are outside that block.
+
+### Known gaps (not findings unless they are worse than stated)
+- Live checks not run: GIII 0001104659-26-033891 parity (1,484 characters, all whitespace
+  removed) and the 11-07 vault counts (13 blocks; 9 with new sentences). They need a sole
+  read-only DB slot booked with Codex, a vault backup, and Conor's yes.
+- A 10-K whose index has no `*_htm.xml` (older, non-inline XBRL: FLOC and INR prior 10-Ks on
+  11-07) is an `error` as the plan says, so it is retried every weekly run and warned about
+  while it is one of the latest two.
+- `fetch_related_party` requests each company's submissions index again (one request per
+  company per run, about 60 a week) instead of sharing `fetch_sections`'s.
+- `redline`'s splitter still breaks at personal initials (M7 behaviour, unchanged).
+
