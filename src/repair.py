@@ -23,9 +23,11 @@ from the plan to the commit, so the backup is exactly the pre-write state. Insid
 the write checks that the target's rows are exactly the old rows plus the plan's, that every other
 CIK's rows are unchanged, and that a fresh plan has nothing left to write; otherwise it rolls back.
 R records the outcome (refused, nothing_to_write, committed or error), the backup's path and
-sha256, the pre- and post-write baselines and the database's sha256 after the write. A plan with
-nothing to write is a no-op. Stdout is not the record (C2): `--classify REVIEWED.json`, a dry run,
-names the state as not_applied, applied or unknown.
+sha256, the pre- and post-write baselines and the database's sha256 after the write (checkpointed
+and hashed while the write connection still keeps other writers out). R is written only through
+the descriptor that created it. A plan with nothing to write is a no-op. Stdout is not the record
+(C2): `--classify REVIEWED.json`, a dry run, names the state as not_applied, applied or unknown, and
+an unexpected error records that state, classified read-only under the same run lock.
 
 `--rollback --result-of R.json` puts the backup back only if: R says committed, there is no WAL,
 the database is byte-identical to the state the write left, the backup matches its sha256, and no
@@ -236,6 +238,10 @@ def _after_backup() -> None:
     """Called between the verified backup and the write. A no-op; tests inject a writer here."""
 
 
+def _after_commit() -> None:
+    """Called after the commit and its post-write hash, with the write connection still open. A no-op."""
+
+
 def _before_swap() -> None:
     """Called in a rollback after the backup is staged, before the swap. A no-op; tests inject a writer."""
 
@@ -302,10 +308,14 @@ def _baseline(context: dict) -> dict:
     return {k: context[k] for k in keep}
 
 
-def write(con, db: Path, fh, cik: int, source: dict, expect_hash: str, backup_dir: Path) -> dict:
+def write(con, db: Path, fh, cik: int, source: dict, expect_hash: str, backup_dir: Path,
+          started: dict | None = None) -> dict:
     """Plan, back up, write: one lock hold and one connection, so nothing can change in between
-    (review PRICES-cik835011-apply C1). Returns the result record; raises Refused before any write."""
+    (review PRICES-cik835011-apply C1). Returns the result record; raises Refused before any write.
+    `started` receives the first plan, so an unexpected error can be classified against it."""
     m = plan(con, cik, source)
+    if started is not None:
+        started["manifest"] = m
     p = m["plan"]
     if p["blocked"]:
         raise Refused(f"blocked: {p['blocked']}")
@@ -321,10 +331,17 @@ def write(con, db: Path, fh, cik: int, source: dict, expect_hash: str, backup_di
         raise Refused("the database changed between the plan and the backup")
     _commit(con, cik, source, again)
     post = plan(con, cik, source)
+    # The committed state, checkpointed and hashed through `fh` while this connection still keeps
+    # every other writer out: a later direct write can never pass for the repair's result.
+    con.execute("CHECKPOINT")
+    if os.path.lexists(_wal(db)):
+        raise RuntimeError(f"WAL {_wal(db)} exists after the post-write CHECKPOINT")
+    post_sha = _sha256_fh(fh)
+    _after_commit()
     n = {t: len(p[t]["insert"]) for t in TABLES}
     return {"status": "committed", "plan_hash": m["hash"], "written": n,
             "set_first_date": p["price_status"]["set_first_date"], "backup": backup,
-            "pre": _baseline(m["context"]), "post": _baseline(post["context"]),
+            "pre": _baseline(m["context"]), "post": _baseline(post["context"]), "post_sha256": post_sha,
             "message": f"written: {n}, first_date {p['price_status']['set_first_date']}; plan hash {m['hash']}"}
 
 
@@ -480,13 +497,13 @@ def write_new(path: str, text: str) -> None:
         os.fsync(f.fileno())
 
 
-def _record(path: str, obj: dict) -> None:
-    """Rewrite our own result file (created by write_new at the start of the run)."""
-    fd = os.open(path, os.O_WRONLY | os.O_TRUNC | os.O_NOFOLLOW)
-    with os.fdopen(fd, "w") as f:
-        f.write(json.dumps(obj, indent=1, sort_keys=True, allow_nan=False) + "\n")
-        f.flush()
-        os.fsync(f.fileno())
+def _record(fd: int, obj: dict) -> None:
+    """Rewrite the result file through the descriptor that created it: a swapped pathname (a link to
+    another file) can never be truncated (review apply re-check)."""
+    data = (json.dumps(obj, indent=1, sort_keys=True, allow_nan=False) + "\n").encode()
+    os.ftruncate(fd, 0)
+    os.pwrite(fd, data, 0)
+    os.fsync(fd)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -572,42 +589,64 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _write_run(a, db: Path, source: dict) -> int:
-    """--write: one result file per attempt, created before anything is read, rewritten at the end."""
+    """--write: one result file per attempt, created before anything is read and rewritten only
+    through its own descriptor. An unexpected error is classified read-only, under the same lock,
+    against the plan the run started from."""
     try:
-        write_new(a.result, json.dumps({"status": "started", "started": datetime.now().isoformat()}) + "\n")
+        rfd = os.open(a.result, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
     except FileExistsError:
         _say(f"refused: --result {a.result} already exists (or is a link); nothing read or written")
         return 2
-    code = 0
     try:
-        if os.path.lexists(_wal(db)):
-            raise Refused(f"WAL {_wal(db)} exists: a writer did not finish; escalate")
-        with ops.run_lock(db.parent / ".run.lock"):
-            # Held open for the connection's whole life and closed after it: closing any descriptor
-            # of the database would drop DuckDB's fcntl lock while the connection is still open.
-            with open(db, "rb") as fh:
-                con = duckdb.connect(str(db), read_only=False, config=DB_CONFIG)
+        _record(rfd, {"status": "started", "started": datetime.now().isoformat()})
+        code, started = 0, {}
+        try:
+            if os.path.lexists(_wal(db)):
+                raise Refused(f"WAL {_wal(db)} exists: a writer did not finish; escalate")
+            with ops.run_lock(db.parent / ".run.lock"):
                 try:
-                    v, known = schema_version(con), max(n for n, _ in MIGRATIONS)
-                    if not MIN_SCHEMA <= v <= known:
-                        raise Refused(f"schema version {v} is outside {MIN_SCHEMA}..{known}")
-                    record = write(con, db, fh, a.cik, source, a.expect_hash, Path(a.backup_dir))
-                finally:
-                    con.close()
-            if record["status"] == "committed":
-                record["post_sha256"] = sha256_file(db)
-                record["post_wal"] = os.path.lexists(_wal(db))
-    except ops.RunLocked as e:
-        record, code = {"status": "refused", "message": f"not started: {e}; nothing written"}, 3
-    except Refused as e:
-        record, code = {"status": "refused", "message": f"refused: {e}; nothing written"}, 2
-    except Exception as e:
-        record, code = {"status": "error", "message": f"error: {e!r}; classify the state read-only "
-                                                      f"(--classify) before anything else"}, 1
-    record.update(db=str(db), cik=a.cik, expect_hash=a.expect_hash, finished=datetime.now().isoformat())
-    _record(a.result, record)
+                    # Held open for the connection's whole life and closed after it: closing any
+                    # descriptor of the database would drop DuckDB's fcntl lock meanwhile.
+                    with open(db, "rb") as fh:
+                        con = duckdb.connect(str(db), read_only=False, config=DB_CONFIG)
+                        try:
+                            v, known = schema_version(con), max(n for n, _ in MIGRATIONS)
+                            if not MIN_SCHEMA <= v <= known:
+                                raise Refused(f"schema version {v} is outside {MIN_SCHEMA}..{known}")
+                            record = write(con, db, fh, a.cik, source, a.expect_hash, Path(a.backup_dir), started)
+                        finally:
+                            con.close()
+                except Refused:
+                    raise
+                except Exception as e:
+                    record, code = {"status": "error", "error": repr(e)}, 1
+                    record["state"] = _classify_after_error(db, a.cik, source, started.get("manifest"))
+                    record["message"] = (f"error: {e!r}; state: {record['state']} (classified read-only); "
+                                         f"stop and report before anything else")
+        except ops.RunLocked as e:
+            record, code = {"status": "refused", "message": f"not started: {e}; nothing written"}, 3
+        except Refused as e:
+            record, code = {"status": "refused", "message": f"refused: {e}; nothing written"}, 2
+        record.update(db=str(db), cik=a.cik, expect_hash=a.expect_hash, finished=datetime.now().isoformat())
+        _record(rfd, record)
+    finally:
+        os.close(rfd)
     _say(record["message"])
     return code
+
+
+def _classify_after_error(db: Path, cik: int, source: dict, before: dict | None) -> str:
+    """Read-only: the state against the run's first plan, or unknown if there was none."""
+    if before is None:
+        return "unknown"
+    try:
+        con = duckdb.connect(str(db), read_only=True, config=DB_CONFIG)
+        try:
+            return classify(plan(con, cik, source), before)
+        finally:
+            con.close()
+    except Exception:
+        return "unknown"
 
 
 if __name__ == "__main__":
