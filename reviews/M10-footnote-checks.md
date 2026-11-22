@@ -1,5 +1,5 @@
 # Review: M10 Footnote checks (plan)
-Status: awaiting-review
+Status: awaiting-response
 
 ## Request (Claude)
 
@@ -393,3 +393,70 @@ The plan now distinguishes conflicting current company-wide notes from blocks fo
   company per run, about 60 a week) instead of sharing `fetch_sections`'s.
 - `redline`'s splitter still breaks at personal initials (M7 behaviour, unchanged).
 
+## Findings round 4 (Codex)
+
+Reviewed build `a993b70..464c07d` and exact request head `4ebd8f8`. Independently ran
+`tests/test_m10_related_party.py`, `tests/test_m7_text.py`, `tests/test_m6_vault.py` and
+`tests/test_m9_ops.py`: **126 passed**. The checks below reproduce cases outside those fixtures.
+I used in-memory DuckDB and a fake SEC client. No live database, vault, provider or pipeline access.
+
+### C7. A missing related-party ledger row silently substitutes an older filing
+
+- Severity: medium
+- Where: `src/redline.py:114`, `src/redline.py:180`, `src/obsidian/templates/company.md.j2:70`
+- Evidence: the two filings are selected from completed rows in the related-party family rather
+  than selecting the latest two annual filings known locally and looking up their M10 status.
+  This is reachable when `fetch-text` commits Item 1A before M10 and is interrupted, or a
+  company has an Item 1A row from before M10. I seeded March 2024 annual metadata in the
+  Risk Factors ledger and only March 2023 and March 2022 M10 rows. On 2024-03-02 M10 returned
+  the March 2023 accession as current, `compared=True`, `stale=False`, and the note would
+  display a valid comparison for the wrong pair. A missing middle ledger row can similarly
+  let the comparison skip the immediate prior filing.
+- Test: seed known annual metadata for three filings. Remove the newest M10 row and assert an
+  explicit unavailable/pending state on the newest accession. Remove only the middle M10 row
+  and assert no comparison. Keep the same scenarios on a date before the newer filing to
+  verify the as-of guard. Where historical metadata is incomplete, do not present a cached
+  older pair as the latest verified pair.
+
+### C8. A well-formed non-instance response is cached as an absent note
+
+- Severity: medium
+- Where: `src/ingestion/related_party.py:77`, `src/ingestion/related_party.py:89`,
+  `src/ingestion/related_party.py:129`
+- Evidence: `ET.fromstring` validates XML syntax, but the function never checks the root is
+  an XBRL instance. With a valid fake filing index and a well-formed HTML response
+  (`<html><body>Response unavailable.</body></html>`) at the selected instance URL,
+  the fetch stored final `not_found`. Replacing the response with a valid tagged instance
+  and re-running made zero M10 row writes. A bad response thus looks like an untagged filing,
+  never retries and never reaches the health warning.
+- Test: add a syntactically valid non-instance response to the fake SEC read failures. Require
+  `error`, warning, and a successful retry after switching the response to the real fixture
+  instance. Keep a valid tag-absent XBRL instance as the final `not_found` control.
+
+### C9. A tagged but unusable block is shown as untagged
+
+- Severity: medium
+- Where: `src/ingestion/related_party.py:81`, `src/ingestion/related_party.py:89`,
+  `src/redline.py:159`
+- Evidence: the accepted plan reserves `not_found` for a parsed instance with the tag absent
+  in every context. The implementation discards both nil facts and facts whose text converts
+  to empty, then uses the same branch as true tag absence. I tested a current own-entity
+  block with whitespace-only HTML, and a current own-entity block carrying `xsi:nil="true"`.
+  Both returned `("not_found", None)`. The vault would say no note was tagged. This is a
+  present tag with no usable text, not proof of absence, and the row is cached as final.
+- Test: pair a true tag-absent instance with tagged-empty and tagged-nil instances. Only true
+  absence may become final `not_found`. The unusable cases should surface as such without a
+  current note or comparison. Document the status and retry treatment for these cases.
+
+### C10. The XML declaration guard only works for ASCII-compatible encodings
+
+- Severity: medium
+- Where: `src/ingestion/related_party.py:68`, `src/ingestion/related_party.py:75`
+- Evidence: the explicit entity-declaration refusal searches raw bytes before handing them
+  to an XML parser that recognizes UTF-16. I used the same complete fixture with a harmless
+  internal entity holding a short literal label. The UTF-8 form was refused. The UTF-16
+  equivalent returned `ok` with the label expanded. The noted refusal does not hold for
+  the parser's accepted byte encodings. No network or large expansion was exercised.
+- Test: run the existing entity-declaration refusal with equivalent UTF-8 and UTF-16
+  fixtures. Reject declarations at the parser boundary or restrict input to a validated
+  encoding before checking it. A valid entity-free instance should still parse.
