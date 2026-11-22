@@ -604,3 +604,16 @@ def test_entity_declarations_are_refused_in_any_encoding_the_parser_accepts(enco
     with pytest.raises(ValueError, match="DTD"):
         select_block(encode(ENTITY + body.lstrip()), CIK)
     assert select_block(encode(instance(2023, [("cur", SHORT)])), CIK) == ("ok", text_of(SHORT))
+
+
+@pytest.mark.parametrize("cik,form,filed", [(CIK, "10-K", date(2024, 7, 1)),     # filed after as_of
+                                            (9999, "10-K", date(2024, 3, 1)),    # another company
+                                            (CIK, "10-K/A", date(2024, 3, 1))])  # not a 10-K
+def test_the_attached_related_party_row_obeys_the_same_cutoff_cik_and_form(cik, form, filed):   # C7, PIT
+    con = connect(":memory:")
+    con.execute("INSERT INTO filing_sections VALUES (?, ?, '10-K', DATE '2024-03-01', DATE '2023-12-31', "
+                "'risk_factors', 'ok', 'Risk.', 'u', now(), 2)", [CIK, A24])
+    con.execute("INSERT INTO filing_sections VALUES (?, ?, ?, ?, DATE '2023-12-31', ?, 'ok', ?, 'u', now(), ?)",
+                [cik, A24, form, filed, SECTION, text_of(SHORT), PARSER])
+    r = related_party_redline(con, [CIK], date(2024, 6, 30))[CIK]
+    assert (r["accn"], r["status"], r["text"]) == (A24, "pending", None)
