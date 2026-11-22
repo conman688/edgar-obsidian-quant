@@ -171,13 +171,22 @@ def _shrank(table: str, before: int, now: int) -> bool:
 
 
 def _warnings(con, today: date, counts: dict, before: dict, steps: list[dict], throttled: int,
-              dropped: int, backup: dict | None, job: str = "weekly") -> list[str]:
+              dropped: int, backup: dict | None, job: str = "weekly", started: datetime | None = None) -> list[str]:
     w = [f"{s['name']} failed: {s['message']}" for s in steps if s["status"] == "failed"]
     w += [f"{t} fell from {before[t]:,} to {n:,}" for t, n in counts.items()
           if t in before and _shrank(t, before[t], n)]
     failed_f4 = con.execute("SELECT count(*) FROM form4_filings WHERE status = 'failed'").fetchall()[0][0]
     if failed_f4:
         w.append(f"{failed_f4:,} Form 4 filings failed (retried next run)")
+    if started is not None:
+        # M10: related-party instances this run tried and could not read. An `error` row is
+        # rewritten on every retry, so its fetched_at says it failed again in this run.
+        bad = [a for (a,) in con.execute(
+            "SELECT accn FROM filing_sections WHERE section = 'fn_related_party' AND status = 'error' "
+            "AND fetched_at >= ? ORDER BY accn", [started]).fetchall()]
+        if bad:
+            w.append(f"{len(bad):,} related-party XBRL instances could not be read (retried next run): "
+                     + ", ".join(bad[:5]) + (", ..." if len(bad) > 5 else ""))
     failed_px = con.execute("SELECT count(*) FROM price_status WHERE status = 'error'").fetchall()[0][0]
     if failed_px:
         w.append(f"{failed_px:,} companies failed their price refresh")
@@ -220,7 +229,7 @@ def run_steps(con: duckdb.DuckDBPyConnection, job: str, steps: list[tuple[str, C
     prev = con.execute("SELECT counts FROM run_log ORDER BY started DESC LIMIT 1").fetchall()
     before = json.loads(prev[0][0]) if prev else {}
     n_throttled = throttled()
-    warnings = _warnings(con, today, counts, before, results, n_throttled, dropped(), backup, job)
+    warnings = _warnings(con, today, counts, before, results, n_throttled, dropped(), backup, job, started)
     r = {"job": job, "started": started, "finished": datetime.now(), "status": "failed" if failed else "ok",
          "steps": results, "counts": counts, "before": before, "throttled": n_throttled, "backup": backup,
          "warnings": warnings}

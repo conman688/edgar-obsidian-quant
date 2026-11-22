@@ -198,6 +198,7 @@ def test_the_instance_is_found_by_index_whatever_its_name():
 
 def test_comparison_uses_the_latest_two_10ks_filed_by_as_of():
     con = connect(":memory:")
+    fetch_related_party(con, FakeSec(rp_docs(standard())), [CIK], date(2023, 12, 31))
     fetch_related_party(con, FakeSec(rp_docs(standard())), [CIK], date(2024, 6, 30))
     r = related_party_redline(con, [CIK], date(2024, 6, 30))[CIK]
     assert (r["accn"], r["prior_accn"], r["status"], r["compared"]) == (A24, A23, "ok", True)
@@ -277,7 +278,13 @@ def _malformed(docs):
     docs[inst_url(A24)] = docs[inst_url(A24)][:-40]
 
 
-@pytest.mark.parametrize("break_it", [_no_instance, _two_instances, _no_index, _instance_fails, _malformed])
+def _entities(docs):
+    docs[inst_url(A24)] = (b'<?xml version="1.0"?><!DOCTYPE x [<!ENTITY a "aaaa">]>'
+                           + docs[inst_url(A24)].split(b"?>", 1)[1])
+
+
+@pytest.mark.parametrize("break_it", [_no_instance, _two_instances, _no_index, _instance_fails, _malformed,
+                                      _entities])
 def test_failed_reads_leave_an_error_row_that_is_retried_and_reported(break_it):
     docs = rp_docs(standard())
     break_it(docs)

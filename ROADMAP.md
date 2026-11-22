@@ -249,7 +249,7 @@ code checked out in the repository folder, so keep `main` checked out there. Ope
 unattended weeks" check, 2026-11-06 to about 2026-11-19; `run_log` and `Reports/Health.md`
 show each run.
 
-### M10 Footnote checks: related-party only (size: S, planned; starts only after the M9 two-week check passes)
+### M10 Footnote checks: related-party only (size: S; code built 2026-11-21, in review; live checks pending)
 
 Decision (user, 2026-11-05 and R1): footnotes first, narrow. Plan written 2026-11-07, revised
 after review round 1 (`reviews/M10-footnote-checks.md`). **Scope cut to related-party only by the
