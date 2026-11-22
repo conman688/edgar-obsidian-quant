@@ -245,3 +245,24 @@ def test_future_dates_are_not_counted_as_unmeasured(con):                       
     result = bt.evaluate(con, "ranked", cost_bps=0)
     assert result["monthly"]["months_unmeasured"] == 0 and result["monthly"]["months"] == 1
     assert result["horizons"][3]["unmeasured_dates"] == 0 and result["horizons"][3]["dates"] == 1
+
+
+def test_return_across_a_ticker_change_is_unknown(con):   # review PRICES-ticker-change C1
+    px(con, CIK, [("2024-01-31", 10.0), ("2024-02-05", 10.0)])
+    con.execute("INSERT INTO prices (cik, ticker, price_date, close_raw, source) VALUES "
+                "(?, 'Y', DATE '2024-02-06', 5.0, 't'), (?, 'Y', DATE '2024-02-29', 5.0, 't')", [CIK, CIK])
+    con.execute("CREATE TABLE snap AS SELECT ?::INTEGER AS cik, DATE '2024-01-31' AS as_of, "
+                "DATE '2024-01-31' AS price_date, 10.0 AS close_raw", [CIK])
+    rel = con.sql(bt.returns_sql("snap"))
+    r = dict(zip(rel.columns, rel.fetchall()[0]))
+    assert r["ret_1m"] is None and r["price_break_1m"] is True
+
+
+def test_return_across_a_held_source_action_is_unknown(con):   # review PRICES-ticker-change C2
+    px(con, CIK, [("2024-01-31", 10.0), ("2024-02-29", 10.0)])
+    con.execute("INSERT INTO price_actions_held VALUES (?, 'dividend', DATE '2024-02-10', 1.0, 'Y', 't', now())", [CIK])
+    con.execute("CREATE TABLE snap AS SELECT ?::INTEGER AS cik, DATE '2024-01-31' AS as_of, "
+                "DATE '2024-01-31' AS price_date, 10.0 AS close_raw", [CIK])
+    rel = con.sql(bt.returns_sql("snap"))
+    r = dict(zip(rel.columns, rel.fetchall()[0]))
+    assert r["ret_1m"] is None and r["price_break_1m"] is True

@@ -386,3 +386,29 @@ def test_ten_fold_jump_in_a_day_is_a_price_break(con):
     add_company(con, CIK, "CHRD", cheap_company())
     con.execute("INSERT INTO prices (cik, ticker, price_date, close_raw, source) VALUES (?, 'CHRD', DATE '2024-03-01', 0.9, 't'), (?, 'CHRD', DATE '2024-03-04', 12.0, 't')", [CIK, CIK])
     assert "price_break" in val_row(con)["issues"]
+
+
+def test_ticker_change_inside_the_year_is_an_issue(con):
+    # Review PRICES-ticker-change C1: rows priced under two tickers in the 52-week window may be
+    # two securities (BIPH/BIP, BEATW/BEAT); the high, drawdown and break check cannot trust them.
+    add_company(con, CIK, "ACME", cheap_company())
+    add_buy(con, CIK, "f4")
+    con.execute("INSERT INTO prices (cik, ticker, price_date, close_raw, source) "
+                "VALUES (?, 'ACMX', DATE '2024-09-03', 12.0, 't')", [CIK])
+    assert "ticker_change" in val_row(con)["issues"]
+    assert screen_rows(con)["ACME"]["status"] == "quarantine"
+
+
+def test_ticker_change_over_a_year_ago_is_not_an_issue(con):
+    add_company(con, CIK, "ACME", cheap_company())
+    con.execute("INSERT INTO prices (cik, ticker, price_date, close_raw, source) "
+                "VALUES (?, 'OLD', DATE '2023-06-01', 30.0, 't')", [CIK])
+    assert "ticker_change" not in val_row(con)["issues"]
+
+
+def test_held_source_action_inside_the_year_is_an_issue(con):   # review PRICES-ticker-change C2
+    add_company(con, CIK, "ACME", cheap_company())
+    add_buy(con, CIK, "f4")
+    con.execute("INSERT INTO price_actions_held VALUES (?, 'split', DATE '2024-05-01', 2.0, 'ACMX', 't', now())", [CIK])
+    assert "held_source_action" in val_row(con)["issues"]
+    assert screen_rows(con)["ACME"]["status"] == "quarantine"
