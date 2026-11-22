@@ -30,7 +30,10 @@ from src import config
 
 KEEP = 4
 ROOM = 1.05                 # free space needed on the backup disk, as a multiple of the database
-STALE_RUN_DAYS = 4          # latest close older than this on a run day: the price refresh is stuck
+# Latest close older than this many days on a run day: the price refresh is stuck. Prices refresh
+# only in the Saturday weekly, so a daily may see the previous week's last close: 7 days on a
+# Friday, 8 after a Friday market holiday. The weekly has just refreshed, so it stays strict.
+STALE_RUN_DAYS = {"weekly": 4, "daily": 8}
 DRIFT = 0.01                # a table that shrinks by more than this in one run gets a warning
 LEDGERS = ("loaded_filings", "form4_filings", "filing_sections")   # never shrink: any drop is a warning
 BACKUP_NAME = re.compile(r"^edgar-\d{4}-\d{2}-\d{2}\.duckdb$")
@@ -168,7 +171,7 @@ def _shrank(table: str, before: int, now: int) -> bool:
 
 
 def _warnings(con, today: date, counts: dict, before: dict, steps: list[dict], throttled: int,
-              dropped: int, backup: dict | None) -> list[str]:
+              dropped: int, backup: dict | None, job: str = "weekly") -> list[str]:
     w = [f"{s['name']} failed: {s['message']}" for s in steps if s["status"] == "failed"]
     w += [f"{t} fell from {before[t]:,} to {n:,}" for t, n in counts.items()
           if t in before and _shrank(t, before[t], n)]
@@ -181,7 +184,7 @@ def _warnings(con, today: date, counts: dict, before: dict, steps: list[dict], t
     latest = con.execute("SELECT max(price_date) FROM prices").fetchall()[0][0]
     if latest is None:
         w.append("no prices in the database")
-    elif (today - latest).days > STALE_RUN_DAYS:
+    elif (today - latest).days > STALE_RUN_DAYS[job]:
         w.append(f"latest price is {latest} ({(today - latest).days} days old)")
     if throttled:
         w.append(f"SEC throttled {throttled} requests (backed off and retried)")
@@ -217,7 +220,7 @@ def run_steps(con: duckdb.DuckDBPyConnection, job: str, steps: list[tuple[str, C
     prev = con.execute("SELECT counts FROM run_log ORDER BY started DESC LIMIT 1").fetchall()
     before = json.loads(prev[0][0]) if prev else {}
     n_throttled = throttled()
-    warnings = _warnings(con, today, counts, before, results, n_throttled, dropped(), backup)
+    warnings = _warnings(con, today, counts, before, results, n_throttled, dropped(), backup, job)
     r = {"job": job, "started": started, "finished": datetime.now(), "status": "failed" if failed else "ok",
          "steps": results, "counts": counts, "before": before, "throttled": n_throttled, "backup": backup,
          "warnings": warnings}

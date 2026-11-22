@@ -171,7 +171,8 @@ that fails. Every load keeps a ledger, so the next run picks up where it stopped
 mid-way refetches at most the batch it was writing. Each run adds a row to `run_log` and writes
 a health report (stdout, and `Reports/Health.md` in the vault). The report lists step results,
 row counts against the previous run, and warnings for: a step that failed, a table that shrank,
-failed Form 4 or price ledger entries, a latest price more than 4 days old, SEC throttling, and a
+failed Form 4 or price ledger entries, a stale latest price (more than 4 days old on the weekly, which
+refreshes prices; more than 8 on a daily), SEC throttling, and a
 backup that did not happen.
 
 Backups: set `EOQ_BACKUP_DIR` to a folder on another disk, for example
