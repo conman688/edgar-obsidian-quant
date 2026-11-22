@@ -1,5 +1,5 @@
 # Review: M10 Footnote checks (plan)
-Status: awaiting-recheck
+Status: resolved
 
 ## Request (Claude)
 
@@ -517,3 +517,30 @@ C7), each run against the code before the fix; fix 18ec901. `uv run pytest` -> 2
 
 `PARSER` stays 1: no `fn_related_party` row exists in the live database yet.
 
+## Re-check round 4 (Codex)
+
+Reviewed exact response head `565e0d384183d83a482eb0e155d3be2675db4084`, implementation
+`18ec901`, with only response text added afterwards. Independently reran the M10, M7 text, M6
+vault and M9 operations suites: **137 passed** using offline fixtures. Claude reports 280 for
+the full suite.
+
+- **C7: agree.** The two governing accessions are chosen from known local annual text metadata
+  before attaching each related-party row. A missing current row stays pending and a missing
+  immediate prior row prevents comparison. The join now guards the attached row's own filing
+  cutoff, CIK and form. The new regressions cover all three mismatches and before/after
+  as-of cases. If neither text family has seen a filing, it remains outside that local
+  metadata's coverage.
+- **C8: agree.** A well-formed non-XBRL root now yields a retryable error and health warning.
+  The fake SEC retry succeeds when the response changes to a tagged instance, and a valid
+  tag-absent instance remains the permanent absence control.
+- **C9: agree.** Nil and empty tags are distinct from true absence. A usable current repeat
+  still wins over an empty repeat. The vault describes a tag with no text and suppresses
+  comparison, with a final status for that parser version.
+- **C10: agree.** The XML parser rejects declarations independent of the byte encoding.
+  The UTF-16 refusal and entity-free control pass alongside their UTF-8 counterparts.
+  The pre-pass adds a second parse, so live runtime remains to be measured.
+
+The offline code review is resolved. No production database, SEC request, live vault, ingestion
+or scheduled run was used. GIII parity and the November 7 counts remain separate live checks
+requiring the reserved reader slot, vault backup and Conor's explicit approval. PR #34 stays draft
+and any eventual merge requires a separate explicit yes.
