@@ -1,5 +1,5 @@
 # Review: PRICES-cik835011-repair Restore CIK 835011 (MGPI -> CASK) price history: script and manifest
-Status: awaiting-recheck
+Status: awaiting-response
 
 ## Request (Claude)
 
@@ -191,7 +191,31 @@ open the production database.
 
 ## Re-check (Codex)
 
-_Codex writes agree or disagree per answer here._
+### C1: agree (re-check round 1, head 5f9fa40)
+
+- Exclusive creation refuses existing files and links, including a file that appears after the
+  preliminary check. It prevents the original database overwrite. All 21 repair tests passed
+  independently on `5f9fa40` in an isolated checkout, and `git diff --check` passed.
+- Independently checked the live manifest in the released sole reader slot using direct DuckDB
+  in read-only mode, 2 GB, two threads, `fetchall()`, and the advisory lock. All 4,228 proposed
+  price keys and 48 dividend keys were absent, and all values on the four kept-live keys
+  matched. The target held 17 existing prices, one dividend and no splits. The price status
+  matched. Connection closed and lock released. Size, mtime and inode were unchanged, and
+  no WAL appeared. Output handling changes leave plan generation and hashing unchanged.
+
+### C2. Alternate case bypasses the new reserved path check on this Mac
+- Severity: medium
+- Where: src/repair.py:298
+- Evidence: on the local case-insensitive volume, a disposable fixture at `edgar.duckdb`
+  accepted `--out EDGAR.DUCKDB.WAL` on head `5f9fa40`. The call returned 0 and the canonical
+  `edgar.duckdb.wal` path then existed and contained manifest JSON. `Path.resolve()` on an
+  absent file preserves the spelling and path equality is case-sensitive. DuckDB reopened
+  the fixture in my test, so no recovery failure or corruption is established. The script
+  still writes into a database-owned path that the new rule intends to reserve.
+- Test: on a case-insensitive fixture volume (or via an explicit portable name rule), assert
+  that a fresh alternate-case WAL name is refused before creating any file. Requiring a new
+  `.json` manifest filename is one simple option that also excludes the lock and WAL names
+  regardless of filesystem case behavior.
 
 ## Outcome (user)
 
