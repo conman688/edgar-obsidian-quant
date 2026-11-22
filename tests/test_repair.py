@@ -305,3 +305,25 @@ def test_restored_history_survives_the_next_refresh_with_its_own_ticker(tmp_path
     assert con.execute("SELECT ex_date FROM dividends WHERE cik = ? ORDER BY 1", [CIK]).fetchall() == [
         (D("2026-08-14"),), (D("2026-11-13"),)]
     con.close()
+
+
+@pytest.mark.parametrize("target", ["db", "source", "symlink_to_db", "other_file", "dangling_symlink"])
+def test_out_must_be_a_new_file(tmp_path, capsys, target):
+    """Review C1: --out never truncates an existing path, however it is addressed (the database,
+    a preserved input, a link to either, any other file). It refuses before reading anything."""
+    src = write_source(tmp_path / "src", SOURCE_PRICES, SOURCE_DIVIDENDS)
+    db = live_db(tmp_path, schema=8)
+    other = tmp_path / "notes.txt"
+    other.write_text("keep me\n")
+    out = {"db": db, "source": src["prices"], "other_file": other,
+           "symlink_to_db": tmp_path / "link.json", "dangling_symlink": tmp_path / "dangling.json"}[target]
+    if target == "symlink_to_db":
+        out.symlink_to(db)
+    if target == "dangling_symlink":
+        out.symlink_to(tmp_path / "would-be-created.json")
+    watched = [db, src["prices"], src["dividends"], src["splits"], other]
+    before = {p: hashlib.sha256(p.read_bytes()).hexdigest() for p in watched}
+    code, msg = run(args(db, src, "--out", str(out)), capsys)
+    assert code == 2 and "already exists" in msg and "nothing read" in msg
+    assert {p: hashlib.sha256(p.read_bytes()).hexdigest() for p in watched} == before
+    assert not (tmp_path / "would-be-created.json").exists()
