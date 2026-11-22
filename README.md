@@ -291,7 +291,7 @@ Done: schema with migrations, PIT layer, screens, Obsidian writer, M1 ingestion 
 M2 prices/splits/dividends, M3 insider trades, M4 screener, M5 backtest, M6 vault sync,
 M7 Risk Factors redline and forensics, M8 decision journal, M9 operations (run, backup, health,
 launchd files, CI), CLI.
-M10 related-party footnotes: code built, in review; its live checks are pending.
+M10 related-party footnotes: merged 2026-11-22; first live weekly run pending (ROADMAP M10, Status).
 Not done: M7 executive pay (deferred); footnotes other than related-party (out of M10's scope);
 two unattended weeks of the installed launchd agents (M9 check, to about 2026-11-19).
 

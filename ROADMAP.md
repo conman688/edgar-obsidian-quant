@@ -249,7 +249,28 @@ code checked out in the repository folder, so keep `main` checked out there. Ope
 unattended weeks" check, 2026-11-06 to about 2026-11-19; `run_log` and `Reports/Health.md`
 show each run.
 
-### M10 Footnote checks: related-party only (size: S; code built 2026-11-21, in review; live checks pending)
+### M10 Footnote checks: related-party only (size: S; merged 2026-11-22; first live weekly run pending)
+
+Status (2026-11-22):
+- Built test-first in PR #34; review `reviews/M10-footnote-checks.md` resolved (C1-C10).
+  Merged on the user's yes at the Codex-checked head `8775380`, as `7145698`. 280 tests pass.
+- Live check, Part A (SEC requests only, in-memory DB, the frozen 59 companies of the 11-07
+  vault, as_of 2026-11-07; corroborated by Codex). Evidence:
+  `edgar-obsidian-quant-checks/m10-live-2026-11-22/` (`ASSESSMENT.md`, SHA256SUMS).
+  - Every plan check reproduces: 13 latest blocks; the 9 new-sentence counts below exactly;
+    stored text equals the 11-07 blocks 25 of 25; GIII parity 1,484 = 1,484 characters.
+    Throttled 0.
+  - The script exited 1 on two of its own criteria, not M10 behaviour. CAVA's prior 10-K has a
+    block outside the saved 11-07 sample (latest: none tagged). The FLOC and INR prior 10-Ks
+    (no `*_htm.xml`) are `error` rows, retried by design; the repeat fetch downloaded 0
+    instances and 0 documents.
+- Vault backed up before the first live run: `/Volumes/External/edgar-obsidian-quant-backups/vault-2026-11-22`.
+  1,390 of 1,390 files match by SHA-256; Codex checked it independently.
+- Not yet live: the scheduled checkout stays on `a993b70` until the user says to pull. The plan is
+  to pull after the Mon 2026-11-23 daily (migration 9) and before the Sat 2026-11-28 weekly.
+- Then Part B, after the first M10 weekly run: health warnings, then a sole read-only DB slot
+  booked with Codex for `fn_related_party` rows per status against Part A, then a read-only vault
+  check (`related_party_new` values; Journal notes unchanged against the backup).
 
 Decision (user, 2026-11-05 and R1): footnotes first, narrow. Plan written 2026-11-07, revised
 after review round 1 (`reviews/M10-footnote-checks.md`). **Scope cut to related-party only by the
