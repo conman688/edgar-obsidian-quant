@@ -420,6 +420,20 @@ restored counts and Saturday weekly is the first scheduled refresh and screen. T
 previously verified manifest and its plan hash are unchanged. Reconfirm the applicable
 head and execution prerequisites against current main before any merge or live action.
 
+### Integration recheck after PR #33 (Codex, head 1c9a1a9)
+
+The change from the resolved `38ca544` to `1c9a1a9` is byte-identical to the change from
+`40790da` to the new scheduled main `76ace37` (binary diff SHA-256
+`41929bb9de7a404a209b18fc5e1b1b34d8cc62d7a33b8ef8efc57ce4692a1851`).
+Neither repair code/tests, schema nor dependency lock changed. The incorporated operations
+blob is now `4f9a24c359ef2dd4a8db9e3a6765e1d8a2557b53`. Its changes are limited to warning
+cadence, and the lock and free-space constant used by the repair are unchanged. This supersedes
+the old operations pin for this checked integration. The repair and schema pins remain
+`30622fda1d509e5df26de176b5de64494f1ba316` and `68e995434a19d83e478aaa2f940cdbc359e65859`.
+Independently passed 76 tests (all repair and operations tests) on the exact integrated
+tree and `git diff --check 76ace37..1c9a1a9`. Both shared reviews remain resolved.
+The plan hash and separate approvals remain applicable. No live pipeline or DB action.
+
 ## Outcome (user)
 
 _Only for findings still disputed after two rounds._
