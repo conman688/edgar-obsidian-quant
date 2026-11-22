@@ -15,15 +15,18 @@ is missing, and each is filled on its own. status / text:
 - `ok`: the current block's text.
 - `not_found`: the instance parsed and the tag is in no context. Final.
 - `ambiguous`: blocks exist but no unique current one. text is the reason, `elsewhere` (only
-  other periods or entities) or `conflict` (two different current company-wide texts). Final
-  for this PARSER; a parser bump fetches it again.
-- `error`: a request failed, the index has no or several `*_htm.xml`, or the instance does
-  not parse. text is the error. Retried on every run, and listed in the health warnings.
+  other periods or entities), `conflict` (two different current company-wide texts) or
+  `empty` (the current block is tagged but nil or without text). Final for this PARSER; a
+  parser bump fetches it again.
+- `error`: a request failed, the index has no or several `*_htm.xml`, or the response is not
+  a well-formed, DTD-free XBRL instance. text is the error. Retried on every run, and listed
+  in the health warnings.
 """
 from __future__ import annotations
 
 import json
 import xml.etree.ElementTree as ET
+from xml.parsers import expat
 from collections import Counter
 from datetime import date, datetime
 
@@ -65,25 +68,38 @@ def _own(entity: str, cik: int) -> bool:
     return entity.isdigit() and int(entity) == cik
 
 
-def select_block(raw: bytes, cik: int) -> tuple[str, str | None]:
-    """('ok', text) | ('not_found', None) | ('ambiguous', 'elsewhere' | 'conflict').
+def _refuse_dtd(raw: bytes) -> None:
+    """An instance never has a DTD. Refuse one (so no entity declaration is ever expanded)
+    with expat itself, which reads the bytes in whatever encoding the parser below accepts
+    (review C10: a byte search missed UTF-16). Malformed XML raises ExpatError here."""
+    def refuse(*_):
+        raise ValueError("instance has a DTD (entity declarations are refused)")
+    p = expat.ParserCreate()
+    p.StartDoctypeDeclHandler = refuse
+    p.EntityDeclHandler = refuse
+    p.Parse(raw, True)
 
-    Raises ET.ParseError for malformed XML, and ValueError when blocks exist but the instance
-    has no single DocumentPeriodEndDate to place them by. An instance never declares entities;
-    one that does is refused (ValueError) rather than expanded: expat never fetches external
-    entities, and this also rules out entity-expansion bombs."""
-    if b"<!ENTITY" in raw:
-        raise ValueError("instance declares XML entities")
+
+def select_block(raw: bytes, cik: int) -> tuple[str, str | None]:
+    """('ok', text) | ('not_found', None) | ('ambiguous', 'elsewhere' | 'conflict' | 'empty').
+
+    `not_found` only when the tag is in no context. A nil or empty block is still a tagged
+    block (review C9): a current one with no text beside it is `empty`, never untagged; an
+    empty repeat beside the current text does not hide that text.
+
+    Raises (all stored as `error`, retried): malformed XML, a DTD, a document that is not an
+    XBRL instance (review C8: an HTML error page is not an untagged filing), and blocks with
+    no single DocumentPeriodEndDate to place them by."""
+    _refuse_dtd(raw)
     root = ET.fromstring(raw)
+    if root.tag != f"{_XBRLI}xbrl":
+        raise ValueError(f"not an XBRL instance: root element {root.tag}")
     blocks, period_ends = [], set()
     for el in root:
         ns, local = _ns_local(el.tag)
         if local == TAG and ns.startswith("http://fasb.org/us-gaap/"):
-            if el.get(_XSI_NIL) == "true":
-                continue
-            text = html_text(_block_html(el).encode())
-            if text:
-                blocks.append((el.get("contextRef"), text))
+            nil = el.get(_XSI_NIL) == "true"
+            blocks.append((el.get("contextRef"), "" if nil else html_text(_block_html(el).encode())))
         elif local == "DocumentPeriodEndDate" and ns.startswith("http://xbrl.sec.gov/dei/"):
             period_ends.add((el.text or "").strip())
     if not blocks:
@@ -94,9 +110,12 @@ def select_block(raw: bytes, cik: int) -> tuple[str, str | None]:
     ctx = _contexts(root)
     current = {text for ref, text in blocks
                if (c := ctx.get(ref)) and not c["dims"] and c["end"] == end and _own(c["entity"], cik)}
-    if len(current) == 1:
-        return "ok", current.pop()
-    return "ambiguous", "conflict" if current else "elsewhere"
+    texts = current - {""}
+    if len(texts) == 1:
+        return "ok", texts.pop()
+    if texts:
+        return "ambiguous", "conflict"
+    return "ambiguous", "empty" if current else "elsewhere"
 
 
 def _instance_name(index: bytes) -> str:

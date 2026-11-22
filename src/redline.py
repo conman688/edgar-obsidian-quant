@@ -17,7 +17,7 @@ import duckdb
 
 from src.forensics import STALE_FY_DAYS
 from src.ingestion import related_party as rp
-from src.ingestion.filing_text import SECTION
+from src.ingestion.filing_text import FORMS, SECTION
 from src.tone import tone
 
 SIMILAR = 0.8
@@ -160,28 +160,49 @@ RP_MESSAGES = {
     "elsewhere": "related-party note found only for another period or entity; not compared",
     "conflict": ("related-party note could not be uniquely identified: two different current company-wide notes; "
                  "not compared"),
+    "empty": "related-party note is tagged in this 10-K but has no text; not compared",
     "error": "the 10-K's XBRL instance could not be read; retried on the next fetch-text",
+    "pending": "the related-party note of this 10-K has not been read yet (fetch-text); not compared",
 }
 RP_NO_COMPARISON = {None: "no prior 10-K known", "not_found": "the prior 10-K has no related-party note tagged",
                     "ambiguous": "the prior 10-K's related-party note could not be uniquely identified",
-                    "error": "the prior 10-K's XBRL instance could not be read"}
+                    "error": "the prior 10-K's XBRL instance could not be read",
+                    "pending": "the prior 10-K's related-party note has not been read yet"}
 
 
 def related_party_redline(con: duckdb.DuckDBPyConnection, ciks: list[int], as_of: date) -> dict[int, dict]:
     """Per company: the related-party note of the latest 10-K filed by as_of, against the 10-K
-    before it with `redline` as is. Companies with no row are left out.
+    before it with `redline` as is. Companies with no 10-K known here are left out.
 
-    status is the latest row's (ok | not_found | ambiguous | error); `reason` is an ambiguous
+    The two 10-Ks are the latest two known from either text family (Item 1A or related party),
+    and only then is each one's related-party row looked up (review C7): a 10-K whose row is
+    missing is `pending`, never replaced by an older note or skipped in a comparison.
+    status is the latest row's (ok | not_found | ambiguous | error | pending); `reason` is an ambiguous
     row's elsewhere | conflict, or an error row's error, and `message` what the vault shows for
     anything but ok. A comparison needs both notes ok; otherwise `compared` is False and
     `no_comparison` says why. `stale`: the report date is more than STALE_FY_DAYS before as_of
     (or unknown). Informational only: nothing here feeds the screen."""
+    rows = con.execute("""
+        WITH known AS (
+            SELECT cik, accn, min(filed) AS filed, max(report_date) AS report_date FROM filing_sections
+            WHERE list_contains($forms, form) AND filed <= $as_of AND list_contains($ciks, cik)
+            GROUP BY cik, accn
+            QUALIFY row_number() OVER (PARTITION BY cik ORDER BY min(filed) DESC, accn DESC) <= 2)
+        SELECT k.cik, k.accn, k.filed, k.report_date, coalesce(s.status, 'pending'), s.text, s.url
+        FROM known k LEFT JOIN filing_sections s        -- the attached row obeys the same cutoff (PIT)
+            ON s.accn = k.accn AND s.section = $section AND s.cik = k.cik
+            AND list_contains($forms, s.form) AND s.filed <= $as_of
+        ORDER BY k.cik, k.filed DESC, k.accn DESC
+    """, {"forms": list(FORMS), "as_of": as_of, "ciks": sorted(ciks), "section": rp.SECTION}).fetchall()
+    by_cik: dict[int, list[tuple]] = {}
+    for row in rows:
+        by_cik.setdefault(row[0], []).append(row)
     out = {}
-    for cik, rs in _latest_two(con, rp.SECTION, ciks, as_of).items():
+    for cik, rs in by_cik.items():
         cur, prior = rs[0], rs[1] if len(rs) > 1 else None
         status, report_date = cur[4], cur[3]
         r = {"accn": cur[1], "filed": cur[2], "report_date": report_date, "url": cur[6], "status": status,
-             "reason": None if status in ("ok", "not_found") else cur[5],
+             "reason": None if status in ("ok", "not_found", "pending") else cur[5],
              "text": cur[5] if status == "ok" else None,
              "message": RP_MESSAGES[cur[5] if status == "ambiguous" else status] if status != "ok" else None,
              "stale": report_date is None or (as_of - report_date).days > STALE_FY_DAYS,

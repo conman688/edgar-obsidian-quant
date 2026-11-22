@@ -320,6 +320,13 @@ How (reusing M7, no new dependency):
   - `error`: the request failed, the index has no or several `*_htm.xml`, or the XML does not
     parse. The row is retried on the next run and listed in the health report's warnings. An
     `error` row is never shown as "not found".
+  - Review round 4: a response that is not a DTD-free XBRL instance (an HTML error page, a
+    UTF-16 entity declaration) is `error` (C8, C10). A tagged current block that is nil or has
+    no text is `ambiguous`, reason `empty`: final for the parser version, shown as "tagged ...
+    but has no text", never as untagged (C9). The two 10-Ks shown are the latest two known from
+    either text family by `as_of`; one without a related-party row (or whose row fails the
+    same cutoff, CIK and form) is `pending`, "not read yet", never replaced by an older note
+    and never compared (C7).
 - If the selected 10-K's report date is more than 470 days before `as_of` (forensics'
   `STALE_FY_DAYS`), the company's M10 result is marked stale.
 - Runs inside `fetch-text`, so the weekly job's steps do not change.
