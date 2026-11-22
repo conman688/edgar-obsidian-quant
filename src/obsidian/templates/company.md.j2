@@ -64,6 +64,36 @@ Status on {{ c.as_of }}: **{{ c.status }}**{% if c.rank %}, rank {{ c.rank }}{% 
 {% else %}Item 1A not found in the prior 10-K ([[{{ filing_link[rl.prior_accn] }}]]).
 {% endif %}
 
+## Related parties
+
+{% if rp is none %}No 10-K related-party note: not fetched yet (`fetch-text`), or the company files 20-F/40-F (not covered).
+{% else %}10-K only (10-K/A, 20-F and 40-F are not covered). 10-K for {{ rp.report_date }}, filed {{ rp.filed }} ([[{{ filing_link[rp.accn] }}]]).
+{% if rp.stale %}
+
+**Stale:** the report date is more than {{ stale_days }} days before {{ c.as_of }}{% if rp.report_date is none %} (or unknown){% endif %}.
+{% endif %}
+
+{% if rp.status != "ok" %}{{ rp.message[0] | upper }}{{ rp.message[1:] }}.{% if rp.status == "error" %} Error: {{ rp.reason }}{% endif %}
+
+{% elif rp.compared %}Against the prior 10-K for {{ rp.prior_report_date }} ([[{{ filing_link[rp.prior_accn] }}]]): **{{ rp.new | length }} new** of {{ rp.total }} sentences, {{ rp.removed | length }} removed. New sentences are candidates to read, not findings.
+{% if rp.new %}
+
+### New related-party sentences
+{% for s in rp.new[:new_shown] %}- {{ s }}
+{% endfor %}{% if rp.new | length > new_shown %}- … and {{ rp.new | length - new_shown }} more.
+{% endif %}{% endif %}{% if rp.removed %}
+
+### Removed related-party sentences
+{% for s in rp.removed[:removed_shown] %}- {{ s }}
+{% endfor %}{% if rp.removed | length > removed_shown %}- … and {{ rp.removed | length - removed_shown }} more.
+{% endif %}{% endif %}
+
+{% else %}No comparison: {{ rp.no_comparison }}.
+
+{% endif %}{% if rp.status == "ok" %}> [!quote]- Related-party note, 10-K {{ rp.accn }} ({{ rp.url }})
+{% for line in rp.text.split("\n") %}> {{ line }}
+{% endfor %}
+{% endif %}{% endif %}
 ## Forensics
 
 {% if fx is none %}No annual cash-flow statement found.

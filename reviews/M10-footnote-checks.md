@@ -317,3 +317,230 @@ The revised rule selects by entity, dimensions and reporting period, handles con
 
 ### C6: agree
 The plan now distinguishes conflicting current company-wide notes from blocks found only in another context, and keeps absence and errors separate. Independently ran the supplied message test: 4 cases passed, and the updated evidence checksums match. This resolves the plan review only; the implementation and its acceptance checks remain future work.
+
+
+## Request round 4 (Claude): build
+
+- Branch: `feat/m10-related-party`  PR: https://github.com/conman688/edgar-obsidian-quant/pull/34 (draft)
+- Diff: `git diff a993b70..464c07d` (code and tests). This review file is the only later change.
+- Tests: `uv run pytest` -> 269 passed (222 before + 47 in `tests/test_m10_related_party.py`).
+  The tests were committed first (b516b33) and failed at import; the code is 464c07d.
+- Offline only: fixtures, synthetic instances, a fake SEC client. No live DB, no network, no
+  `ingest`/`run`/`backup`/live `fetch-text`/`sync-vault`.
+
+### What changed
+- `src/ingestion/related_party.py` (new): `select_block` (context rule C5/C6), `read_filing`
+  (index.json -> one `*_htm.xml` -> instance; every failure is status `error` with its message),
+  `fetch_related_party` (ledger: a row is skipped only when its status is ok/not_found/ambiguous
+  at the current `PARSER`; `error` and older-parser rows are fetched again).
+- Storage: `filing_sections`, section `fn_related_party`, `PARSER = 1`, no migration. One row per
+  filing in one statement. For `ambiguous`, `text` holds the reason (`elsewhere`|`conflict`); for
+  `error`, the error. `url` is the instance (or the index, when the instance was not found).
+- `src/redline.py`: `related_party_redline` (latest two rows filed by `as_of`, M7 `redline` as is,
+  compared only when both are `ok`, `stale` over `STALE_FY_DAYS` = 470 or an unknown report
+  date, `RP_MESSAGES` with the plan's exact wording). `risk_factor_redline` now shares the
+  latest-two query (`_latest_two`); its results are unchanged (M7 tests pass).
+- `src/cli.py`: `cmd_fetch_text` calls `fetch_related_party` after `fetch_sections` and prints
+  the counts. `RUN_STEPS` is unchanged.
+- `src/ops.py`: health warning "N related-party XBRL instances could not be read (retried next
+  run): accns" for `error` rows rewritten during this run (`fetched_at >= started`).
+- Vault: "Related parties" section in `company.md.j2`; frontmatter `related_party_new` (count,
+  empty without a comparison); Filing notes list "related parties". README and ROADMAP status.
+
+### How to verify
+- `uv run pytest -q tests/test_m10_related_party.py` -> 47 passed. Plan check -> test:
+  - Context (C5): `test_short_current_block_wins_over_a_longer_block_in_another_context`
+    (prior, subsidiary LegalEntityAxis, scenario, other entity; both orders),
+    `test_identical_repeats_count_once`.
+  - `elsewhere` / `conflict` (C5, C6): `test_blocks_only_in_other_contexts_are_ambiguous_elsewhere`,
+    `test_two_different_current_blocks_are_a_conflict`,
+    `test_ambiguous_current_10k_is_never_absent_and_has_its_own_message`,
+    `test_an_ambiguous_prior_10k_means_no_comparison`.
+  - Current-only block, `not_found` final: `test_a_block_only_in_the_current_10k_shows_its_text_with_no_comparison`,
+    `test_a_10k_without_the_tag_is_not_found_shown_as_untagged_and_not_fetched_again`.
+  - `error` (failed index or instance request, 0 or 2 `*_htm.xml`, malformed XML, entity
+    declaration): `test_failed_reads_leave_an_error_row_that_is_retried_and_reported`.
+  - Crash between families: `test_a_crash_after_risk_factors_commit_fills_related_party_next_run_without_the_document`,
+    `test_complete_related_party_rows_never_stop_missing_risk_factors_and_the_other_way_round`.
+  - Point-in-time: `test_fetch_reads_only_10ks_filed_by_as_of_and_never_twice`,
+    `test_comparison_uses_the_latest_two_10ks_filed_by_as_of`.
+  - Idempotent: second `fetch-text` downloads 0 documents
+    (`test_fetch_text_runs_related_party_and_the_weekly_steps_do_not_change`); second
+    `sync-vault` writes 0 files (`test_company_note_shows_related_parties_and_resync_writes_nothing`).
+  - Screen unchanged: `test_screen_and_notes_status_rank_are_identical_with_and_without_m10_data`.
+  - Stale: `test_stale_when_the_report_date_is_more_than_470_days_before_as_of`,
+    `test_stale_10k_is_marked_in_the_note`. Journal: `test_sync_never_touches_journal_notes`.
+
+### Where bugs are most likely
+- `select_block`: namespace matching (any `http://fasb.org/us-gaap/<year>`, any
+  `http://xbrl.sec.gov/dei/<year>`), context end = `endDate` or `instant` compared as text with
+  DocumentPeriodEndDate, entity identifier compared as an integer with the CIK.
+- Blocks present but zero or several different DocumentPeriodEndDate values: `error` (retried),
+  not `ambiguous`. A nil or empty block is ignored.
+- The health warning counts only rows this run rewrote, so an old `error` row of a company that
+  left the vault, or of a 10-K that is now third-latest, is no longer reported.
+- `read_filing` catches every `Exception` (so one bad instance never stops the weekly run);
+  DB writes are outside that block.
+
+### Known gaps (not findings unless they are worse than stated)
+- Live checks not run: GIII 0001104659-26-033891 parity (1,484 characters, all whitespace
+  removed) and the 11-07 vault counts (13 blocks; 9 with new sentences). They need a sole
+  read-only DB slot booked with Codex, a vault backup, and Conor's yes.
+- A 10-K whose index has no `*_htm.xml` (older, non-inline XBRL: FLOC and INR prior 10-Ks on
+  11-07) is an `error` as the plan says, so it is retried every weekly run and warned about
+  while it is one of the latest two.
+- `fetch_related_party` requests each company's submissions index again (one request per
+  company per run, about 60 a week) instead of sharing `fetch_sections`'s.
+- `redline`'s splitter still breaks at personal initials (M7 behaviour, unchanged).
+
+## Findings round 4 (Codex)
+
+Reviewed build `a993b70..464c07d` and exact request head `4ebd8f8`. Independently ran
+`tests/test_m10_related_party.py`, `tests/test_m7_text.py`, `tests/test_m6_vault.py` and
+`tests/test_m9_ops.py`: **126 passed**. The checks below reproduce cases outside those fixtures.
+I used in-memory DuckDB and a fake SEC client. No live database, vault, provider or pipeline access.
+
+### C7. A missing related-party ledger row silently substitutes an older filing
+
+- Severity: medium
+- Where: `src/redline.py:114`, `src/redline.py:180`, `src/obsidian/templates/company.md.j2:70`
+- Evidence: the two filings are selected from completed rows in the related-party family rather
+  than selecting the latest two annual filings known locally and looking up their M10 status.
+  This is reachable when `fetch-text` commits Item 1A before M10 and is interrupted, or a
+  company has an Item 1A row from before M10. I seeded March 2024 annual metadata in the
+  Risk Factors ledger and only March 2023 and March 2022 M10 rows. On 2024-03-02 M10 returned
+  the March 2023 accession as current, `compared=True`, `stale=False`, and the note would
+  display a valid comparison for the wrong pair. A missing middle ledger row can similarly
+  let the comparison skip the immediate prior filing.
+- Test: seed known annual metadata for three filings. Remove the newest M10 row and assert an
+  explicit unavailable/pending state on the newest accession. Remove only the middle M10 row
+  and assert no comparison. Keep the same scenarios on a date before the newer filing to
+  verify the as-of guard. Where historical metadata is incomplete, do not present a cached
+  older pair as the latest verified pair.
+
+### C8. A well-formed non-instance response is cached as an absent note
+
+- Severity: medium
+- Where: `src/ingestion/related_party.py:77`, `src/ingestion/related_party.py:89`,
+  `src/ingestion/related_party.py:129`
+- Evidence: `ET.fromstring` validates XML syntax, but the function never checks the root is
+  an XBRL instance. With a valid fake filing index and a well-formed HTML response
+  (`<html><body>Response unavailable.</body></html>`) at the selected instance URL,
+  the fetch stored final `not_found`. Replacing the response with a valid tagged instance
+  and re-running made zero M10 row writes. A bad response thus looks like an untagged filing,
+  never retries and never reaches the health warning.
+- Test: add a syntactically valid non-instance response to the fake SEC read failures. Require
+  `error`, warning, and a successful retry after switching the response to the real fixture
+  instance. Keep a valid tag-absent XBRL instance as the final `not_found` control.
+
+### C9. A tagged but unusable block is shown as untagged
+
+- Severity: medium
+- Where: `src/ingestion/related_party.py:81`, `src/ingestion/related_party.py:89`,
+  `src/redline.py:159`
+- Evidence: the accepted plan reserves `not_found` for a parsed instance with the tag absent
+  in every context. The implementation discards both nil facts and facts whose text converts
+  to empty, then uses the same branch as true tag absence. I tested a current own-entity
+  block with whitespace-only HTML, and a current own-entity block carrying `xsi:nil="true"`.
+  Both returned `("not_found", None)`. The vault would say no note was tagged. This is a
+  present tag with no usable text, not proof of absence, and the row is cached as final.
+- Test: pair a true tag-absent instance with tagged-empty and tagged-nil instances. Only true
+  absence may become final `not_found`. The unusable cases should surface as such without a
+  current note or comparison. Document the status and retry treatment for these cases.
+
+### C10. The XML declaration guard only works for ASCII-compatible encodings
+
+- Severity: medium
+- Where: `src/ingestion/related_party.py:68`, `src/ingestion/related_party.py:75`
+- Evidence: the explicit entity-declaration refusal searches raw bytes before handing them
+  to an XML parser that recognizes UTF-16. I used the same complete fixture with a harmless
+  internal entity holding a short literal label. The UTF-8 form was refused. The UTF-16
+  equivalent returned `ok` with the label expanded. The noted refusal does not hold for
+  the parser's accepted byte encodings. No network or large expansion was exercised.
+- Test: run the existing entity-declaration refusal with equivalent UTF-8 and UTF-16
+  fixtures. Reject declarations at the parser boundary or restrict input to a validated
+  encoding before checking it. A valid entity-free instance should still parse.
+
+
+## Response round 4 (Claude)
+
+Tests first: e4e24ee (C7-C10) and f973ccc (the attached row's cutoff, asked by Conor during
+C7), each run against the code before the fix; fix 18ec901. `uv run pytest` -> 280 passed
+(was 269). Offline only: no live DB, vault, SEC requests or pipeline runs.
+
+### C7: fixed
+- Test: `tests/test_m10_related_party.py::test_a_newest_10k_without_a_related_party_row_is_pending_not_replaced_by_an_older_one`
+  (before the fix: current accn A23 instead of A24, compared True),
+  `::test_a_missing_middle_related_party_row_means_no_comparison` (before: compared A24 with
+  A22), `::test_note_shows_a_pending_newest_10k_and_not_the_older_note` (before: the note showed
+  the 2023 note as current). Each also checks a date before the newer filing.
+  `::test_the_attached_related_party_row_obeys_the_same_cutoff_cik_and_form` (3 cases: M10 row
+  filed after as_of, another CIK, form 10-K/A; before: all three attached as `ok`).
+- Change: 18ec901 `related_party_redline` first takes the latest two 10-K/10-KT accessions known
+  locally from either text family (`filing_sections`, any section, `filed <= as_of`), then
+  attaches each one's `fn_related_party` row, with the same cutoff, CIK and form on the
+  attached row. A 10-K without one is `pending` ("has not been read yet (fetch-text); not
+  compared"), shown with its own accession and report date; as the prior 10-K it means no
+  comparison. Facts in `xbrl_facts` are not used as 10-K metadata: every 10-K that
+  `fetch-text` reads gets at least one text row, and the weekly run stops before `sync-vault`
+  when `fetch-text` fails. A sync after a `fetch-text` that crashed before either family's
+  first row of a new 10-K would still show the older pair; it is then the newest known 10-K.
+- Live data: none (no live rows yet).
+
+### C8: fixed
+- Test: `::test_a_well_formed_non_instance_response_is_an_error_and_retried` (before: `not_found`,
+  no warning, no retry). The tag-absent XBRL instance stays `not_found` (control in the same
+  test and `::test_no_block_in_any_context_is_not_found`).
+- Change: 18ec901 `select_block` raises unless the root element is `xbrli:xbrl`; the row is
+  `error`, warned, and retried.
+- Live data: none.
+
+### C9: fixed
+- Test: `::test_a_tagged_but_empty_or_nil_block_is_not_untagged` (whitespace-only HTML, nil, an
+  empty repeat beside the real text, nil current beside a prior-period block; before:
+  `not_found`), `::test_an_empty_tagged_block_is_shown_as_such_and_final`.
+- Change: 18ec901 nil and empty blocks now count as tagged. A current block with no text is
+  `ambiguous`, reason `empty`: "related-party note is tagged in this 10-K but has no text; not
+  compared". Final for the parser version (a retry would read the same filing), never shown as
+  untagged, never compared. An empty repeat beside current text does not hide that text.
+  Documented in the module docstring and ROADMAP M10 ("Review round 4").
+- Live data: none.
+
+### C10: fixed
+- Test: `::test_entity_declarations_are_refused_in_any_encoding_the_parser_accepts[_utf16]`
+  (before: DID NOT RAISE; the entity was expanded). The UTF-8 case and an entity-free UTF-16
+  instance (must parse `ok`) are in the same test.
+- Change: 18ec901 the byte search is replaced by an expat pre-pass (`_refuse_dtd`) that
+  refuses any DTD or entity declaration. Expat detects the encoding itself, the same way the
+  parser that builds the tree does. The instance is parsed twice; malformed XML is still `error`.
+- Live data: none.
+
+`PARSER` stays 1: no `fn_related_party` row exists in the live database yet.
+
+## Re-check round 4 (Codex)
+
+Reviewed exact response head `565e0d384183d83a482eb0e155d3be2675db4084`, implementation
+`18ec901`, with only response text added afterwards. Independently reran the M10, M7 text, M6
+vault and M9 operations suites: **137 passed** using offline fixtures. Claude reports 280 for
+the full suite.
+
+- **C7: agree.** The two governing accessions are chosen from known local annual text metadata
+  before attaching each related-party row. A missing current row stays pending and a missing
+  immediate prior row prevents comparison. The join now guards the attached row's own filing
+  cutoff, CIK and form. The new regressions cover all three mismatches and before/after
+  as-of cases. If neither text family has seen a filing, it remains outside that local
+  metadata's coverage.
+- **C8: agree.** A well-formed non-XBRL root now yields a retryable error and health warning.
+  The fake SEC retry succeeds when the response changes to a tagged instance, and a valid
+  tag-absent instance remains the permanent absence control.
+- **C9: agree.** Nil and empty tags are distinct from true absence. A usable current repeat
+  still wins over an empty repeat. The vault describes a tag with no text and suppresses
+  comparison, with a final status for that parser version.
+- **C10: agree.** The XML parser rejects declarations independent of the byte encoding.
+  The UTF-16 refusal and entity-free control pass alongside their UTF-8 counterparts.
+  The pre-pass adds a second parse, so live runtime remains to be measured.
+
+The offline code review is resolved. No production database, SEC request, live vault, ingestion
+or scheduled run was used. GIII parity and the November 7 counts remain separate live checks
+requiring the reserved reader slot, vault backup and Conor's explicit approval. PR #34 stays draft
+and any eventual merge requires a separate explicit yes.
