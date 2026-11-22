@@ -579,3 +579,59 @@ def test_rollback_keeps_writers_out_until_the_swap(tmp_path, capsys, monkeypatch
     assert sha(db) == r["backup"]["sha256"] and snapshot(db) == before
     kept = [p for p in db.parent.iterdir() if p.name.startswith("edgar.duckdb.repaired-")]
     assert len(kept) == 1 and sha(kept[0]) == r["post_sha256"]
+
+
+def test_post_write_hash_is_taken_while_writers_are_still_locked_out(tmp_path, capsys, monkeypatch):
+    """Apply re-check (Codex): post_sha256 is the state the repair committed, hashed through the
+    retained handle while the write connection still holds DuckDB's lock, so a direct writer that
+    commits later can never be recorded as the repair's result."""
+    src = write_source(tmp_path / "src", SOURCE_PRICES, SOURCE_DIVIDENDS)
+    db = live_db(tmp_path)
+    _, m = reviewed(tmp_path, db, src, capsys)
+    attempts = []
+    monkeypatch.setattr(repair, "_after_commit", lambda: attempts.append(
+        subprocess.run([sys.executable, "-c", INTRUDER, str(db)], capture_output=True, text=True)), raising=False)
+    argv = wargs(db, src, m["hash"])
+    code, out = run(argv, capsys)
+    assert code == 0, out
+    assert len(attempts) == 1 and attempts[0].returncode != 0 and "lock" in attempts[0].stderr.lower()
+    assert json.loads(result_of(argv).read_text())["post_sha256"] == sha(db)
+
+
+def test_result_updates_touch_only_the_file_the_run_created(tmp_path, capsys, monkeypatch):
+    """Apply re-check (Codex): the result path swapped for a hard link to another file after it was
+    created must not truncate that file: the run writes only through its own descriptor."""
+    src = write_source(tmp_path / "src", SOURCE_PRICES, SOURCE_DIVIDENDS)
+    db = live_db(tmp_path)
+    _, m = reviewed(tmp_path, db, src, capsys)
+    evidence = tmp_path / "evidence.json"
+    evidence.write_text('{"keep": "me"}\n')
+    argv = wargs(db, src, m["hash"])
+    res = result_of(argv)
+
+    def swap():
+        res.unlink()
+        os.link(evidence, res)
+    monkeypatch.setattr(repair, "_after_backup", swap, raising=False)
+    assert run(argv, capsys)[0] == 0
+    assert evidence.read_text() == '{"keep": "me"}\n'
+
+
+@pytest.mark.parametrize("where, state", [("_commit", "not_applied"), ("_after_commit", "applied")])
+def test_an_unexpected_error_is_classified_read_only(tmp_path, capsys, monkeypatch, where, state):
+    """Apply re-check (Codex): an unexpected error records the database's state, classified
+    read-only against the plan the run started from, instead of a guess."""
+    src = write_source(tmp_path / "src", SOURCE_PRICES, SOURCE_DIVIDENDS)
+    db = live_db(tmp_path)
+    _, m = reviewed(tmp_path, db, src, capsys)
+
+    def boom(*a, **k):
+        if where == "_commit":
+            raise RuntimeError("injected before commit")
+        raise RuntimeError("injected after commit")
+    monkeypatch.setattr(repair, where, boom, raising=False)
+    argv = wargs(db, src, m["hash"])
+    code, out = run(argv, capsys)
+    r = json.loads(result_of(argv).read_text())
+    assert code == 1 and r["status"] == "error" and r["state"] == state, (out, r)
+    assert f"state: {state}" in out
