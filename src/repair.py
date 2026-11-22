@@ -30,7 +30,8 @@ names the state as not_applied, applied or unknown.
 `--rollback --result-of R.json` puts the backup back only if: R says committed, there is no WAL,
 the database is byte-identical to the state the write left, the backup matches its sha256, and no
 process holds the database. It stages the backup as a new file beside the database, keeps the
-repaired file under a new name and swaps them with one os.replace (C3).
+repaired file under a new name and swaps them with one os.replace (C3). A read-only connection,
+which blocks writers, is held from the sha256 gate to the swap.
 
 Writing or rolling back still needs the user's separate yes: the gates cannot ask.
 """
@@ -235,6 +236,10 @@ def _after_backup() -> None:
     """Called between the verified backup and the write. A no-op; tests inject a writer here."""
 
 
+def _before_swap() -> None:
+    """Called in a rollback after the backup is staged, before the swap. A no-op; tests inject a writer."""
+
+
 def _wal(db: Path) -> Path:
     return db.with_name(db.name + ".wal")
 
@@ -382,39 +387,51 @@ def classify(m: dict, reviewed: dict) -> str:
 def rollback(db: Path, result: dict) -> str:
     """Put the pre-write backup back (review PRICES-cik835011-apply C3). Every gate must hold:
     the write committed; no WAL; the database is byte-identical to the state the write left; the
-    backup is byte-identical to what was recorded; no process holds the database. The backup is
-    staged as a new file on the database's volume, the repaired file is kept under a new name
+    backup is byte-identical to what was recorded; no process holds the database. A read-only
+    connection held from the sha256 gate to the swap keeps every writer out meanwhile. The backup
+    is staged as a new file on the database's volume, the repaired file is kept under a new name
     (a hard link), then one os.replace swaps them. Raises Refused before any change."""
     if result.get("status") != "committed":
         raise Refused(f"the result says {result.get('status')!r}, not 'committed'")
     if os.path.lexists(_wal(db)):
         raise Refused(f"WAL {_wal(db)} exists: a writer did not finish; escalate")
-    if sha256_file(db) != result["post_sha256"]:
-        raise Refused("the database changed since the repair (an intervening write); escalate")
     backup = Path(result["backup"]["path"])
-    if sha256_file(backup) != result["backup"]["sha256"]:
-        raise Refused(f"{backup} does not match its recorded sha256")
-    try:
-        duckdb.connect(str(db), read_only=True, config=DB_CONFIG).close()
-    except duckdb.Error as e:
-        raise Refused(f"the database is open in another process: {e}") from None
     stamp = f"{datetime.now():%Y%m%dT%H%M%S%f}"
     stage, kept = db.with_name(f".{db.name}.rollback-{stamp}.part"), db.with_name(f"{db.name}.repaired-{stamp}")
-    with open(backup, "rb") as f:
-        _copy_new(f, stage)
-    try:
-        if sha256_file(stage) != result["backup"]["sha256"]:
-            raise Refused("the staged copy does not match the backup")
-        os.link(db, kept)
-    except BaseException:
-        stage.unlink(missing_ok=True)
-        raise
-    try:
-        os.replace(stage, db)
-    except BaseException:
-        stage.unlink(missing_ok=True)
-        kept.unlink(missing_ok=True)     # a second name for the unchanged database file
-        raise
+    # From the sha256 gate to the swap, a read-only connection holds DuckDB's lock, which keeps every
+    # writer out, including one that ignores the run lock. `fh` is opened before it and closed after
+    # it, and the database is read only through `fh`: closing another descriptor of the file would
+    # drop the lock.
+    with open(db, "rb") as fh:
+        try:
+            con = duckdb.connect(str(db), read_only=True, config=DB_CONFIG)
+        except duckdb.Error as e:
+            raise Refused(f"the database is open in another process: {e}") from None
+        try:
+            if os.path.lexists(_wal(db)):
+                raise Refused(f"WAL {_wal(db)} exists: a writer did not finish; escalate")
+            if _sha256_fh(fh) != result["post_sha256"]:
+                raise Refused("the database changed since the repair (an intervening write); escalate")
+            if sha256_file(backup) != result["backup"]["sha256"]:
+                raise Refused(f"{backup} does not match its recorded sha256")
+            with open(backup, "rb") as f:
+                _copy_new(f, stage)
+            try:
+                if sha256_file(stage) != result["backup"]["sha256"]:
+                    raise Refused("the staged copy does not match the backup")
+                _before_swap()
+                os.link(db, kept)
+            except BaseException:
+                stage.unlink(missing_ok=True)
+                raise
+            try:
+                os.replace(stage, db)
+            except BaseException:
+                stage.unlink(missing_ok=True)
+                kept.unlink(missing_ok=True)     # a second name for the unchanged database file
+                raise
+        finally:
+            con.close()
     dfd = os.open(db.parent, os.O_RDONLY)
     try:
         os.fsync(dfd)
