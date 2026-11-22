@@ -369,7 +369,8 @@ def test_out_must_be_a_json_file(tmp_path, capsys, name):
     db = live_db(tmp_path, schema=8)
     before = {p.name for p in db.parent.iterdir()}, hashlib.sha256(db.read_bytes()).hexdigest()
     code, msg = run(args(db, src, "--out", str(db.parent / name)), capsys)
-    assert code == 2 and ".json" in msg and "nothing read" in msg
+    # Edgar.DuckDB is the existing database on a case-insensitive volume: refused as existing first.
+    assert code == 2 and "nothing read" in msg and (".json" in msg or "already exists" in msg)
     assert ({p.name for p in db.parent.iterdir()}, hashlib.sha256(db.read_bytes()).hexdigest()) == before
 
 

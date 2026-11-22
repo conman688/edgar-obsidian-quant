@@ -282,7 +282,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--prices", required=True, help="preserved prices Parquet (SHA256SUMS beside it)")
     ap.add_argument("--dividends", required=True)
     ap.add_argument("--splits", required=True)
-    ap.add_argument("--out", help="write the manifest JSON to this new file (an existing path is refused)")
+    ap.add_argument("--out", help="write the manifest to this new .json file (an existing path is refused)")
     ap.add_argument("--write", action="store_true", help="write the plan (default: dry run)")
     ap.add_argument("--expect-hash", help="the reviewed manifest sha256; required with --write")
     a = ap.parse_args(argv)
@@ -292,12 +292,12 @@ def main(argv: list[str] | None = None) -> int:
     if a.out and os.path.lexists(a.out):      # the database, an input, a link: never overwritten
         print(_refuse_out(a.out))
         return 2
-    # Reserved even when absent: a manifest named like the run lock or DuckDB's WAL would break
-    # the scheduled run's lock or be replayed into the database on its next open.
-    if a.out and Path(a.out).resolve() in {p.resolve() for p in (db, db.parent / ".run.lock",
-                                                                  db.with_name(db.name + ".wal"))}:
-        print(f"refused: --out {a.out} is reserved (the database, its .wal or the run lock); "
-              f"nothing read or written")
+    # A manifest is a new .json file (review C2). Database-owned names (the database, its .wal, the
+    # run lock) never end in .json, so they stay reserved even when absent and whatever the
+    # volume's case rules: on a case-insensitive disk EDGAR.DUCKDB.WAL is the WAL.
+    if a.out and Path(a.out).suffix.lower() != ".json":
+        print(f"refused: --out {a.out} must be a new .json file (database, WAL and run-lock names are "
+              f"reserved); nothing read or written")
         return 2
     try:
         source = read_source({"prices": a.prices, "dividends": a.dividends, "splits": a.splits}, a.cik)
