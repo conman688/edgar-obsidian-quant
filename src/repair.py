@@ -288,15 +288,22 @@ def main(argv: list[str] | None = None) -> int:
     a = ap.parse_args(argv)
     if a.write and not a.expect_hash:
         ap.error("--write needs --expect-hash, the reviewed manifest sha256")
+    db = Path(a.db)
     if a.out and os.path.lexists(a.out):      # the database, an input, a link: never overwritten
         print(_refuse_out(a.out))
+        return 2
+    # Reserved even when absent: a manifest named like the run lock or DuckDB's WAL would break
+    # the scheduled run's lock or be replayed into the database on its next open.
+    if a.out and Path(a.out).resolve() in {p.resolve() for p in (db, db.parent / ".run.lock",
+                                                                  db.with_name(db.name + ".wal"))}:
+        print(f"refused: --out {a.out} is reserved (the database, its .wal or the run lock); "
+              f"nothing read or written")
         return 2
     try:
         source = read_source({"prices": a.prices, "dividends": a.dividends, "splits": a.splits}, a.cik)
     except SourceError as e:
         print(f"source refused: {e}")
         return 2
-    db = Path(a.db)
     if not db.exists():
         print(f"{db} does not exist")
         return 2
