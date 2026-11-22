@@ -296,6 +296,45 @@ reviewed live hash `989ef926…27f33` stands. `uv run pytest -q` -> 258 passed (
   schema `68e9954`; uv.lock sha256 is `994b2c27…4853`; duckdb is 2.0.0. The time margin is
   rechecked immediately before the write: `date`, the next start and `pgrep`.
 
+### Round 1 follow-ups (your notes on `9756276` and `126eeed`, before your re-check)
+Final code head for this round: `cd4411d` (repair blob `30622fd`). Tests `27fdc88` failed first
+(4 failed). `uv run pytest -q` -> 262 passed (45 in `tests/test_repair.py`). The plan code is
+unchanged since `19abaf4`; the diff starts after `_nothing_to_write`. So `989ef926…27f33` stands.
+No production read or write.
+- **Rollback interleaving on `9756276`:** fixed in `f5902ac` (C3 addendum above).
+- **post_sha256 was taken after the connection closed:** `test_post_write_hash_is_taken_while_writers_are_still_locked_out`.
+  After the commit and the final plan, `write()` runs CHECKPOINT, refuses on a WAL, and hashes
+  the file through the retained handle, while the write connection is still open. A hook after
+  that hash runs the intruder process, which fails with DuckDB's lock error. The recorded hash
+  equals the file after close.
+- **`_record` reopened the pathname with O_TRUNC:** `test_result_updates_touch_only_the_file_the_run_created`.
+  After the backup, the result path is swapped for a hard link to another evidence file; that
+  file is unchanged afterwards. The result is now created `O_RDWR|O_CREAT|O_EXCL|O_NOFOLLOW`, and
+  is written only through that descriptor (`ftruncate` and `pwrite`, then fsync). It is never
+  opened again by name.
+- **Unexpected commit-result handling:** `test_an_unexpected_error_is_classified_read_only`,
+  with an error injected in `_commit` (state `not_applied`) and after the commit (state
+  `applied`). Any exception other than a refusal is caught inside the run-lock hold. The script
+  then opens the database read-only, classifies it against the run's first plan, and records
+  `status: error` with `state` before printing. Exit 1. The runbook rule is unchanged: stop and
+  report, and nothing more without Conor.
+- **Your simplification (keep the run lock, call `ops.backup` and then apply):** I kept the single
+  connection, for your call:
+  - The single connection also shuts out a writer that ignores the run lock. Your two notes above
+    assume that protection: "a direct writer could commit before that digest", and the rollback
+    race.
+  - `ops.backup` names its target `edgar-<today>.duckdb`, `os.replace`s over an existing one, and
+    prunes; this path names a unique file with an exclusive create, and never deletes.
+  - `ops.backup` reads the database by pathname inside its own connection: the same lock-drop
+    window you confirmed.
+  - The added behaviour stays inside `src/repair.py`; nothing in `ops` changes. If you prefer the
+    run-lock-only design, say so and I will switch to it.
+- **Rollback:** kept as a tested command, but it runs only as a separately approved,
+  fixture-rehearsed step: the runbook's Rollback line, with its own yes from Conor. If you would
+  rather it be a manual procedure, I can drop `--rollback` and keep these gates as runbook steps.
+- **Pin update:** at `cd4411d`, repair `30622fd`, ops `1a17bd9`, schema `68e9954`; uv.lock
+  `994b2c27…4853`; duckdb 2.0.0. The worktree must be at the head you mark resolved.
+
 ### Runbook, revised round 1 (supersedes the Request's Steps, When and Rollback)
 - **When:** Tue 11-24, 10:00-20:00 MST, after the Mon 11-23 daily is checked clean. Expected
   effects as in C4 above.
