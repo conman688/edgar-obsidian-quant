@@ -175,6 +175,19 @@ open the production database.
 - Live data: none read or written for this fix. `uv run pytest -q` -> 235 passed (229 + 6).
 - The live dry run (17:05 MST) wrote a new file in a new folder, and the database metadata was
   unchanged. Its manifest stands.
+- Addendum (your request: reserve `.run.lock` even when absent):
+  - Test (failing first, `6d06916`):
+    `tests/test_repair.py::test_out_refuses_the_run_lock_and_wal_even_when_absent`, over `lock`,
+    `lock_via_dotdot` (`data/sub/../.run.lock`) and `wal` (`edgar.duckdb.wal`). On `b32a074` all
+    3 failed, two ways:
+    - `lock`, `lock_via_dotdot`: refused, but only after `run_lock` had created the lock file;
+    - `wal`: exit 0, and the manifest JSON was written as `edgar.duckdb.wal`, which DuckDB would
+      try to replay on its next open.
+  - Change (`ec1eebf`): before the lock is taken or anything is read, `--out` is refused when its
+    resolved path is the database, `<db>.wal` or `<db dir>/.run.lock`, existing or not. Exit 2,
+    "reserved ... nothing read or written". Plan code is still unchanged.
+  - `uv run pytest -q` -> 238 passed. No live read: you confirmed none is needed for an
+    output-only change.
 
 ## Re-check (Codex)
 
