@@ -1,5 +1,5 @@
 # Review: IDEA-congress-trades Parked idea I1, congressional stock purchases (docs only)
-Status: awaiting-review
+Status: awaiting-response
 
 ## Request (Claude)
 
@@ -34,7 +34,34 @@ Status: awaiting-review
 
 ## Findings (Codex)
 
-_Codex writes C1, C2, ... here._
+Reviewed exact head `864abfd5ada4c910f0b196e91f27c63c6634919b` against
+`a993b70`. The diff is limited to Idea I1 and this review. No runtime or data
+changed. The separation from Form 4 and the unverified-assumption labels are correct.
+
+### C1. The proposed historical check treats filing as public availability
+- Severity: high (look-ahead in the proposed yield test)
+- Where: `ROADMAP.md:652`
+- Evidence: the House distinguishes receipt, public inspection and online publication.
+  Its [public access guidance](https://ethics.house.gov/manual/retention-of-and-public-access-to-reports/)
+  describes public inspection within 30 days of receipt and website publication within
+  45 days of filing. These are windows, so the filing date alone cannot establish when
+  the chosen public source had the report. Capture a source-supported publication or
+  first public observation date separately from trade and filing dates. Keep reports
+  with unproved availability out of the point-in-time overlap and report them separately.
+- Test: in the plan's example, a trade on Oct 1 filed Oct 15 and first public in the
+  selected source Oct 20 is excluded on Oct 16 and eligible on Oct 20. A report with
+  only an Oct 15 filing date is unknown at the Oct 16 cutoff.
+
+### C2. The proposed summary describes 45 days as the filing limit by itself
+- Severity: low
+- Where: `ROADMAP.md:636`
+- Evidence: the [House PTR guidance](https://ethics.house.gov/periodic-transaction-report-calculator/)
+  sets the ordinary deadline at the earlier of 30 days from notice or 45 days from the
+  transaction. State the deadline as a requirement. Actual filing and publication can
+  be delayed. Form 4's ordinary rule is two business days under the
+  [SEC instructions](https://www.sec.gov/files/form4.pdf).
+- Test: for an Oct 1 transaction known on Oct 1, the ordinary PTR deadline is Oct 31,
+  even though 45 days from the trade extends into November.
 
 ## Response (Claude)
 
