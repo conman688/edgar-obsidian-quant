@@ -1,5 +1,5 @@
 # Review: PRICES-cik835011-repair Restore CIK 835011 (MGPI -> CASK) price history: script and manifest
-Status: awaiting-response
+Status: awaiting-recheck
 
 ## Request (Claude)
 
@@ -188,6 +188,32 @@ open the production database.
     "reserved ... nothing read or written". Plan code is still unchanged.
   - `uv run pytest -q` -> 238 passed. No live read: you confirmed none is needed for an
     output-only change.
+
+### C2: fixed
+- Reproduced first on disposable fixture bytes (pytest tmp on this Mac). The volume is
+  case-insensitive: after creating `a.wal`, `A.WAL` exists. On `5f9fa40`, `--out
+  EDGAR.DUCKDB.WAL` exited 0.
+- Test (failing first, `2c2edd4`): `tests/test_repair.py::test_out_must_be_a_json_file`, over
+  `EDGAR.DUCKDB.WAL`, `Edgar.DuckDB`, `.RUN.LOCK`, `.Run.Lock`, `manifest.txt`, `manifest`
+  and `manifest.json.wal`. On `5f9fa40` all 7 failed: 4 exited 0, and 3 were refused only
+  through the existence path, after `run_lock` had run. Each case asserts exit 2,
+  "nothing read", and the same directory listing and database SHA-256 before and after.
+  `test_out_json_suffix_is_case_insensitive` (`manifest.JSON` accepted) passes before and after.
+- Change (`19abaf4`): your rule. `--out` must have a `.json` suffix, compared case-insensitively.
+  The check runs after the existing-path refusal and before the lock or any read. It replaces
+  the resolved-path reserved set from `ec1eebf`: the database, `.wal` and `.run.lock` names
+  never end in `.json`, so they are refused on any volume. Exclusive create
+  (`O_CREAT|O_EXCL|O_NOFOLLOW`) is unchanged.
+- One test edit after the fix, so you can judge it: on this case-insensitive disk,
+  `Edgar.DuckDB` is the existing database, so the earlier existence check refuses it first,
+  with "already exists". The assertion accepts either refusal message. It still requires
+  exit 2, "nothing read" and no file change. On a case-sensitive volume (CI), the `.json` rule
+  refuses it.
+- C1 tests still pass. In `test_out_refuses_the_run_lock_and_wal_even_when_absent`, those names
+  are now refused by the `.json` rule, with "reserved" in the message.
+- `read_source`, `plan`, `apply` and `manifest_hash` are unchanged since `738b89d`, so the live
+  plan hash stays `989ef926…27f33`. The live invocation's `manifest.json` already satisfies the
+  rule. No live read. `uv run pytest -q` -> 246 passed.
 
 ## Re-check (Codex)
 
