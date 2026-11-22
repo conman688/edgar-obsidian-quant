@@ -195,8 +195,11 @@ open the production database.
   EDGAR.DUCKDB.WAL` exited 0.
 - Test (failing first, `2c2edd4`): `tests/test_repair.py::test_out_must_be_a_json_file`, over
   `EDGAR.DUCKDB.WAL`, `Edgar.DuckDB`, `.RUN.LOCK`, `.Run.Lock`, `manifest.txt`, `manifest`
-  and `manifest.json.wal`. On `5f9fa40` all 7 failed: 4 exited 0, and 3 were refused only
-  through the existence path, after `run_lock` had run. Each case asserts exit 2,
+  and `manifest.json.wal`. On `5f9fa40` all 7 failed:
+  - exit 0: `EDGAR.DUCKDB.WAL`, `manifest.txt`, `manifest`, `manifest.json.wal`;
+  - `.RUN.LOCK`, `.Run.Lock`: refused as existing only after `run_lock` had created
+    `.run.lock`;
+  - `Edgar.DuckDB`: refused by the early existence check, but with no `.json` rule. Each case asserts exit 2,
   "nothing read", and the same directory listing and database SHA-256 before and after.
   `test_out_json_suffix_is_case_insensitive` (`manifest.JSON` accepted) passes before and after.
 - Change (`19abaf4`): your rule. `--out` must have a `.json` suffix, compared case-insensitively.
