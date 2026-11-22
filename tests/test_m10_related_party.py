@@ -487,3 +487,120 @@ def test_sync_never_touches_journal_notes(vcon, tmp_path):
     put(vcon, "0001234-24-000010", date(2024, 3, 1), date(2023, 12, 31), "ok", text_of(CUR_TEXT))
     s = sync_vault(vcon, tmp_path, AS_OF)
     assert path.read_bytes() == before and "Journal" not in s.written
+
+
+# --- review round 4 (Codex C7-C10) ---------------------------------------------------
+
+PENDING = "has not been read yet"
+
+
+def _rf_and_rp(rp_dates: list[date], drop: str | None = None):
+    """Risk-factor rows for A24, A23, A22 (the annual filings known locally); related-party rows
+    only from fetches on `rp_dates`, minus `drop`."""
+    con, docs = connect(":memory:"), rp_docs(standard())
+    for d in (date(2023, 12, 31), date(2024, 6, 30)):
+        fetch_sections(con, FakeSec(docs), [CIK], d)
+    for d in rp_dates:
+        fetch_related_party(con, FakeSec(docs), [CIK], d)
+    if drop:
+        con.execute("DELETE FROM filing_sections WHERE section = ? AND accn = ?", [SECTION, drop])
+    return con
+
+
+def test_a_newest_10k_without_a_related_party_row_is_pending_not_replaced_by_an_older_one():   # C7
+    con = _rf_and_rp([date(2023, 12, 31)])                       # M10 rows for A23 and A22 only
+    r = related_party_redline(con, [CIK], date(2024, 3, 2))[CIK]
+    assert (r["accn"], r["status"], r["compared"], r["text"]) == (A24, "pending", False, None)
+    assert PENDING in r["message"] and r["report_date"] == date(2023, 12, 31) and r["new"] == []
+    before = related_party_redline(con, [CIK], date(2024, 2, 29))[CIK]          # A24 not filed yet
+    assert (before["accn"], before["prior_accn"], before["status"], before["compared"]) == (A23, A22, "ok", True)
+
+
+def test_a_missing_middle_related_party_row_means_no_comparison():                            # C7
+    con = _rf_and_rp([date(2023, 12, 31), date(2024, 6, 30)], drop=A23)
+    r = related_party_redline(con, [CIK], date(2024, 6, 30))[CIK]
+    assert (r["accn"], r["prior_accn"], r["status"], r["prior_status"]) == (A24, A23, "ok", "pending")
+    assert r["compared"] is False and PENDING in r["no_comparison"] and r["new"] == []
+    before = related_party_redline(con, [CIK], date(2024, 2, 29))[CIK]
+    assert (before["accn"], before["status"], before["compared"]) == (A23, "pending", False)
+
+
+def test_note_shows_a_pending_newest_10k_and_not_the_older_note(vcon, tmp_path):              # C7
+    from src.obsidian.sync import sync_vault
+    vcon.execute("INSERT INTO filing_sections VALUES (?, '0001234-24-000010', '10-K', DATE '2024-03-01', "
+                 "DATE '2023-12-31', 'risk_factors', 'ok', 'Risk.', 'u', now(), 2)", [CIK])
+    put(vcon, "0001234-23-000010", date(2023, 3, 1), date(2022, 12, 31), "ok", text_of(SHORT))
+    sync_vault(vcon, tmp_path, AS_OF)
+    note = tmp_path / "Companies" / "ACME.md"
+    body = note.read_text().split("## Related parties", 1)[1].split("\n## ", 1)[0]
+    assert "[[0001234-24-000010]]" in body and PENDING in body
+    assert "We lease our main office" not in body and fm(note)["related_party_new"] is None
+
+
+def _html_response(docs):
+    docs[inst_url(A24)] = b"<html><body>Response unavailable.</body></html>"
+
+
+def test_a_well_formed_non_instance_response_is_an_error_and_retried():                      # C8
+    docs = rp_docs(standard())
+    _html_response(docs)
+    con, sec = connect(":memory:"), FakeSec(docs)
+    r = ops.run_steps(con, "weekly", [("fetch-text", lambda: fetch_related_party(con, sec, [CIK], date(2024, 6, 30)))],
+                      date(2024, 6, 30))
+    assert con.execute("SELECT status FROM filing_sections WHERE accn = ? AND section = ?",
+                       [A24, SECTION]).fetchall() == [("error",)]
+    assert any("related-party" in w for w in r["warnings"])
+    sec.docs = rp_docs(standard())
+    assert fetch_related_party(con, sec, [CIK], date(2024, 6, 30)) == {"ok": 1}
+    assert select_block(instance(2023, []), CIK) == ("not_found", None)                # control: real absence
+
+
+NIL = '<us-gaap:RelatedPartyTransactionsDisclosureTextBlock contextRef="FY" xsi:nil="true"/>'
+
+
+def _with_nil(raw: bytes) -> bytes:
+    return (raw.replace(b"<xbrli:xbrl ", b'<xbrli:xbrl xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" ', 1)
+            .replace(b"</xbrli:xbrl>", NIL.encode() + b"</xbrli:xbrl>"))
+
+
+def test_a_tagged_but_empty_or_nil_block_is_not_untagged():                                 # C9
+    assert select_block(instance(2023, []), CIK) == ("not_found", None)
+    assert select_block(instance(2023, [("cur", "<div><p> &#160; </p></div>")]), CIK) == ("ambiguous", "empty")
+    assert select_block(_with_nil(instance(2023, [])), CIK) == ("ambiguous", "empty")
+    # An empty or nil repeat beside the real current text does not hide it.
+    assert select_block(_with_nil(instance(2023, [("cur", SHORT), ("cur", "<p></p>")])), CIK) == \
+        ("ok", text_of(SHORT))
+    assert select_block(_with_nil(instance(2023, [("prior", LONG)])), CIK) == ("ambiguous", "empty")
+
+
+def test_an_empty_tagged_block_is_shown_as_such_and_final(vcon, tmp_path):                   # C9
+    from src.obsidian.sync import sync_vault
+    docs = rp_docs(standard())
+    docs[inst_url(A24)] = _with_nil(instance(2023, []))
+    con, sec = connect(":memory:"), FakeSec(docs)
+    assert fetch_related_party(con, sec, [CIK], date(2024, 6, 30)) == {"ambiguous": 1, "ok": 1}
+    r = related_party_redline(con, [CIK], date(2024, 6, 30))[CIK]
+    assert (r["status"], r["reason"], r["compared"], r["text"]) == ("ambiguous", "empty", False, None)
+    assert "tagged" in r["message"] and "no text" in r["message"] and "no related-party note tagged" not in r["message"]
+    sec.calls.clear()
+    assert fetch_related_party(con, sec, [CIK], date(2024, 6, 30)) == {} and sec.calls == [SUBS]
+    put(vcon, "0001234-23-000010", date(2023, 3, 1), date(2022, 12, 31), "ok", text_of(SHORT))
+    put(vcon, "0001234-24-000010", date(2024, 3, 1), date(2023, 12, 31), "ambiguous", "empty")
+    sync_vault(vcon, tmp_path, AS_OF)
+    body = (tmp_path / "Companies" / "ACME.md").read_text().split("## Related parties", 1)[1].split("\n## ", 1)[0]
+    assert "no text" in body and "We lease our main office" not in body
+
+
+def _utf16(raw: bytes) -> bytes:
+    return raw.decode("utf-8").replace('encoding="utf-8"', 'encoding="utf-16"').encode("utf-16")
+
+
+ENTITY = (b'<?xml version="1.0" encoding="utf-8"?>\n<!DOCTYPE xbrli:xbrl [<!ENTITY lbl "Label">]>\n')
+
+
+@pytest.mark.parametrize("encode", [lambda b: b, _utf16])
+def test_entity_declarations_are_refused_in_any_encoding_the_parser_accepts(encode):          # C10
+    body = instance(2023, [("cur", SHORT)]).split(b"?>", 1)[1].replace(b"Note 9.", b"&lbl; 9.", 1)
+    with pytest.raises(ValueError, match="DTD"):
+        select_block(encode(ENTITY + body.lstrip()), CIK)
+    assert select_block(encode(instance(2023, [("cur", SHORT)])), CIK) == ("ok", text_of(SHORT))
