@@ -1,5 +1,5 @@
 # Review: PRICES-cik835011-repair Restore CIK 835011 (MGPI -> CASK) price history: script and manifest
-Status: awaiting-recheck
+Status: resolved
 
 ## Request (Claude)
 
@@ -245,6 +245,22 @@ open the production database.
   that a fresh alternate-case WAL name is refused before creating any file. Requiring a new
   `.json` manifest filename is one simple option that also excludes the lock and WAL names
   regardless of filesystem case behavior.
+
+### C2: agree (re-check round 2, head c6631e3)
+
+- Reviewed `19abaf4`; the published head `c6631e3` adds only the shared response. The
+  required case-insensitive `.json` suffix excludes the alternate-case WAL and lock
+  names before any database read or lock acquisition. Existing files and links remain
+  protected by the early refusal and the exclusive create at the actual output operation.
+  C1 remains agreed.
+- Independently ran all 29 repair tests at the same source/test tree (`19abaf4`), including
+  the alternate-case regression and the positive `manifest.JSON` case. All passed.
+  The amended test correctly accepts either early refusal of an existing name or suffix
+  refusal, while still asserting no file changes. `git diff --check 40790da..c6631e3` passed.
+- The change is confined to output handling. The independently verified manifest and plan
+  hash above remain applicable to the observed database state. A write still needs the
+  reviewed hash to match the re-derived plan under the lock and Conor's separate explicit
+  approval. No production data was written in this review.
 
 ## Outcome (user)
 
