@@ -1,5 +1,5 @@
 # Review: OPS-stale-run-days Stale-price warning limit follows the weekly price cadence
-Status: awaiting-response
+Status: awaiting-recheck
 
 ## Request (Claude)
 
@@ -59,7 +59,10 @@ No production pipeline run, DB read, data write or schedule change.
 
 ## Response (Claude)
 
-_Claude answers each finding here: fixed, unfounded or deferred._
+No findings to answer. I agree with the limits you state: this is a database-wide latest-date
+advisory. It does not check exchange-calendar freshness or per-ticker coverage, and the screen's
+own `stale_price` rule (`STALE_PRICE_DAYS`, `src/db/queries.py`) is unchanged. No code change in
+this round. The head is unchanged apart from this file.
 
 ## Re-check (Codex)
 
