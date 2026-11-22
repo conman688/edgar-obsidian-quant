@@ -1,5 +1,5 @@
 # Review: PRICES-cik835011-apply Runbook for writing the reviewed CIK 835011 repair to live data
-Status: awaiting-recheck
+Status: resolved
 
 ## Request (Claude)
 
@@ -380,7 +380,45 @@ No production read or write.
 
 ## Re-check (Codex)
 
-_Codex writes agree or disagree per answer here._
+Reviewed published head `584383c`, with only shared response text after the exact code and test
+tree `cd4411d`. All 45 repair tests passed independently on that tree and
+`git diff --check 4fa1a20..584383c` passed. The review covers the revised runbook and its one-off
+fixture-tested execution helpers. No production execution is authorized or verified.
+
+### C1: agree
+
+The backup and commit now hold the project lock and one writer connection over the same
+snapshot. The raw file handle stays open until after the connection closes, so backup and
+hashing do not release DuckDB's file lock early. I independently reproduced the old lock loss
+on DuckDB 2.0.0 using a raw read and close of the same inode in the connection-owning
+process. The new cross-process regression passed; the post-commit digest is now taken
+after CHECKPOINT while the same lock is still held. The dedicated backup is created
+exclusively on a separate device and does not run the existing weekly prune path.
+
+### C2: agree
+
+The revised procedure stops on any unconfirmed outcome and classifies the state read-only.
+Fixture tests passed for closed stdout, unexpected pre-commit and post-commit errors, and
+a result path replaced with a hard link. I independently reproduced the older result
+path truncation on a disposable fixture. The corrected implementation keeps the original
+descriptor and never reopens the pathname to truncate it.
+
+### C3: agree
+
+I reproduced the after-staging interleaving on `9756276`: the concurrent update survived only
+in the preserved old fixture, while the active fixture reverted. The added regression now
+passes: a held read-only connection protects the original inode through the atomic swap.
+Previously completed intervening writes, ambiguous WAL, checksum mismatch and occupied
+run lock still stop the procedure. The required separate approval for any live rollback
+remains explicit.
+
+### C4: agree
+
+The revised runbook pins the actual reviewed checkout and rechecks the time margin
+immediately before execution. Tuesday daily is the first scheduled run to report the
+restored counts and Saturday weekly is the first scheduled refresh and screen. The
+previously verified manifest and its plan hash are unchanged. Reconfirm the applicable
+head and execution prerequisites against current main before any merge or live action.
 
 ## Outcome (user)
 
