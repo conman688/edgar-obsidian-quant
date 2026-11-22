@@ -179,6 +179,22 @@ def test_health_warns_on_drift_failures_stale_prices_throttling_and_backup(tmp_p
     assert "## Warnings" in md and "| prices | 2 | 1 | -1 |" in md
 
 
+@pytest.mark.parametrize("job, latest, today, warns", [
+    ("daily", "2026-11-06", "2026-11-13", False),   # Fri daily, last close before the 11-07 weekly: 7 days
+    ("daily", "2026-11-05", "2026-11-13", False),   # Friday-holiday week: Thursday's close, 8 days
+    ("daily", "2026-11-04", "2026-11-13", True),    # 9 days: older than any weekly cadence allows
+    ("weekly", "2026-11-13", "2026-11-14", False),  # Sat weekly right after its refresh: 1 day
+    ("weekly", "2026-11-06", "2026-11-14", True),   # the weekly's own refresh did not move prices: 8 days
+])
+def test_stale_price_limit_follows_the_weekly_price_cadence(job, latest, today, warns):
+    """Prices refresh only in the Saturday weekly, so a daily may see a close up to 8 days old
+    (Friday holiday); the weekly itself must see a fresh close (acceptance-2026-11-21 exception)."""
+    con = connect(":memory:")
+    con.execute("INSERT INTO prices VALUES (1, 'A', ?, 10, NULL, 't')", [date.fromisoformat(latest)])
+    r = ops.run_steps(con, job, [], date.fromisoformat(today))
+    assert any(w.startswith("latest price is") for w in r["warnings"]) is warns, r["warnings"]
+
+
 def test_second_run_while_one_holds_the_lock_is_refused(tmp_path):
     lock = tmp_path / ".run.lock"
     with open(lock, "w") as held:
