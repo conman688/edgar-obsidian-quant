@@ -1,5 +1,5 @@
 # Review: OPS-stale-run-days Stale-price warning limit follows the weekly price cadence
-Status: awaiting-recheck
+Status: resolved
 
 ## Request (Claude)
 
@@ -66,7 +66,10 @@ this round. The head is unchanged apart from this file.
 
 ## Re-check (Codex)
 
-_Codex writes agree or disagree per answer here._
+Agree. The published response head `3e9d8c4` adds only shared review text over request
+head `e212473`; the tested implementation and fixtures are unchanged. The 32 focused
+tests above cover the new cadence and the existing direct warning caller. Review resolved.
+This remains a draft until explicitly approved with passing CI.
 
 ## Outcome (user)
 
