@@ -77,29 +77,45 @@ def since(con: duckdb.DuckDBPyConnection, journals: list[dict], as_of: date) -> 
     The total adds dividends with ex-date after the decision date, up to the latest close: a
     decision made on an ex-date or later does not get that dividend. When the snapshot's close is
     older than the decision and a dividend went ex in between, that close still included the
-    dividend, so the total return is unknown (None). None also when either close is missing."""
+    dividend, so the total return is unknown (None). None also when either close is missing, and
+    when a close after the snapshot was priced under another ticker than the snapshot's: that may
+    be another security (review PRICES-ticker-change C1). The snapshot's ticker is the note's own
+    `ticker` (it never changes); a note without one uses the stored row on or before the snapshot
+    date, and has no return when that row is gone. A held source action (review C2) between the
+    two closes also leaves the return unknown."""
     if not journals:
         return []
     snaps = [j["snapshot"] for j in journals]
     rows = con.execute("""
-        WITH j AS (SELECT unnest($i) AS i, unnest($cik) AS cik, unnest($dec)::DATE AS dec,
-                          unnest($d0)::DATE AS d0, unnest($c0) AS c0),
-        n AS (SELECT cik, price_date AS d1, close_raw AS c1 FROM prices
+        WITH j0 AS (SELECT unnest($i) AS i, unnest($cik) AS cik, unnest($dec)::DATE AS dec,
+                           unnest($d0)::DATE AS d0, unnest($c0) AS c0, unnest($t0)::VARCHAR AS t0),
+        j AS (SELECT j0.* REPLACE (coalesce(j0.t0, (SELECT p.ticker FROM prices p WHERE p.cik = j0.cik
+                                                     AND p.price_date <= j0.d0 ORDER BY p.price_date DESC
+                                                     LIMIT 1)) AS t0) FROM j0),
+        n AS (SELECT cik, price_date AS d1, close_raw AS c1, ticker AS t1 FROM prices
               WHERE price_date <= $as_of AND list_contains($cik, cik)
               QUALIFY row_number() OVER (PARTITION BY cik ORDER BY price_date DESC) = 1),
         r AS (SELECT j.i, n.d1, n.c1, j.c0 / split_factor(j.cik, j.d0) AS a0, n.c1 / split_factor(j.cik, n.d1) AS a1,
                      (SELECT sum(d.amount_raw / split_factor(d.cik, d.ex_date)) FROM dividends d
                       WHERE d.cik = j.cik AND d.ex_date > j.dec AND d.ex_date <= n.d1) AS divs,
                      EXISTS (SELECT 1 FROM dividends d
-                             WHERE d.cik = j.cik AND d.ex_date > j.d0 AND d.ex_date <= j.dec) AS gap
+                             WHERE d.cik = j.cik AND d.ex_date > j.d0 AND d.ex_date <= j.dec) AS gap,
+                     j.t0 IS NULL OR EXISTS (SELECT 1 FROM prices p1 WHERE p1.cik = j.cik
+                                             AND p1.price_date > j.d0 AND p1.price_date <= n.d1
+                                             AND p1.ticker <> j.t0)
+                         OR n.t1 <> j.t0
+                         OR EXISTS (SELECT 1 FROM price_actions_held h WHERE h.cik = j.cik
+                                    AND h.ex_date > j.d0 AND h.ex_date <= n.d1) AS switched
               FROM j LEFT JOIN n USING (cik))
-        SELECT d1, c1, a1 / nullif(a0, 0) - 1,
-               CASE WHEN NOT gap THEN (a1 + coalesce(divs, 0)) / nullif(a0, 0) - 1 END
+        SELECT d1, c1, CASE WHEN NOT switched THEN a1 / nullif(a0, 0) - 1 END,
+               CASE WHEN NOT gap AND NOT switched THEN (a1 + coalesce(divs, 0)) / nullif(a0, 0) - 1 END
         FROM r ORDER BY i
     """, {"i": list(range(len(journals))), "cik": [j["cik"] for j in journals],
           "dec": [j["decided"] for j in journals],
           "d0": [to_date(s.get("price_date")) for s in snaps],
           "c0": [s.get("close_raw") if isinstance(s.get("close_raw"), (int, float)) else None for s in snaps],
+          "t0": [j["meta"].get("ticker") if isinstance(j.get("meta", {}).get("ticker"), str) else None
+                 for j in journals],
           "as_of": as_of}).fetchall()
     return [{"price_date": d1, "close_raw": c1, "price_change": pc, "total_return": tr}
             for d1, c1, pc, tr in rows]
