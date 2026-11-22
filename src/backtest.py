@@ -176,11 +176,16 @@ def returns_sql(source: str) -> str:
         SELECT l.*, p.price_date AS exit_date, p.close_raw AS exit_raw
         FROM legs l ASOF LEFT JOIN prices p ON p.cik = l.cik AND p.price_date <= l.target
     ),
-    adj AS (SELECT cik, price_date, close_raw / split_factor(cik, price_date) AS a FROM prices),
+    adj AS (SELECT cik, price_date, ticker, close_raw / split_factor(cik, price_date) AS a FROM prices),
     pb AS (
+        -- A 10x jump, or a change of ticker (possibly another security: review
+        -- PRICES-ticker-change C1), breaks the series: no return across it.
         SELECT cik, price_date AS d FROM (
-            SELECT cik, price_date, a, lag(a) OVER (PARTITION BY cik ORDER BY price_date) AS prev FROM adj
-        ) WHERE a >= {PRICE_BREAK} * prev
+            SELECT cik, price_date, a, ticker, lag(a) OVER w AS prev, lag(ticker) OVER w AS prev_ticker
+            FROM adj WINDOW w AS (PARTITION BY cik ORDER BY price_date)
+        ) WHERE a >= {PRICE_BREAK} * prev OR ticker <> prev_ticker
+        UNION ALL
+        SELECT cik, ex_date FROM price_actions_held      -- unresolved source action (review C2)
     ),
     cd AS (
         SELECT cik, ex_date,
@@ -391,7 +396,7 @@ def render_report(results: dict[str, dict[str, dict]], meta: dict) -> str:
     lines.append(f"- Picks that stopped trading inside the 3m window (exit at last close): {exit_gaps}.")
     breaks = {n: s["horizons"][3]["price_breaks"] for n, by in results.items() for p, s in by.items()
               if p == "as_first_reported"}
-    lines.append(f"- Picks left out of the 3m figures because the price series broke (10x in a day): {breaks}.")
+    lines.append(f"- Picks left out of the 3m figures because the price series broke (10x in a day, or a ticker change): {breaks}.")
     lines.append(f"- Universe and picks: names with a close of at least ${MIN_PRICE:g} on the rebalance date.")
     unmeasured = {n: (s["horizons"][3]["unmeasured_dates"], s["monthly"]["months_unmeasured"])
                   for n, by in results.items() for p, s in by.items() if p == "as_first_reported"}

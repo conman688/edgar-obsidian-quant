@@ -63,7 +63,7 @@ ladder tags), `debt_sources_disagree` (total and current + noncurrent differ by 
 the larger is used), `stale_debt` also when a debt line over 5% of debt, reported in the
 last 400 days, is missing from the newest balance sheet, `share_jump` (>40% share change in a
 year: missed split or M&A), `foreign_filer` (20-F/40-F: ADS price vs ordinary shares),
-`stale_price`. Flags, shown but not blocking: `multi_class_risk` (no cover-page share
+`stale_price`, `ticker_change` (the last year's prices were priced under more than one ticker, which may be two securities; journal and backtest returns across a ticker change are unknown), `held_source_action` (a source dividend or split dated before a renamed symbol's first close, where history was already stored, is held in `price_actions_held` instead of being stored: it cannot be tied to either security; returns across it are unknown). Flags, shown but not blocking: `multi_class_risk` (no cover-page share
 count, so a class count or nothing), `ebit_is_pretax` (pre-tax income stands in for EBIT).
 
 The terminal shows the shortlist and quarantine; `--trace` prints the tag, period and
@@ -171,7 +171,8 @@ that fails. Every load keeps a ledger, so the next run picks up where it stopped
 mid-way refetches at most the batch it was writing. Each run adds a row to `run_log` and writes
 a health report (stdout, and `Reports/Health.md` in the vault). The report lists step results,
 row counts against the previous run, and warnings for: a step that failed, a table that shrank,
-failed Form 4 or price ledger entries, a latest price more than 4 days old, SEC throttling, and a
+failed Form 4 or price ledger entries, a stale latest price (more than 4 days old on the weekly, which
+refreshes prices; more than 8 on a daily), SEC throttling, and a
 backup that did not happen.
 
 Backups: set `EOQ_BACKUP_DIR` to a folder on another disk, for example
