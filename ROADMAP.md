@@ -620,26 +620,42 @@ backtesting, Obsidian). Claude and Codex assess each one for fit, invariants, li
 with numbers on a sample: `reviews/R1-repo-candidates.md`. Research only until the M9 two-week
 check ends; anything adopted becomes its own milestone.
 
-### Idea I1: congressional stock purchases (not planned; user, 2026-11-10)
+### Idea I1: congressional stock purchases (not planned; user, 2026-11-10; revised 2026-11-21 after review)
 
 An option for later, not scheduled: add members of Congress's disclosed stock purchases (STOCK
-Act periodic transaction reports) as a second insider signal next to Form 4.
+Act periodic transaction reports, PTRs) as a separate signal next to Form 4.
+
+Not the same signal as Form 4:
+- Form 4 is filed by a company's own insiders (Section 16 officers, directors and 10% holders)
+  about that company's shares.
+- A PTR is filed by a member of Congress about trades by them, their spouse or a dependent, in
+  any company. It says nothing about the issuer's insiders and would never count toward the
+  screen's insider-buy rule. It would only ever be its own field.
 
 Why it is not planned yet:
-- Reports can come about 45 days after the trade, against 2 business days for Form 4.
+- Timing: a PTR may be filed up to 45 days after the trade. Form 4 is due within 2 business
+  days.
 - Amounts are ranges, not shares and prices.
 - Many trades are made by a spouse or an adviser.
-- Members mostly trade large companies, while the screen finds small, cheap ones.
-- The published evidence on returns after disclosure is mixed.
+- Assumptions, not checked here:
+  - members' trades are thought to be mostly in large companies, while the screen finds small,
+    cheap ones (the yield test below measures the overlap);
+  - published results on returns after disclosure are said to be mixed. No study is cited here;
+    a revival must cite specific sources before relying on either point.
 
 Sources:
 - the House Clerk's yearly index and reports, free, partly scanned PDFs;
 - the Senate eFD search, which asks you to accept its terms first, so scraping it is harder;
 - third-party feeds, paid or restricted.
 
-First step if revived: a read-only yield test. Count how many vault and shortlist tickers had a
-congressional purchase in the 90 days before a screen date, from the House index. Build only
-if that number is material, as its own milestone, after M9 acceptance.
+First step if revived: a read-only yield test, point-in-time.
+- Count the vault and shortlist tickers with a congressional purchase whose **public disclosure
+  (filing) date is on or before the screen's `as_of`**, and whose trade date is in the 90 days
+  before `as_of`.
+- A trade disclosed after `as_of` is never counted: it was not knowable on that date.
+- Report trade dates and disclosure dates separately.
+- Build only if that number is material, as its own milestone and with the user's yes. This idea
+  approves no pilot or build.
 
 ## Order
 
