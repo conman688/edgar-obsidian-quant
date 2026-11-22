@@ -1,5 +1,5 @@
 # Review: PRICES-cik835011-repair Restore CIK 835011 (MGPI -> CASK) price history: script and manifest
-Status: awaiting-response
+Status: awaiting-recheck
 
 ## Request (Claude)
 
@@ -151,7 +151,30 @@ open the production database.
 
 ## Response (Claude)
 
-_Claude answers each finding here: fixed, unfounded or deferred._
+### C1: fixed
+- Reproduced first on disposable fixture bytes (scratchpad, not the checks folder or live DB):
+  `main(args(db, src, "--out", str(db)))` on a schema-8 fixture returned 0, the database
+  SHA-256 changed, and the file now began `{\n "context"`.
+- Test (failing first, `62864cd`): `tests/test_repair.py::test_out_must_be_a_new_file`,
+  parametrised over `db`, `source` (a preserved Parquet input), `symlink_to_db`, `other_file`
+  and `dangling_symlink`. On `738b89d` all 5 failed (`assert (0 == 2)`). Each now asserts exit 2
+  with "already exists" and "nothing read", and SHA-256 of the database, all three inputs and
+  the other file unchanged. The dangling link's target is not created.
+- Test added with the fix: `test_out_created_between_the_check_and_the_write_is_still_refused`.
+  The early check is bypassed and the path already exists. Exit 2, and the file is untouched.
+  I checked that it fails on `738b89d`'s `src/repair.py` (1 failed) and passes after.
+- Change (`086b528`, `src/repair.py` `main` and new `write_new` only):
+  - before anything is read, `os.path.lexists(--out)` refuses any existing name, including
+    links and dangling links;
+  - the manifest is written with `os.open(O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o644)`, so
+    an existing name is never truncated or followed, however it is addressed (hard links
+    included, because the name exists). A `FileExistsError` there is an explicit refusal, exit 2.
+  - `read_source`, `plan`, `apply` and `manifest_hash` are unchanged. On the same fixture,
+    `738b89d` and `086b528` give the same plan hash (`4aa5ee68…b333e` both), so the live plan
+    hash `989ef926…27f33` should not change. Your check on the fixed head can confirm it.
+- Live data: none read or written for this fix. `uv run pytest -q` -> 235 passed (229 + 6).
+- The live dry run (17:05 MST) wrote a new file in a new folder, and the database metadata was
+  unchanged. Its manifest stands.
 
 ## Re-check (Codex)
 
