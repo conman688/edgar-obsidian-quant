@@ -1,5 +1,5 @@
 # Review: M10 Footnote checks (plan)
-Status: awaiting-response
+Status: awaiting-recheck
 
 ## Request (Claude)
 
@@ -460,3 +460,60 @@ I used in-memory DuckDB and a fake SEC client. No live database, vault, provider
 - Test: run the existing entity-declaration refusal with equivalent UTF-8 and UTF-16
   fixtures. Reject declarations at the parser boundary or restrict input to a validated
   encoding before checking it. A valid entity-free instance should still parse.
+
+
+## Response round 4 (Claude)
+
+Tests first: e4e24ee (C7-C10) and f973ccc (the attached row's cutoff, asked by Conor during
+C7), each run against the code before the fix; fix 18ec901. `uv run pytest` -> 280 passed
+(was 269). Offline only: no live DB, vault, SEC requests or pipeline runs.
+
+### C7: fixed
+- Test: `tests/test_m10_related_party.py::test_a_newest_10k_without_a_related_party_row_is_pending_not_replaced_by_an_older_one`
+  (before the fix: current accn A23 instead of A24, compared True),
+  `::test_a_missing_middle_related_party_row_means_no_comparison` (before: compared A24 with
+  A22), `::test_note_shows_a_pending_newest_10k_and_not_the_older_note` (before: the note showed
+  the 2023 note as current). Each also checks a date before the newer filing.
+  `::test_the_attached_related_party_row_obeys_the_same_cutoff_cik_and_form` (3 cases: M10 row
+  filed after as_of, another CIK, form 10-K/A; before: all three attached as `ok`).
+- Change: 18ec901 `related_party_redline` first takes the latest two 10-K/10-KT accessions known
+  locally from either text family (`filing_sections`, any section, `filed <= as_of`), then
+  attaches each one's `fn_related_party` row, with the same cutoff, CIK and form on the
+  attached row. A 10-K without one is `pending` ("has not been read yet (fetch-text); not
+  compared"), shown with its own accession and report date; as the prior 10-K it means no
+  comparison. Facts in `xbrl_facts` are not used as 10-K metadata: every 10-K that
+  `fetch-text` reads gets at least one text row, and the weekly run stops before `sync-vault`
+  when `fetch-text` fails. A sync after a `fetch-text` that crashed before either family's
+  first row of a new 10-K would still show the older pair; it is then the newest known 10-K.
+- Live data: none (no live rows yet).
+
+### C8: fixed
+- Test: `::test_a_well_formed_non_instance_response_is_an_error_and_retried` (before: `not_found`,
+  no warning, no retry). The tag-absent XBRL instance stays `not_found` (control in the same
+  test and `::test_no_block_in_any_context_is_not_found`).
+- Change: 18ec901 `select_block` raises unless the root element is `xbrli:xbrl`; the row is
+  `error`, warned, and retried.
+- Live data: none.
+
+### C9: fixed
+- Test: `::test_a_tagged_but_empty_or_nil_block_is_not_untagged` (whitespace-only HTML, nil, an
+  empty repeat beside the real text, nil current beside a prior-period block; before:
+  `not_found`), `::test_an_empty_tagged_block_is_shown_as_such_and_final`.
+- Change: 18ec901 nil and empty blocks now count as tagged. A current block with no text is
+  `ambiguous`, reason `empty`: "related-party note is tagged in this 10-K but has no text; not
+  compared". Final for the parser version (a retry would read the same filing), never shown as
+  untagged, never compared. An empty repeat beside current text does not hide that text.
+  Documented in the module docstring and ROADMAP M10 ("Review round 4").
+- Live data: none.
+
+### C10: fixed
+- Test: `::test_entity_declarations_are_refused_in_any_encoding_the_parser_accepts[_utf16]`
+  (before: DID NOT RAISE; the entity was expanded). The UTF-8 case and an entity-free UTF-16
+  instance (must parse `ok`) are in the same test.
+- Change: 18ec901 the byte search is replaced by an expat pre-pass (`_refuse_dtd`) that
+  refuses any DTD or entity declaration. Expat detects the encoding itself, the same way the
+  parser that builds the tree does. The instance is parsed twice; malformed XML is still `error`.
+- Live data: none.
+
+`PARSER` stays 1: no `fn_related_party` row exists in the live database yet.
+
