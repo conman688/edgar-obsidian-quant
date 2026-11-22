@@ -186,11 +186,12 @@ fails, since the backup uses `os.replace` on its dated target.
 
 ## Response (Claude)
 
-Code head for this round: `cc66123` (tests `646d069` failing first: 17 failed on `d9d8961`).
+Code head for this round: `f5902ac`. Tests `646d069` failed first (17 failed on `d9d8961`),
+then fix `cc66123`; the C3 addendum has test `cbecb53` and fix `f5902ac`.
 `read_source`, `plan` and `manifest_hash` are unchanged: on the same fixture, `19abaf4` and
-`cc66123` give the same plan hash and context. So the reviewed live hash `989ef926…27f33`
-stands. `uv run pytest -q` -> 257 passed (40 in `tests/test_repair.py`). No production read or
-write.
+`cc66123` give the same plan hash and context, and `f5902ac` changes only the rollback. So the
+reviewed live hash `989ef926…27f33` stands. `uv run pytest -q` -> 258 passed (41 in
+`tests/test_repair.py`). No production read or write.
 
 ### C1: fixed
 - Test: `tests/test_repair.py::test_backup_and_write_share_one_lock_and_one_connection`. A
@@ -264,6 +265,21 @@ write.
   (`edgar.duckdb.repaired-<ts>`), swaps with one `os.replace`, fsyncs the folder, and checks the
   database's sha256 against the backup. Nothing is copied in place and no sidecar is deleted.
 - Running a rollback needs its own yes from Conor.
+- Addendum (your early fixture result, before this request was final). After the probe closed
+  and while the backup was staged, a direct DuckDB writer could still commit an unrelated close
+  (121 -> 122). The rollback then reported success, and 122 survived only in the kept file.
+  - Test (failing first, `cbecb53`): `test_rollback_keeps_writers_out_until_the_swap`. A hook
+    after staging, before the swap, runs the intruder process. With only the hook added, the
+    intruder's commit succeeded (`returncode=0`), which reproduces your result.
+  - Change (`f5902ac`): from the WAL re-check and the database sha256 gate to `os.replace`, the
+    rollback holds a read-only DuckDB connection. It blocks writers in other processes; this was
+    checked with a separate process. The database is read only through a handle opened before
+    that connection and closed after it, never by re-opening the path. The intruder now fails
+    with DuckDB's lock error. The database ends byte-identical to the backup, and the kept file
+    equals `post_sha256`. A writer that committed before the lock is still caught by the sha256
+    gate (`intervening_write`).
+  - A writer can only reach the database after the swap, and then it writes to the restored
+    file at the path. That is a later write, not a lost one; the final sha256 check reports it.
 
 ### C4: fixed (runbook text, below)
 - Schedule walk for a Tue 11-24 write:
@@ -276,7 +292,7 @@ write.
 - Pin: the worktree must be at the exact head you mark resolved, with `git status --porcelain`
   empty, checked by `git rev-parse HEAD`. Its imported helpers are pinned by that commit
   (`src/repair.py`, `src/ops.py` for `run_lock`/`ROOM`, `src/db/schema.py` for `MIGRATIONS`),
-  and the venv by `uv.lock`. At `cc66123` the blobs are repair `c1aee53`, ops `1a17bd9` and
+  and the venv by `uv.lock`. At `f5902ac` the blobs are repair `2c95d3a`, ops `1a17bd9` and
   schema `68e9954`; uv.lock sha256 is `994b2c27…4853`; duckdb is 2.0.0. The time margin is
   rechecked immediately before the write: `date`, the next start and `pgrep`.
 
