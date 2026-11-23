@@ -172,7 +172,7 @@ Without the file, notes say the lists are not installed.
 
 ```bash
 uv run --env-file .env python -m src.cli run weekly    # backup, ingest all, screen, fetch-text, sync-vault
-uv run --env-file .env python -m src.cli run daily     # Form 4 only
+uv run --env-file .env python -m src.cli run daily     # Form 4, then screen and sync-vault from stored data
 uv run --env-file .env python -m src.cli backup        # the backup step alone
 uv run python -m src.cli schedule                      # launchd files in data/launchd (not installed)
 ```
@@ -185,6 +185,15 @@ row counts against the previous run, and warnings for: a step that failed, a tab
 failed Form 4 or price ledger entries, a stale latest price (more than 4 days old on the weekly, which
 refreshes prices; more than 8 on a daily), SEC throttling, and a
 backup that did not happen.
+
+The weekday daily republishes the dashboard. After its Form 4 import succeeds, it recomputes
+the screen (a dated Parquet in `data/screens/`) and syncs the vault, with the stored prices and
+fundamentals. Prices, XBRL facts and 10-K text refresh only on Saturday's weekly. So the
+dashboard states the latest close, the latest Form 4 and the latest XBRL filing date it used,
+and each company note keeps its close date (`price_date`). The screen's freshness rules apply
+as on any day: a close more than 7 days old quarantines the company (`stale_price`). A failed
+import stops the run before the screen, so the vault keeps the previous dashboard. Journal
+notes are never rewritten.
 
 Backups: set `EOQ_BACKUP_DIR` to a folder on another disk, for example
 `/Volumes/External/edgar-obsidian-quant-backups`. The weekly run copies the database there as

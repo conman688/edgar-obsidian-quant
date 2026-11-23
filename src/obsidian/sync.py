@@ -284,7 +284,7 @@ def sync_vault(con: duckdb.DuckDBPyConnection, vault: Path, as_of: date, filters
             "rank": r["rank"], "ev_ebit": _r(r["ev_ebit"]), "net_cash_to_mcap": _r(r["net_cash_to_mcap"]),
             "fcf_yield": _r(r["fcf_yield"]), "share_cagr_3y": _r(r["share_cagr_3y"]),
             "insider_buy_90d_usd": _r(r["insider_buy_90d_usd"], 0), "drawdown_52w": _r(r["drawdown_52w"]),
-            "mcap": _r(r["mcap"], 0), "as_of": as_of, "issues": list(r["issues"]), "flags": list(r["flags"]),
+            "mcap": _r(r["mcap"], 0), "as_of": as_of, "price_date": r["price_date"], "issues": list(r["issues"]), "flags": list(r["flags"]),
             "rf_new_sentences": len(rl["new"]) if rl and rl["status"] == "ok" else None,
             "related_party_new": len(rp["new"]) if rp and rp["compared"] else None,
             "forensic_flags": fa["flags"] if fa else [],
@@ -300,10 +300,20 @@ def sync_vault(con: duckdb.DuckDBPyConnection, vault: Path, as_of: date, filters
         stats.record("Companies", changed)
 
     changed = upsert_note(vault / "Dashboard.md", {"type": "dashboard"}, env.get_template("dashboard.md.j2").render(
-        as_of=as_of, filters=json.dumps(asdict(filters), sort_keys=True),
+        as_of=as_of, filters=json.dumps(asdict(filters), sort_keys=True), data=_data_dates(con, as_of),
         decisions=_decisions(con, journals, {r["cik"]: r for r in rows}, as_of)))
     stats.record("Dashboard", changed)
     return stats
+
+
+def _data_dates(con: duckdb.DuckDBPyConnection, as_of: date) -> dict:
+    """The newest stored price, Form 4 and XBRL fact known by as_of: a weekday dashboard
+    republishes stored data, and prices refresh only on Saturdays."""
+    (px, f4, xf), = con.execute("""
+        SELECT (SELECT max(price_date) FROM prices WHERE price_date <= $as_of),
+               (SELECT max(filed) FROM form4_transactions WHERE filed <= $as_of),
+               (SELECT max(filed) FROM xbrl_facts WHERE filed <= $as_of)""", {"as_of": as_of}).fetchall()
+    return {"price": px, "form4": f4, "facts": xf}
 
 
 def _decisions(con: duckdb.DuckDBPyConnection, journals: list[dict], now: dict, as_of: date) -> list[dict]:

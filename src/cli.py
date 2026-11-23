@@ -332,8 +332,11 @@ def cmd_journal(args, con=None) -> None:
     print(f"wrote {path}; review due {args.as_of + timedelta(days=args.review_days)}")
 
 
+# Weekly (Saturday) is the full refresh: prices, facts, Form 4 and 10-K text. Daily (weekdays)
+# imports Form 4 only, then republishes the screen from the stored prices and fundamentals.
+# A failed step leaves the rest not run, so a failed import publishes nothing.
 RUN_STEPS = {"weekly": [["ingest", "all"], ["screen"], ["fetch-text"], ["sync-vault"]],
-             "daily": [["ingest", "form4"]]}
+             "daily": [["ingest", "form4"], ["screen"], ["sync-vault"]]}
 
 
 def cmd_run(args) -> None:
