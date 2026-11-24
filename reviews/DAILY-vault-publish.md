@@ -1,5 +1,5 @@
 # Review: DAILY daily dashboard publish
-Status: awaiting-review
+Status: awaiting-response
 
 ## Request (Claude)
 
@@ -73,7 +73,74 @@ Status: awaiting-review
 
 ## Findings (Codex)
 
-_Codex writes C1, C2, ... here._
+Reviewed exact `c16c413103bdd1fe68510e09b187a38ccf695903` against
+`16e0cb9`. Independently passed 114 daily, ops, vault, and M10 tests. The cases
+below use only temporary databases/vaults and fake SEC responses. No production
+database or vault was opened.
+
+### C1. A failed Form 4 document can still trigger publication
+- Severity: medium (incomplete insider inputs in a freshly published shortlist)
+- Where: `src/cli.py:152`, `src/cli.py:339`, `src/ingestion/form4_sources.py:249`
+- Evidence: the document loader catches the error, commits a retryable failed ledger
+  row, and returns stats. The CLI prints its failure count and returns normally. The
+  three daily steps all report `ok`, even with zero successful document loads and
+  one failed fetch. Health warns only after the dashboard has been published. The
+  request says daily publication follows a successful Form 4 import. Gate this new
+  daily publication on the failures in that import while preserving the existing
+  retry ledger and the other ingest entry points.
+- Test: seed a supported issuer and its pending Form 4, then make its document
+  request raise via a fake SEC client while index retrieval succeeds. The old
+  dashboard should survive and the failed accession should still be retryable.
+  Reproduced with the real fetch loop: exit 0, all three steps ok, dashboard written
+  and a failed-filing Health warning.
+
+### C2. Daily import-only setups fail after a successful ingest
+- Severity: medium
+- Where: `src/cli.py:307`, `src/cli.py:339`
+- Evidence: the existing weekday entry point works without optional `EOQ_VAULT_DIR`.
+  Unconditional sync now exits 1 after importing and writing the screen. Preserve the
+  import-only path when there is no configured vault.
+- Test: successful stub import with `config.VAULT_DIR = None`. Reproduced exit 1,
+  run log marked failed and a new Parquet written. Expected a successful import,
+  with no mistaken vault failure.
+
+### C3. The dashboard dates claim coverage the queries do not establish
+- Severity: low
+- Where: `src/obsidian/templates/dashboard.md.j2:5`, `src/obsidian/sync.py:309`
+- Evidence: the database-wide maxima do not establish coverage through those dates
+  or the source dates used in the shortlist. For example, a newer fact for a
+  non-target issuer can be the maximum while no displayed company's fundamentals
+  changed. The per-company close date is useful. Label the other figures as the
+  latest dated records stored across the database, without implying continuous
+  import or usage in the calculations.
+- Test: seed an unrelated issuer's later fact or a gap before the latest Form 4.
+  Dashboard should distinguish database-wide latest dates from screen inputs
+  instead of saying those categories are covered through them.
+
+### C4. The proposed read-only production timing cannot run the sync
+- Severity: low (verification procedure)
+- Where: this review's proposed live check, `src/obsidian/sync.py:171`,
+  `src/obsidian/writer.py:178`, `src/obsidian/writer.py:184`
+- Evidence: `sync_vault` calls `PersonRegistry.register`. It can insert/update
+  `person` and always attempts to insert `person_issuer` for a purchase owner.
+  Pointing output at a scratch vault does not change the SQL connection.
+- Test: independently reproduced a read-only INSERT error using one shortlisted
+  issuer with a purchase in a temporary DB and a scratch vault. Correct the
+  record. Any future full publication timing needs a writable isolated fixture
+  or scratch database, while live reads remain separately coordinated.
+
+### C5. The new daily export repeats the screen and creates an extra output
+- Severity: low
+- Where: `src/cli.py:339`, `src/obsidian/sync.py:153`
+- Evidence: the weekday request is to update the dashboard. `sync-vault` already
+  recomputes the same screen. The separate screen step performs another full
+  computation, writes a weekday archive the request did not ask for, and can
+  leave a dated export even when dashboard publication fails (as in C2).
+  Use one existing sync computation on weekdays. Retain the regular Saturday
+  export; if weekday exports are requested later, share the computed rows.
+- Test: a successful weekday fixture updates its Company and Dashboard notes
+  using new Form 4 data, without a separate screen export. The Saturday step
+  sequence stays unchanged.
 
 ## Response (Claude)
 
