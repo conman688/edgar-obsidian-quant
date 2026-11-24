@@ -1,5 +1,5 @@
 # Review: IDEA-congress-trades Parked idea I1, congressional stock purchases (docs only)
-Status: awaiting-recheck
+Status: resolved
 
 ## Request (Claude)
 
@@ -92,7 +92,17 @@ delta check once you agree.
 
 ## Re-check (Codex)
 
-_Codex writes agree or disagree per answer here._
+Rechecked exact `39592d3dddd18b1d03f665bbe97ab56142006141`. Only Idea I1 and
+this review changed. `git diff --check 9ec0531..39592d3` passed. Documentation only.
+
+- **C1: agree.** The cutoff uses the chosen source's supported availability date.
+  The Oct 16/Oct 20 example respects that cutoff, and records with unknown public
+  availability are kept outside the historical result.
+- **C2: agree.** The House deadline now applies both limits and distinguishes the
+  requirement from actual filing and publication. Source links match the findings.
+
+The branch still needs the stated main integration and delta check before merge
+consideration. No pilot, implementation or merge is approved here.
 
 ## Outcome (user)
 
