@@ -1,10 +1,11 @@
-"""Daily dashboard: after a weekday Form 4 import with no failed filings, the daily run syncs
-the vault (sync-vault recomputes the screen) from the stored prices and fundamentals.
-Saturday's weekly stays the full refresh (prices, facts, 10-K text, the screen Parquet).
+"""Daily dashboard: on weekdays, a Form 4 import with no failed filings, then a price refresh
+with no failed companies, then sync-vault (which recomputes the screen) on that day's closes and
+the stored fundamentals. Saturday's weekly stays the full refresh (facts, 10-K text, the screen
+Parquet).
 
 The daily runs the real `ingest form4` against a fake SEC client: the data set page lists no
 quarters, the current quarter's form.idx lists one Form 4, and its document either loads or
-fails."""
+fails. It runs the real `ingest prices` with a fake provider in place of Yahoo."""
 import functools
 import json
 from datetime import date, timedelta
@@ -15,16 +16,35 @@ import pytest
 
 from src import cli, config
 from src.db.schema import connect
-from src.ingestion import form4_sources
+from src.ingestion import form4_sources, prices
 from src.ingestion.companyfacts import load_docs
 from src.obsidian.sync import sync_vault, write_journal
 from src.obsidian.writer import split_note
 from tests.test_failure_modes import CIK, fact, form4_xml
 from tests.test_m4_screen import AS_OF, GAAP, add_buy, add_company, cheap_company, doc_for
+from tests.test_prices import yahoo
 
 NEW_ACCN = "0001234-24-000099"
 NEW_PATH = f"edgar/data/{CIK}/{NEW_ACCN}.txt"
 INDEX = f"4          ACME Corp          {CIK}   2024-09-02  {NEW_PATH}\n"
+LABOR_DAY = date(2024, 9, 2)           # NYSE closed: the provider has no row for it
+CLOSE_TODAY = 11.0                     # the close on each new trading day (stored: 12.0 on 2024-08-30)
+
+
+class FakeYahoo:
+    """In place of yfinance. mode 'ok': the 2024-08-30 close plus a close for `today` when it is a
+    trading day. 'no_new': nothing after 2024-08-30 (halted). 'down': the provider fails."""
+    def __init__(self):
+        self.mode, self.today, self.calls = "ok", AS_OF, 0
+
+    def __call__(self, tickers: list[str], start: date) -> dict:
+        self.calls += 1
+        if self.mode == "down":
+            raise ConnectionError("Yahoo unreachable")
+        rows = [("2024-08-30", 12.0, 1000.0, 0.0, 0.0)]
+        if self.mode == "ok" and self.today.weekday() < 5 and self.today != LABOR_DAY:
+            rows.append((self.today.isoformat(), CLOSE_TODAY, 1000.0, 0.0, 0.0))
+        return {t: yahoo([r for r in rows if date.fromisoformat(r[0]) >= start]) for t in tickers}
 
 
 class FakeSec:
@@ -67,8 +87,12 @@ def env(tmp_path, monkeypatch):
     con = connect(str(db))
     add_company(con, CIK, "ACME", cheap_company())
     add_buy(con, CIK, "0001234-24-000001")
+    con.execute("INSERT INTO tickers VALUES (?, 'ACME', 'ACME Corp', 'Nasdaq', DATE '2024-08-01')", [CIK])
     con.close()
     vault = tmp_path / "vault"
+    yf = FakeYahoo()
+    real_load = prices.load
+    monkeypatch.setattr(prices, "load", lambda *a, **k: real_load(*a, **{**k, "download": yf, "pause_s": 0}))
     monkeypatch.setattr(config, "DATA_DIR", db.parent)
     monkeypatch.setattr(config, "DB_PATH", db)
     monkeypatch.setattr(config, "VAULT_DIR", vault)
@@ -82,6 +106,7 @@ def env(tmp_path, monkeypatch):
                 return today
         monkeypatch.setattr(cli, "date", Today)
         monkeypatch.setattr(cli, "_client", functools.cache(lambda: FakeSec(document_fails)))
+        yf.today = today
 
     def run_daily(today: date = AS_OF, document_fails: bool = False):
         pin(today, document_fails)
@@ -94,7 +119,7 @@ def env(tmp_path, monkeypatch):
             row = c.execute("SELECT status, steps FROM run_log ORDER BY started DESC LIMIT 1").fetchall()[0]
         return code, row
 
-    return {"db": db, "vault": vault, "run": run_daily, "pin": pin}
+    return {"db": db, "vault": vault, "run": run_daily, "pin": pin, "yahoo": yf}
 
 
 def steps(row) -> list[tuple[str, str]]:
@@ -105,19 +130,24 @@ def screens(env) -> list[Path]:
     return sorted((env["db"].parent / "screens").glob("*.parquet"))
 
 
-def test_daily_is_a_strict_form4_import_then_sync_and_weekly_stays_the_full_refresh():
-    assert cli.RUN_STEPS["daily"] == [["ingest", "form4", "--strict"], ["sync-vault"]]
+OK3 = [("ingest form4 --strict", "ok"), ("ingest prices --strict", "ok"), ("sync-vault", "ok")]
+
+
+def test_daily_is_form4_then_prices_then_sync_and_weekly_stays_the_full_refresh():
+    assert cli.RUN_STEPS["daily"] == [["ingest", "form4", "--strict"], ["ingest", "prices", "--strict"],
+                                      ["sync-vault"]]
     assert cli.RUN_STEPS["weekly"] == [["ingest", "all"], ["screen"], ["fetch-text"], ["sync-vault"]]
 
 
 def test_successful_daily_import_publishes_the_shortlist_and_company_notes(env):
     code, row = env["run"]()
     assert code == 0 and row[0] == "ok"
-    assert steps(row) == [("ingest form4 --strict", "ok"), ("sync-vault", "ok")]
+    assert steps(row) == OK3
     vault = env["vault"]
     company = fm(vault / "Companies" / "ACME.md")
     assert company["status"] == "shortlist" and company["rank"] == 1 and company["as_of"] == AS_OF
-    assert company["price_date"] == date(2024, 8, 30)            # the stored close it was valued on
+    assert company["price_date"] == AS_OF                          # valued on today's close
+    assert company["mcap"] == CLOSE_TODAY * 1_000_000
     events = [fm(p) for p in (vault / "Events").glob("*.md")]
     assert NEW_ACCN in {e["accn"] for e in events}                 # today's import is on the dashboard
     assert f"Synced {AS_OF}" in (vault / "Dashboard.md").read_text()
@@ -132,7 +162,8 @@ def test_failed_form4_document_publishes_nothing_and_stays_retryable(env):   # C
     before = vault_files(env["vault"])
     code, row = env["run"](AS_OF, document_fails=True)
     assert code == 1 and row[0] == "failed"
-    assert steps(row) == [("ingest form4 --strict", "failed"), ("sync-vault", "not run")]
+    assert steps(row) == [("ingest form4 --strict", "failed"), ("ingest prices --strict", "not run"),
+                          ("sync-vault", "not run")]
     assert "1 Form 4 filings failed" in json.loads(row[1])[0]["message"]
     assert vault_files(env["vault"]) == before                    # dashboard and notes untouched
     health = (env["vault"] / "Reports" / "Health.md").read_text()
@@ -142,7 +173,7 @@ def test_failed_form4_document_publishes_nothing_and_stays_retryable(env):   # C
     assert [a for a, *_ in form4_sources.pending_filings(con)] == [NEW_ACCN]   # retried next run
     con.close()
     code, row = env["run"](AS_OF)                                  # next run loads it and publishes
-    assert code == 0 and steps(row) == [("ingest form4 --strict", "ok"), ("sync-vault", "ok")]
+    assert code == 0 and steps(row) == OK3
 
 
 def test_strict_is_only_the_daily_gate(env, capsys):                               # C1: other entry points
@@ -159,7 +190,7 @@ def test_daily_without_a_vault_stays_import_only(env, monkeypatch):             
     monkeypatch.setattr(config, "VAULT_DIR", None)
     code, row = env["run"]()
     assert code == 0 and row[0] == "ok"
-    assert steps(row) == [("ingest form4 --strict", "ok")]
+    assert steps(row) == [("ingest form4 --strict", "ok"), ("ingest prices --strict", "ok")]
     assert not env["vault"].exists() and screens(env) == []
 
 
@@ -179,7 +210,41 @@ def test_daily_publish_keeps_journals_and_the_users_text(env):
     assert f"[[{journal.stem}]]" in (env["vault"] / "Dashboard.md").read_text()   # then-vs-now row
 
 
+def test_provider_failure_publishes_nothing_and_keeps_the_stored_closes(env, capsys):
+    assert env["run"](AS_OF - timedelta(days=1))[0] == 0          # yesterday's dashboard
+    before = vault_files(env["vault"])
+    env["yahoo"].mode = "down"
+    code, row = env["run"](AS_OF)
+    assert code == 1 and row[0] == "failed"
+    assert steps(row) == [("ingest form4 --strict", "ok"), ("ingest prices --strict", "failed"),
+                          ("sync-vault", "not run")]
+    assert "1 companies failed their price refresh" in json.loads(row[1])[1]["message"]
+    assert vault_files(env["vault"]) == before
+    con = connect(str(env["db"]))
+    assert con.execute("SELECT status, last_date FROM price_status").fetchall() == [("error", date(2024, 8, 30))]
+    assert con.execute("SELECT count(*) FROM form4_transactions WHERE accn = ?", [NEW_ACCN]).fetchall() == [(1,)]
+    cli._step(cli.build_parser(), ["ingest", "prices"], con)      # without --strict: reports, returns
+    assert "1 errors" in capsys.readouterr().out
+    con.close()
+    env["yahoo"].mode = "ok"                                       # provider back: the next run publishes
+    code, row = env["run"](AS_OF)
+    assert code == 0 and steps(row) == OK3
+    assert fm(env["vault"] / "Companies" / "ACME.md")["price_date"] == AS_OF
+
+
+def test_no_trading_day_publishes_on_the_last_close(env):
+    code, row = env["run"](LABOR_DAY)
+    assert code == 0 and steps(row) == OK3 and env["yahoo"].calls == 1
+    company = fm(env["vault"] / "Companies" / "ACME.md")
+    assert company["as_of"] == LABOR_DAY and company["price_date"] == date(2024, 8, 30)
+    assert company["status"] == "shortlist"                       # 3 days old: fresh
+    assert not [w for w in json.loads(row[1]) if w["status"] != "ok"]
+    health = (env["vault"] / "Reports" / "Health.md").read_text()
+    assert "latest price" not in health
+
+
 def test_daily_on_stale_prices_quarantines_instead_of_shortlisting(env):
+    env["yahoo"].mode = "no_new"                                  # halted: no close after 2024-08-30
     later = AS_OF + timedelta(days=6)                             # latest close 2024-08-30: 10 days old
     assert env["run"](later)[0] == 0
     company = fm(env["vault"] / "Companies" / "ACME.md")
@@ -196,6 +261,7 @@ def test_dashboard_dates_are_database_wide_and_not_coverage(env):               
     dash = (env["vault"] / "Dashboard.md").read_text()
     assert ("Newest dated records stored in the database (all companies, not only those listed): "
             "close 2024-08-30, Form 4 filed 2024-08-16, XBRL fact filed 2024-09-02.") in dash
+    assert "Prices refresh on weekdays" in dash
     assert "through" not in dash.split("## Shortlist")[0]
     assert "each company note lists its own close date and sources" in dash
     assert 'price_date AS "Close date"' in dash
