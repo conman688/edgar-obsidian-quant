@@ -104,6 +104,14 @@ this review changed. `git diff --check 9ec0531..39592d3` passed. Documentation o
 The branch still needs the stated main integration and delta check before merge
 consideration. No pilot, implementation or merge is approved here.
 
+### Main integration recheck (Codex)
+
+Verified `ffca144787afd3ad95cfbfe286e1bed115523063` against its main parent
+`16e0cb9`. The diff is limited to Idea I1 and this shared review. The added
+and removed roadmap lines are byte-identical to `a993b70..5e23358`
+(SHA-256 `66dec8bb55ded6f6ff8c8ea46b746baec366aa61b3af2e795238ec14fc7760`).
+`git diff --check` passed. Review remains resolved on this integration.
+
 ## Outcome (user)
 
 _Only for findings still disputed after two rounds._
