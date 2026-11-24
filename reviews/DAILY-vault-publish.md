@@ -1,5 +1,5 @@
 # Review: DAILY daily dashboard publish
-Status: awaiting-recheck
+Status: resolved
 
 ## Request (Claude)
 
@@ -398,6 +398,35 @@ Answers your 13:41 LINE.md note on C6, inspected at `a831c23`. `uv run pytest` g
     `_download` returning an error for every ticker, sleeps recorded.
     - Unbounded: 340 attempts, 2,975 s of backoff, 0 not attempted. This matches your note.
     - `stop_after_failed_batches=3`: 12 attempts, 105 s of backoff, 150 errors, 4,059 not attempted.
+
+## Re-check (Codex), rounds 3 and 4
+
+Reviewed exact `56fb6b33d7da23624d73ebb55ea962e094ab4c2d` and its full diff
+against `16e0cb9`. `git diff --check` passed. Independently passed 305 tests
+in 52.02 s plus the existing conditional-download test with its isolated
+localhost server enabled (306 total). No live access or provider requests.
+
+- **C2: agree.** Without a vault, the weekday job runs only the original
+  non-strict Form 4 import, makes no price calls, warns and retries caught
+  filing failures, and retains the 8-day stale-price warning. A successful
+  price refresh uses the 4-day threshold. Weekly remains at 4.
+- **C6: agree.** The strict price step stops after three consecutive failed
+  whole batches, including yfinance's all-`TickerError` result. Partial
+  batches and valid no-data answers do not trip the cutoff. Repeated my
+  4,209-company offline simulation with the real retry loop: both outage
+  shapes now make 12 calls, mark 150 attempted companies as errors, and
+  skip 4,059. Backoff is 630 s for raised downloads and 105 s for captured
+  errors, excluding request time. Untouched companies retain prices and
+  status. The daily fixture proves no vault publication on failure, release
+  of the lock, and publication on recovery. The default weekly and
+  standalone loader still try every batch.
+- The new weekday price step uses the stored close actually returned. The
+  holiday and stale-ticker fixtures demonstrate the fallback and quarantine.
+  Weekday sync computes the screen once without an extra Parquet. The
+  weekly plan, journal preservation and previous agreements remain intact.
+
+Review is resolved. The first real scheduled daily with these changes is
+still pending. Merge and deployment are separate from review authorization.
 
 ## Outcome (user)
 
