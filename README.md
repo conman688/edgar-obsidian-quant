@@ -189,6 +189,9 @@ backup that did not happen.
 The weekday daily republishes the dashboard on that day's closes. It runs `ingest form4
 --strict`, then `ingest prices --strict`. Each fails its step if any filing or company failed;
 the failures stay in their ledger (`form4_filings`, `price_status`) and are retried next run.
+A provider outage ends the daily's price step after 3 batches in a row fail whole (each after
+its own retries, about 10 minutes in all); the rest are not attempted and keep their stored
+closes. The weekly and a standalone `ingest prices` still try every batch.
 Only after both are complete does it run `sync-vault`, which recomputes the screen. A failed step
 stops the run, so the vault keeps the previous dashboard. On a market holiday the provider has no
 new close and the dashboard uses the last one. Without `EOQ_VAULT_DIR` the daily is what it

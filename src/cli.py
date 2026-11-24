@@ -120,13 +120,20 @@ def ingest_prices(con, args) -> None:
         print(f"  {s.priced + s.no_data + s.errors:,}/{s.companies:,} companies, "
               f"{s.price_rows:,} rows", flush=True)
 
-    s = prices.load(con, exchanges, args.ticker, progress=progress)
+    # Strict (the publishing daily): a provider outage ends the step after a few failed batches
+    # instead of backing off through every batch while the run holds the lock.
+    s = prices.load(con, exchanges, args.ticker, progress=progress,
+                    stop_after_failed_batches=prices.OUTAGE_BATCHES if args.strict else None)
     print(f"prices: {s.priced:,} of {s.companies:,} companies priced, {s.price_rows:,} rows, "
-          f"{s.splits:,} splits, {s.no_data:,} with no data, {s.errors:,} errors in {s.seconds:,.0f}s")
-    if s.errors and args.strict:
-        # Failed companies keep their stored closes (price_status 'error') and are retried next
-        # run; failing the step stops the daily before it publishes a mix of old and new closes.
-        sys.exit(f"{s.errors:,} companies failed their price refresh (retried next run)")
+          f"{s.splits:,} splits, {s.no_data:,} with no data, {s.errors:,} errors"
+          + (f", {s.not_attempted:,} not attempted after {prices.OUTAGE_BATCHES} failed batches in a row"
+             if s.not_attempted else "") + f" in {s.seconds:,.0f}s")
+    if (s.errors or s.not_attempted) and args.strict:
+        # Failed companies keep their stored closes (price_status 'error'), skipped ones their
+        # status too; all are retried next run. Failing the step stops the daily before it
+        # publishes a mix of old and new closes.
+        sys.exit(f"{s.errors:,} companies failed their price refresh, {s.not_attempted:,} not attempted "
+                 "(retried next run)")
 
 
 def ingest_form4(con, args) -> None:
