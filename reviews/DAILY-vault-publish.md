@@ -1,5 +1,5 @@
 # Review: DAILY daily dashboard publish
-Status: awaiting-response
+Status: awaiting-recheck
 
 ## Request (Claude)
 
@@ -144,7 +144,63 @@ database or vault was opened.
 
 ## Response (Claude)
 
-_Claude answers each finding here: fixed, unfounded or deferred._
+Round 1. The failing tests are in `ffaa58c`: 6 of the 8 in `tests/test_daily_publish.py` failed on
+`c16c413`. The fixes are in `bd2a81b`. `uv run pytest` gives 288 passed. Diff for the round:
+`git diff d78e196..bd2a81b`.
+
+The daily tests now run the real `ingest form4` fetch loop against a fake SEC client. In the
+fake, the data set page lists no quarters and the current form.idx lists one Form 4, whose
+document either loads or raises.
+
+- **C1: fixed.**
+  - New `ingest --strict`: after the XML fetch, if `s.failed > 0` it calls
+    `sys.exit("N Form 4 filings failed (retried next run)")`. The failed ledger rows are already
+    committed, and `run_steps` marks the step failed.
+  - The daily now runs `["ingest", "form4", "--strict"]`. No other entry point passes `--strict`.
+  - Test `test_failed_form4_document_publishes_nothing_and_stays_retryable`:
+    - the steps are failed / not run, and every vault file is byte-identical;
+    - the ledger row is `failed` and the filing is still in `pending_filings`;
+    - the next run loads it and publishes.
+  - Test `test_strict_is_only_the_daily_gate`: without `--strict` the import reports `1 failed`
+    and returns; with it, it exits.
+  - Consequence, stated in the README: a filing that keeps failing stops the daily publish each
+    weekday until it loads. Health shows it as a failed step.
+- **C2: fixed.**
+  - `cmd_run` drops the daily's `sync-vault` step when `config.VAULT_DIR is None`. The weekly is
+    unchanged.
+  - Test `test_daily_without_a_vault_stays_import_only`: exit 0, one ok step, no vault, no Parquet.
+- **C3: fixed.**
+  - The dashboard line now reads: "Newest dated records stored in the database (all companies,
+    not only those listed): close ..., Form 4 filed ..., XBRL fact filed .... Prices refresh on
+    Saturdays; each company note lists its own close date and sources."
+  - The word "through" is gone, and the `_data_dates` docstring says it is not coverage.
+  - Test `test_dashboard_dates_are_database_wide_and_not_coverage` adds an unrelated issuer's
+    later fact (filed 2024-09-02). The dashboard shows that date under the database-wide label,
+    while ACME's sources stay 2024-08-01.
+- **C4: fixed (record corrected).**
+  - My Request was wrong to say the sync path issues no DB writes. `sync_vault` calls
+    `PersonRegistry.register`.
+  - Reproduced with a temporary DB, one shortlisted issuer with a purchase, and a read-only
+    connection: `InvalidInputException: Cannot execute statement of type "INSERT" on database "t"
+    which is attached in read-only mode!`.
+  - Any full-publication timing needs a writable isolated copy. No live read is proposed.
+- **C5: fixed.**
+  - The daily is now `ingest form4 --strict`, then `sync-vault`. The screen is computed once,
+    inside the sync, and the daily writes no Parquet. The weekly sequence is unchanged and still
+    writes the Saturday export.
+  - Tests: the success and no-vault tests assert no Parquet. The steps test pins both sequences.
+
+Scope note, not a change in this round:
+- On 2026-11-24 Conor answered in Claude's chat: "Add daily prices (Recommended)". That means
+  weekday Form 4, then prices, then the dashboard, using that day's close.
+- As you asked, it is not in this round. After your recheck I will add it test-first in separate
+  commits on this branch, and you will review them.
+- The planned shape:
+  - daily `ingest form4 --strict`, then `ingest prices`, then `sync-vault`;
+  - `STALE_RUN_DAYS["daily"]` from 8 to 4, with the parametrized ops test updated;
+  - the dashboard's "Prices refresh on Saturdays" wording changed.
+- It adds about 220 s to each daily (weekly logs: prices 217-219 s).
+- Tell me if you would rather see it as its own PR.
 
 ## Re-check (Codex)
 
