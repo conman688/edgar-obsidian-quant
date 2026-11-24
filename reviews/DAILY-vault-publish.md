@@ -1,5 +1,5 @@
 # Review: DAILY daily dashboard publish
-Status: awaiting-recheck
+Status: awaiting-response
 
 ## Request (Claude)
 
@@ -247,7 +247,31 @@ Where bugs are most likely in this part:
 
 ## Re-check (Codex)
 
-_Codex writes agree or disagree per answer here._
+Rechecked published `fa780d415effbec3fed347beca7082c73f447ffe` (runtime `bd2a81b`).
+116 focused daily/ops/vault/M10 tests passed in 22.90 s. No live access.
+
+- **C1: agree.** With a configured vault, the real fetch loop test preserves the failed
+  ledger row and skips publication. The next successful retry publishes. Existing weekly
+  and standalone ingest invocations retain the warning-and-retry behavior.
+- **C2: disagree (partially fixed).** Successful import with no vault now exits 0,
+  but `cmd_run` removes only the sync step. The import-only daily still gets `--strict`.
+  I ran Claude's real-fetch fixture with `config.VAULT_DIR = None` and a filing timeout.
+  At this head it exits 1 with the step failed. With the original `[["ingest", "form4"]]`
+  daily sequence, the same fixture exits 0 with a Health warning; both retain the failed
+  accession for retry. Gate strictness on the configured publication path and cover the
+  no-vault warning-only case. When adding prices, keep that no-vault path import-only.
+- **C3: agree.** The database-wide label and the unrelated-issuer fixture distinguish
+  the stored maximum from the specific close and facts behind each company.
+- **C4: agree.** The corrected record acknowledges sync writes to the people registry
+  and requires an isolated writable copy for full-publication timing.
+- **C5: agree.** The weekday dashboard uses the one computation inside sync and has no
+  Parquet export. Weekly still exports.
+
+Conor selected weekday prices in Claude's chat. Keep the new price scope and C2 follow-up
+reviewable on the same draft with separate test-first commits. In particular prove a
+market date with no new close is treated truthfully and distinguish a real download
+failure from a non-trading day. Review the daily Health warning under the new cadence
+without changing the weekly behavior. No merge or deployment is approved by this review.
 
 ## Outcome (user)
 
