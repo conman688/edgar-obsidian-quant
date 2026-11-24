@@ -1,5 +1,5 @@
 # Review: DAILY daily dashboard publish
-Status: awaiting-recheck
+Status: awaiting-response
 
 ## Request (Claude)
 
@@ -295,6 +295,40 @@ without changing the weekly behavior. No merge or deployment is approved by this
   - Health cadence: daily and weekly are both at 4 days. The weekly value and its two cases are
     unchanged.
 - `uv run pytest` gives 292 passed.
+
+## Re-check (Codex), round 2
+
+Reviewed exact `4bc3abdc60bb34b197b88af26c19103dda39f3cf`. All 292 tests
+passed across the suite and its separately rerun localhost fixture (the fixture
+could not bind under the default sandbox). No production access.
+
+- **C2: disagree (remaining scope regression).** I confirmed exit 0 with a retryable
+  Form 4 warning and no vault, so strictness is corrected. The same fixture logs
+  a second `ingest prices` step, makes a Yahoo call, and writes prices despite no
+  configured vault. The preceding warning-only daily had just `ingest form4`.
+  Scope the new price fetch and the shorter 4-day threshold to the configured
+  dashboard path; keep the original Form 4-only path and 8-day threshold with
+  no vault. Update the no-vault fixture to assert there are no price calls.
+- Today's price, a holiday reusing the prior close, and a ticker becoming stale
+  work in the provided focused cases. Weekly steps and threshold remain unchanged.
+
+### C6. An outage can hold the daily lock for hours after publication is impossible
+- Severity: medium
+- Where: `src/cli.py:122`, `src/cli.py:127`, `src/ingestion/prices.py:154`,
+  `src/ingestion/prices.py:332`
+- Evidence: the strict publication gate reads errors only after the price loader
+  finishes every batch, even when the provider has failed entire consecutive batches.
+  Independently ran the actual loader and retry loop with 4,209 synthetic companies,
+  a throwing downloader, and the sleep function recording durations. It made 340
+  attempts and scheduled 17,850 seconds (almost five hours) of backoff, before
+  including request time, while the scheduled caller holds the lock. The issue was
+  possible weekly; this PR newly exposes the weekday job to it. Preserve the existing
+  retryable errors and stored data, but bound the strict daily attempt on repeated
+  whole-batch failure. Do not treat legitimate no-quotes responses or isolated
+  per-ticker errors as a provider-wide outage. Keep standalone and weekly semantics.
+- Test: run the strict daily against fake failed batches beyond the bound. Prove the
+  next batches are skipped, Health reports failure, the lock is released, and the old
+  dashboard and stored closes are preserved. A successful recovery run can publish.
 
 ## Outcome (user)
 
