@@ -192,7 +192,7 @@ the failures stay in their ledger (`form4_filings`, `price_status`) and are retr
 Only after both are complete does it run `sync-vault`, which recomputes the screen. A failed step
 stops the run, so the vault keeps the previous dashboard. On a market holiday the provider has no
 new close and the dashboard uses the last one. Without `EOQ_VAULT_DIR` the daily is the two
-imports alone. Tickers, company profiles, XBRL facts, 10-K text and the dated screen Parquet
+imports alone, without `--strict`: failures warn and are retried, as before the daily published. Tickers, company profiles, XBRL facts, 10-K text and the dated screen Parquet
 (`data/screens/`) refresh only on Saturday's weekly. The dashboard shows the newest dated close,
 Form 4 and XBRL fact in the database (across all companies, not a coverage claim), and each
 company note keeps its own close date (`price_date`) and sources. The screen's freshness rules

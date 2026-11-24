@@ -361,9 +361,11 @@ def cmd_run(args) -> None:
                 print(f"backup {b['status']}: {b['message']}", flush=True)
             con = connect(str(config.DB_PATH))
             parser = build_parser()
-            # Without a vault the daily stays the import it was before it published.
-            argvs = [a for a in RUN_STEPS[args.job]
-                     if not (args.job == "daily" and a == ["sync-vault"] and config.VAULT_DIR is None)]
+            argvs = RUN_STEPS[args.job]
+            if args.job == "daily" and config.VAULT_DIR is None:
+                # Nothing to publish, so nothing to gate: the imports alone, which warn on failed
+                # filings or companies and retry them next run.
+                argvs = [[x for x in a if x != "--strict"] for a in argvs if a != ["sync-vault"]]
             steps = [(" ".join(a), functools.partial(_step, parser, a, con)) for a in argvs]
             r = ops.run_steps(con, args.job, steps, today, backup=b,
                               throttled=lambda: _client().throttled if _client.cache_info().currsize else 0,
