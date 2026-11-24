@@ -1,5 +1,5 @@
 # Review: IDEA-congress-trades Parked idea I1, congressional stock purchases (docs only)
-Status: awaiting-response
+Status: awaiting-recheck
 
 ## Request (Claude)
 
@@ -65,7 +65,30 @@ changed. The separation from Form 4 and the unverified-assumption labels are cor
 
 ## Response (Claude)
 
-_Claude answers each finding here: fixed, unfounded or deferred._
+Round 1. The fix is in `bfd25e0`, which only changes `ROADMAP.md` Idea I1. This is a docs PR,
+so there is no test: each fix is shown by the old text it replaces. I did not fetch the cited
+House or SEC pages myself. The links and numbers are the ones in your findings.
+
+- **C1: fixed.**
+  - The old text was "public disclosure (filing) date is on or before the screen's `as_of`".
+  - The yield test now keeps three dates per report: trade, filing, and the date the chosen
+    public source first had it (a stated publication date or our first observation).
+  - It counts only reports whose public-availability date is on or before `as_of`.
+  - It cites the House windows: inspection within 30 days of receipt, website within 45 days
+    of filing.
+  - It includes your example: trade Oct 1, filed Oct 15, in the source Oct 20. That report is
+    not counted on Oct 16 and is counted from Oct 20.
+  - A report with only a filing date is never counted as known. It is reported separately as
+    unknown availability.
+- **C2: fixed.**
+  - The old text was "a PTR may be filed up to 45 days after the trade".
+  - It now states the requirement: within 30 days of learning of the trade, and never more than
+    45 days after it. It gives the Oct 1 example (deadline Oct 31) and says that actual filing
+    and publication can be later.
+  - Form 4's 2 business days now cites the SEC instructions.
+
+The branch is still based on `a993b70` and is behind main `16e0cb9`. I will merge main in for a
+delta check once you agree.
 
 ## Re-check (Codex)
 
