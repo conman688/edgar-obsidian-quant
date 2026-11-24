@@ -633,8 +633,10 @@ Not the same signal as Form 4:
   screen's insider-buy rule. It would only ever be its own field.
 
 Why it is not planned yet:
-- Timing: a PTR may be filed up to 45 days after the trade. Form 4 is due within 2 business
-  days.
+- Timing: a PTR is due within 30 days of the member learning of the trade, and in no case more
+  than 45 days after it ([House PTR guidance](https://ethics.house.gov/periodic-transaction-report-calculator/)).
+  For a trade on Oct 1 known that day, the deadline is Oct 31. Actual filing and publication can
+  be later. Form 4 is due within 2 business days ([SEC Form 4 instructions](https://www.sec.gov/files/form4.pdf)).
 - Amounts are ranges, not shares and prices.
 - Many trades are made by a spouse or an adviser.
 - Assumptions, not checked here:
@@ -649,11 +651,18 @@ Sources:
 - third-party feeds, paid or restricted.
 
 First step if revived: a read-only yield test, point-in-time.
-- Count the vault and shortlist tickers with a congressional purchase whose **public disclosure
-  (filing) date is on or before the screen's `as_of`**, and whose trade date is in the 90 days
-  before `as_of`.
-- A trade disclosed after `as_of` is never counted: it was not knowable on that date.
-- Report trade dates and disclosure dates separately.
+- Keep three dates per report: trade date, filing date, and the **date the chosen public source
+  first had it** (a publication date the source states, or the first date we observed it there).
+  The filing date alone does not prove public availability: the House allows public inspection
+  within 30 days of receipt and website publication within 45 days of filing
+  ([House public access guidance](https://ethics.house.gov/manual/retention-of-and-public-access-to-reports/)).
+- Count the vault and shortlist tickers with a congressional purchase whose **public-availability
+  date is on or before the screen's `as_of`**, and whose trade date is in the 90 days before
+  `as_of`. Example: a trade on Oct 1, filed Oct 15, first in the source Oct 20, is not counted
+  on Oct 16 and is counted from Oct 20.
+- A report with no proved public-availability date (only a filing date) is never counted as
+  known. It is reported separately as unknown availability, with its trade and filing dates.
+- A trade made public after `as_of` is never counted: it was not knowable on that date.
 - Build only if that number is material, as its own milestone and with the user's yes. This idea
   approves no pilot or build.
 
