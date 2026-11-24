@@ -30,10 +30,13 @@ from src import config
 
 KEEP = 4
 ROOM = 1.05                 # free space needed on the backup disk, as a multiple of the database
-# Latest close older than this many days on a run day: the price refresh is stuck. Prices refresh
-# only in the Saturday weekly, so a daily may see the previous week's last close: 7 days on a
-# Friday, 8 after a Friday market holiday. The weekly has just refreshed, so it stays strict.
+# Latest close older than this many days on a run day. A run that refreshed prices (the weekly,
+# and the daily that publishes the vault) must see a recent close: 4 days allows a long weekend.
+# A daily that did not (no vault) may see the previous week's last close: 7 days on a Friday,
+# 8 after a Friday market holiday.
 STALE_RUN_DAYS = {"weekly": 4, "daily": 8}
+REFRESHED_STALE_DAYS = 4
+PRICE_STEPS = (["ingest", "prices"], ["ingest", "all"])
 DRIFT = 0.01                # a table that shrinks by more than this in one run gets a warning
 LEDGERS = ("loaded_filings", "form4_filings", "filing_sections")   # never shrink: any drop is a warning
 BACKUP_NAME = re.compile(r"^edgar-\d{4}-\d{2}-\d{2}\.duckdb$")
@@ -170,6 +173,10 @@ def _shrank(table: str, before: int, now: int) -> bool:
     return now < before and (table in LEDGERS or now < before * (1 - DRIFT))
 
 
+def _refreshed_prices(steps: list[dict]) -> bool:
+    return any(s["status"] == "ok" and s["name"].split()[:2] in PRICE_STEPS for s in steps)
+
+
 def _warnings(con, today: date, counts: dict, before: dict, steps: list[dict], throttled: int,
               dropped: int, backup: dict | None, job: str = "weekly", started: datetime | None = None) -> list[str]:
     w = [f"{s['name']} failed: {s['message']}" for s in steps if s["status"] == "failed"]
@@ -193,7 +200,7 @@ def _warnings(con, today: date, counts: dict, before: dict, steps: list[dict], t
     latest = con.execute("SELECT max(price_date) FROM prices").fetchall()[0][0]
     if latest is None:
         w.append("no prices in the database")
-    elif (today - latest).days > STALE_RUN_DAYS[job]:
+    elif (today - latest).days > (REFRESHED_STALE_DAYS if _refreshed_prices(steps) else STALE_RUN_DAYS[job]):
         w.append(f"latest price is {latest} ({(today - latest).days} days old)")
     if throttled:
         w.append(f"SEC throttled {throttled} requests (backed off and retried)")

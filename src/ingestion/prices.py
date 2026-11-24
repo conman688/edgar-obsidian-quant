@@ -33,6 +33,7 @@ SOURCE = "yahoo"
 HISTORY_START = date(2010, 1, 1)    # 52-week highs for a 2011+ backtest
 REFRESH_OVERLAP = timedelta(days=7)  # re-read the last week to catch late corrections
 EXCHANGES = ("NYSE", "Nasdaq")
+OUTAGE_BATCHES = 3                   # strict daily: this many whole batches failing in a row = outage
 
 
 @dataclass
@@ -44,6 +45,7 @@ class PriceStats:
     price_rows: int = 0
     splits: int = 0
     seconds: float = 0.0
+    not_attempted: int = 0           # companies skipped after stop_after_failed_batches
     missing: list[str] = field(default_factory=list)
 
 
@@ -321,15 +323,24 @@ def load(con: duckdb.DuckDBPyConnection, exchanges: tuple[str, ...] = EXCHANGES,
          tickers: list[str] | None = None, batch_size: int = 50, pause_s: float = 1.0,
          progress: Callable[[PriceStats], None] | None = None,
          download: Callable[[list[str], date], dict[str, pd.DataFrame | TickerError]] = _download_with_retry,
+         stop_after_failed_batches: int | None = None,
          ) -> PriceStats:
     """Fetch new companies from HISTORY_START and refresh known ones from their last date.
 
     Each batch commits on its own, so an interrupted run resumes where it stopped.
+    stop_after_failed_batches: after this many batches in a row whose whole download failed
+    (after its retries: it raised, or returned an error for every ticker), skip the rest as not
+    attempted; their stored prices and status stay as they are. Partial errors and "no data"
+    answers do not count. None tries every batch.
     """
     t0, stats = time.monotonic(), PriceStats()
     todo = universe(con, exchanges, tickers)
     stats.companies = len(todo)
+    failed_in_a_row = 0
     for i in range(0, len(todo), batch_size):
+        if stop_after_failed_batches and failed_in_a_row >= stop_after_failed_batches:
+            stats.not_attempted = len(todo) - i
+            break
         chunk = todo[i:i + batch_size]
         batch = [(cik, t, (last - REFRESH_OVERLAP) if last else HISTORY_START) for cik, t, last in chunk]
         start = min(s for _, _, s in batch)
@@ -338,8 +349,12 @@ def load(con: duckdb.DuckDBPyConnection, exchanges: tuple[str, ...] = EXCHANGES,
         except Exception as e:
             stats.errors += len(batch)
             _mark_error(con, [(cik, t, e) for cik, t, _ in batch])
+            failed_in_a_row += 1
             continue
         failed = {t: v for t, v in frames.items() if isinstance(v, TickerError)}
+        # yfinance can also fail a whole batch by capturing an error for every ticker it was
+        # asked for; that counts like a raised download. Partial errors and "no data" do not.
+        failed_in_a_row = failed_in_a_row + 1 if all(t in failed for _, t, _ in batch) else 0
         if failed:
             _mark_error(con, [(cik, t, failed[t]) for cik, t, _ in batch if t in failed])
             stats.errors += len(failed)

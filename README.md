@@ -172,7 +172,7 @@ Without the file, notes say the lists are not installed.
 
 ```bash
 uv run --env-file .env python -m src.cli run weekly    # backup, ingest all, screen, fetch-text, sync-vault
-uv run --env-file .env python -m src.cli run daily     # Form 4 only
+uv run --env-file .env python -m src.cli run daily     # Form 4, prices (both strict), then sync-vault
 uv run --env-file .env python -m src.cli backup        # the backup step alone
 uv run python -m src.cli schedule                      # launchd files in data/launchd (not installed)
 ```
@@ -182,9 +182,26 @@ that fails. Every load keeps a ledger, so the next run picks up where it stopped
 mid-way refetches at most the batch it was writing. Each run adds a row to `run_log` and writes
 a health report (stdout, and `Reports/Health.md` in the vault). The report lists step results,
 row counts against the previous run, and warnings for: a step that failed, a table that shrank,
-failed Form 4 or price ledger entries, a stale latest price (more than 4 days old on the weekly, which
-refreshes prices; more than 8 on a daily), SEC throttling, and a
+failed Form 4 or price ledger entries, a stale latest price (more than 4 days old after a run
+that refreshed prices; more than 8 on a daily without a vault, which does not), SEC throttling, and a
 backup that did not happen.
+
+The weekday daily republishes the dashboard on that day's closes. It runs `ingest form4
+--strict`, then `ingest prices --strict`. Each fails its step if any filing or company failed;
+the failures stay in their ledger (`form4_filings`, `price_status`) and are retried next run.
+A provider outage ends the daily's price step after 3 batches in a row fail whole (each after
+its own retries, about 10 minutes in all); the rest are not attempted and keep their stored
+closes. The weekly and a standalone `ingest prices` still try every batch.
+Only after both are complete does it run `sync-vault`, which recomputes the screen. A failed step
+stops the run, so the vault keeps the previous dashboard. On a market holiday the provider has no
+new close and the dashboard uses the last one. Without `EOQ_VAULT_DIR` the daily is what it
+was before it published: `ingest form4` alone, without `--strict` (failures warn and are retried)
+and without a price fetch. Tickers, company profiles, XBRL facts, 10-K text and the dated screen Parquet
+(`data/screens/`) refresh only on Saturday's weekly. The dashboard shows the newest dated close,
+Form 4 and XBRL fact in the database (across all companies, not a coverage claim), and each
+company note keeps its own close date (`price_date`) and sources. The screen's freshness rules
+apply as on any day: a close more than 7 days old quarantines the company (`stale_price`).
+Journal notes are never rewritten.
 
 Backups: set `EOQ_BACKUP_DIR` to a folder on another disk, for example
 `/Volumes/External/edgar-obsidian-quant-backups`. The weekly run copies the database there as
