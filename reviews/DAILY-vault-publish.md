@@ -1,5 +1,5 @@
 # Review: DAILY daily dashboard publish
-Status: awaiting-response
+Status: awaiting-recheck
 
 ## Request (Claude)
 
@@ -329,6 +329,54 @@ could not bind under the default sandbox). No production access.
 - Test: run the strict daily against fake failed batches beyond the bound. Prove the
   next batches are skipped, Health reports failure, the lock is released, and the old
   dashboard and stored closes are preserved. A successful recovery run can publish.
+
+## Response (Claude), round 3
+
+Answers re-check round 2, reviewed at `4bc3abd`. `uv run pytest` gives 303 passed. Diff for the
+round: `git diff 50087ce..HEAD`.
+
+- **C2: fixed.**
+  - Failing tests are in `aec181c`; the fix is in `709116f`.
+  - Without a vault, `cmd_run` keeps only the daily's steps that are neither `sync-vault` nor
+    `ingest prices`, and strips `--strict`. With today's `RUN_STEPS` that leaves just
+    `ingest form4`: no price fetch, warning-only.
+  - Price-age cadence:
+    - `STALE_RUN_DAYS` is back to `{"weekly": 4, "daily": 8}`.
+    - A run with an ok `ingest prices` or `ingest all` step uses `REFRESHED_STALE_DAYS = 4`
+      (`ops._refreshed_prices`).
+    - So the weekly stays at 4, the publishing daily is 4, and the no-vault daily is 8.
+  - Tests:
+    - `test_daily_without_a_vault_is_the_legacy_form4_import`: steps are `[("ingest form4", "ok")]`
+      and `yahoo.calls == 0`.
+    - `..._warns_and_retries_a_failed_filing`: exit 0 with the warning, the filing still pending,
+      and no price calls.
+    - `..._keeps_the_weekly_price_age_cadence`: Fri 7 days, no warning; Mon 10 days, warning.
+    - `test_daily_with_prices_warns_at_four_days`.
+    - The PR #33 parametrized ops test is restored unchanged.
+    - New `test_a_daily_that_refreshed_prices_must_see_a_recent_close`.
+- **C6: fixed.**
+  - Failing tests are in the commit before `a831c23`; the fix is `a831c23`.
+  - `prices.load(..., stop_after_failed_batches=None)`: after that many batches in a row whose
+    whole download raised (after `_download_with_retry`'s own retries), the remaining companies
+    are counted in `stats.not_attempted` and skipped. Their stored prices and `price_status` are
+    untouched.
+  - Per-ticker `TickerError`s and no-data answers do not count. A successful batch resets the run.
+  - `ingest prices --strict` passes `prices.OUTAGE_BATCHES = 3` and exits on
+    `errors or not_attempted`. The weekly and a standalone `ingest prices` pass `None`, so they
+    behave as before.
+  - Real-world bound: 3 batches of 30+60+120 s backoff is about 10.5 min plus request time,
+    instead of about 5 h.
+  - Tests in `tests/test_prices.py`:
+    - 3 consecutive failures stop at 3 calls, with 3 marked error and 3 untouched;
+    - an alternating pattern does not stop;
+    - per-ticker errors do not stop;
+    - with no bound, every batch is tried.
+  - Daily-level test `test_provider_outage_stops_the_strict_daily_early_and_releases_the_lock`,
+    with 6 companies and batch size 1:
+    - 3 provider calls, then prices failed with "3 not attempted" and sync not run;
+    - the vault is byte-identical, and ACME (not attempted) is still `('ok', 2024-08-30)`;
+    - `data/.run.lock` can be flocked after the run;
+    - the recovery run publishes on today's close.
 
 ## Outcome (user)
 
