@@ -190,8 +190,32 @@ def test_daily_without_a_vault_stays_import_only(env, monkeypatch):             
     monkeypatch.setattr(config, "VAULT_DIR", None)
     code, row = env["run"]()
     assert code == 0 and row[0] == "ok"
-    assert steps(row) == [("ingest form4 --strict", "ok"), ("ingest prices --strict", "ok")]
+    assert steps(row) == [("ingest form4", "ok"), ("ingest prices", "ok")]
     assert not env["vault"].exists() and screens(env) == []
+
+
+@pytest.mark.parametrize("failure", ["document", "provider"])
+def test_daily_without_a_vault_warns_and_retries_instead_of_failing(env, monkeypatch, failure):  # C2 recheck
+    """Nothing to publish, so nothing to gate: failures warn and are retried, as before the daily
+    published."""
+    monkeypatch.setattr(config, "VAULT_DIR", None)
+    env["yahoo"].mode = "down" if failure == "provider" else "ok"
+    env["pin"](AS_OF, document_fails=failure == "document")
+    cli.main(["run", "daily"])                                     # no SystemExit: exit 0
+    con = connect(str(env["db"]))
+    status, steps_json, warnings = con.execute(
+        "SELECT status, steps, warnings FROM run_log ORDER BY started DESC LIMIT 1").fetchall()[0]
+    assert status == "ok"
+    assert steps((status, steps_json)) == [("ingest form4", "ok"), ("ingest prices", "ok")]
+    warning = ("1 Form 4 filings failed (retried next run)" if failure == "document"
+               else "1 companies failed their price refresh")
+    assert warning in json.loads(warnings)
+    if failure == "document":
+        assert [a for a, *_ in form4_sources.pending_filings(con)] == [NEW_ACCN]
+    else:
+        assert con.execute("SELECT status FROM price_status").fetchall() == [("error",)]
+    con.close()
+    assert not env["vault"].exists()
 
 
 def test_daily_publish_keeps_journals_and_the_users_text(env):
@@ -238,6 +262,9 @@ def test_no_trading_day_publishes_on_the_last_close(env):
     company = fm(env["vault"] / "Companies" / "ACME.md")
     assert company["as_of"] == LABOR_DAY and company["price_date"] == date(2024, 8, 30)
     assert company["status"] == "shortlist"                       # 3 days old: fresh
+    con = connect(str(env["db"]))                                 # a holiday is not a failure
+    assert con.execute("SELECT status, last_date FROM price_status").fetchall() == [("ok", date(2024, 8, 30))]
+    con.close()
     assert not [w for w in json.loads(row[1]) if w["status"] != "ok"]
     health = (env["vault"] / "Reports" / "Health.md").read_text()
     assert "latest price" not in health
