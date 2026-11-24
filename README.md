@@ -172,7 +172,7 @@ Without the file, notes say the lists are not installed.
 
 ```bash
 uv run --env-file .env python -m src.cli run weekly    # backup, ingest all, screen, fetch-text, sync-vault
-uv run --env-file .env python -m src.cli run daily     # Form 4, then screen and sync-vault from stored data
+uv run --env-file .env python -m src.cli run daily     # Form 4 (strict), then sync-vault from stored data
 uv run --env-file .env python -m src.cli backup        # the backup step alone
 uv run python -m src.cli schedule                      # launchd files in data/launchd (not installed)
 ```
@@ -186,14 +186,16 @@ failed Form 4 or price ledger entries, a stale latest price (more than 4 days ol
 refreshes prices; more than 8 on a daily), SEC throttling, and a
 backup that did not happen.
 
-The weekday daily republishes the dashboard. After its Form 4 import succeeds, it recomputes
-the screen (a dated Parquet in `data/screens/`) and syncs the vault, with the stored prices and
-fundamentals. Prices, XBRL facts and 10-K text refresh only on Saturday's weekly. So the
-dashboard states the latest close, the latest Form 4 and the latest XBRL filing date it used,
-and each company note keeps its close date (`price_date`). The screen's freshness rules apply
-as on any day: a close more than 7 days old quarantines the company (`stale_price`). A failed
-import stops the run before the screen, so the vault keeps the previous dashboard. Journal
-notes are never rewritten.
+The weekday daily republishes the dashboard. It runs `ingest form4 --strict`, which fails the
+step if any filing failed (the failures stay in the ledger and are retried next run). Only after
+a complete import does it run `sync-vault`, which recomputes the screen from the stored prices
+and fundamentals. A failed step stops the run, so the vault keeps the previous dashboard. Without
+`EOQ_VAULT_DIR` the daily is the import alone. Prices, XBRL facts, 10-K text and the dated screen
+Parquet (`data/screens/`) refresh only on Saturday's weekly. The dashboard shows the newest dated
+close, Form 4 and XBRL fact in the database (across all companies, not a coverage claim), and each
+company note keeps its own close date (`price_date`) and sources. The screen's freshness rules
+apply as on any day: a close more than 7 days old quarantines the company (`stale_price`).
+Journal notes are never rewritten.
 
 Backups: set `EOQ_BACKUP_DIR` to a folder on another disk, for example
 `/Volumes/External/edgar-obsidian-quant-backups`. The weekly run copies the database there as

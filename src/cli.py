@@ -152,6 +152,10 @@ def ingest_form4(con, args) -> None:
     s = form4_sources.fetch_filings(con, client.get, args.xml_limit, progress=progress)
     print(f"form4 xml: {s.done:,} filings loaded, {s.skipped:,} without XML, {s.failed:,} failed, "
           f"{s.rows:,} rows in {s.seconds:,.0f}s")
+    if s.failed and args.strict:
+        # The failed rows are committed in the ledger and retried next run; failing the step
+        # stops the daily before it publishes a dashboard missing them.
+        sys.exit(f"{s.failed:,} Form 4 filings failed (retried next run)")
 
 
 def cmd_ingest(args, con=None) -> None:
@@ -332,11 +336,12 @@ def cmd_journal(args, con=None) -> None:
     print(f"wrote {path}; review due {args.as_of + timedelta(days=args.review_days)}")
 
 
-# Weekly (Saturday) is the full refresh: prices, facts, Form 4 and 10-K text. Daily (weekdays)
-# imports Form 4 only, then republishes the screen from the stored prices and fundamentals.
-# A failed step leaves the rest not run, so a failed import publishes nothing.
+# Weekly (Saturday) is the full refresh: prices, facts, Form 4, the screen Parquet and 10-K text.
+# Daily (weekdays) imports Form 4, then syncs the vault, which recomputes the screen from the
+# stored prices and fundamentals. A failed step leaves the rest not run, and --strict fails the
+# import if any filing failed, so the daily publishes only after a complete import.
 RUN_STEPS = {"weekly": [["ingest", "all"], ["screen"], ["fetch-text"], ["sync-vault"]],
-             "daily": [["ingest", "form4"], ["screen"], ["sync-vault"]]}
+             "daily": [["ingest", "form4", "--strict"], ["sync-vault"]]}
 
 
 def cmd_run(args) -> None:
@@ -351,7 +356,10 @@ def cmd_run(args) -> None:
                 print(f"backup {b['status']}: {b['message']}", flush=True)
             con = connect(str(config.DB_PATH))
             parser = build_parser()
-            steps = [(" ".join(a), functools.partial(_step, parser, a, con)) for a in RUN_STEPS[args.job]]
+            # Without a vault the daily stays the import it was before it published.
+            argvs = [a for a in RUN_STEPS[args.job]
+                     if not (args.job == "daily" and a == ["sync-vault"] and config.VAULT_DIR is None)]
+            steps = [(" ".join(a), functools.partial(_step, parser, a, con)) for a in argvs]
             r = ops.run_steps(con, args.job, steps, today, backup=b,
                               throttled=lambda: _client().throttled if _client.cache_info().currsize else 0,
                               dropped=lambda: _client().dropped if _client.cache_info().currsize else 0)
@@ -415,6 +423,8 @@ def build_parser() -> argparse.ArgumentParser:
     ing.add_argument("--include-otc", action="store_true", help="prices: also OTC-traded companies")
     ing.add_argument("--since", help="form4: first quarter to load, e.g. 2024q4 (default: 2 years back)")
     ing.add_argument("--xml-limit", type=int, help="form4: fetch at most this many filings as XML")
+    ing.add_argument("--strict", action="store_true",
+                     help="form4: exit 1 if any filing failed (failures stay in the ledger for the next run)")
     ing.set_defaults(func=cmd_ingest)
 
     f = sub.add_parser("facts", help="show point-in-time facts for one company")

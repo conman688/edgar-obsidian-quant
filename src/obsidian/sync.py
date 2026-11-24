@@ -307,8 +307,8 @@ def sync_vault(con: duckdb.DuckDBPyConnection, vault: Path, as_of: date, filters
 
 
 def _data_dates(con: duckdb.DuckDBPyConnection, as_of: date) -> dict:
-    """The newest stored price, Form 4 and XBRL fact known by as_of: a weekday dashboard
-    republishes stored data, and prices refresh only on Saturdays."""
+    """The newest dated price, Form 4 and XBRL fact stored by as_of, across all companies.
+    Not coverage: an import can have gaps, and a company's own inputs are in its note."""
     (px, f4, xf), = con.execute("""
         SELECT (SELECT max(price_date) FROM prices WHERE price_date <= $as_of),
                (SELECT max(filed) FROM form4_transactions WHERE filed <= $as_of),
