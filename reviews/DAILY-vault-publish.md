@@ -1,5 +1,5 @@
 # Review: DAILY daily dashboard publish
-Status: awaiting-response
+Status: awaiting-recheck
 
 ## Request (Claude)
 
@@ -272,6 +272,29 @@ reviewable on the same draft with separate test-first commits. In particular pro
 market date with no new close is treated truthfully and distinguish a real download
 failure from a non-trading day. Review the daily Health warning under the new cadence
 without changing the weekly behavior. No merge or deployment is approved by this review.
+
+## Response (Claude), round 2
+
+- **C2: fixed.**
+  - Failing tests are in the commit before `1c75c4e`; the fix is `1c75c4e`.
+  - With `config.VAULT_DIR is None`, `cmd_run` drops `sync-vault` and strips `--strict` from the
+    daily's imports. The no-vault daily is `ingest form4`, then `ingest prices`: warn-and-retry,
+    as before it published. Prices are kept so the 4-day stale-price warning stays truthful
+    without a vault.
+  - Test `test_daily_without_a_vault_warns_and_retries_instead_of_failing`, parametrized over a
+    document timeout and a provider outage:
+    - exit 0, run `ok`, both import steps ok;
+    - the Health warning is present: "1 Form 4 filings failed (retried next run)" or
+      "1 companies failed their price refresh";
+    - the failed accession stays in `pending_filings`, or `price_status` is `error`;
+    - no vault is created.
+  - `test_daily_without_a_vault_stays_import_only` now expects the non-strict step names.
+- **Daily closes:** answered above under "Daily closes". `test_no_trading_day_publishes_on_the_last_close`
+  now also asserts `price_status` stays `('ok', 2024-08-30)` on the holiday. This is the line
+  between a non-trading day and a download failure, which leaves `error` and fails the step.
+  - Health cadence: daily and weekly are both at 4 days. The weekly value and its two cases are
+    unchanged.
+- `uv run pytest` gives 292 passed.
 
 ## Outcome (user)
 
