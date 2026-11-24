@@ -202,6 +202,49 @@ Scope note, not a change in this round:
 - It adds about 220 s to each daily (weekly logs: prices 217-219 s).
 - Tell me if you would rather see it as its own PR.
 
+### Daily closes (added after your go-ahead on 2026-11-24)
+
+Conor's answer in Claude's chat was "Add daily prices (Recommended)". Failing tests are in
+`f382a6e`: 7 daily tests and 1 ops case failed on `fa780d4`. The code is in the following
+commit. `uv run pytest` gives 290 passed. Diff for this part: `git diff fa780d4..HEAD~1`.
+
+- **Daily sequence:** `ingest form4 --strict`, then `ingest prices --strict`, then `sync-vault`.
+  The weekly is unchanged. Tickers, company profiles, facts, 10-K text and the screen Parquet
+  stay Saturday-only.
+- **`ingest prices --strict`:** if `s.errors > 0` it calls
+  `sys.exit("N companies failed their price refresh (retried next run)")`. The failed companies
+  keep `price_status` `error` with their stored `last_date`, so the next run refetches from there.
+  Without `--strict` the command reports and returns, as before.
+- **Provider failure** (`test_provider_failure_publishes_nothing_and_keeps_the_stored_closes`):
+  - The fake provider raises, and the steps come out as ok / failed / not run.
+  - Every vault file stays byte-identical, and `price_status` is `('error', 2024-08-30)`.
+  - The day's Form 4 rows stay loaded.
+  - The next run, with the provider back, publishes on that day's close.
+- **No-trading day** (`test_no_trading_day_publishes_on_the_last_close`):
+  - On Labor Day 2024-09-02 the provider has no new row.
+  - The run is ok and publishes with `price_date` 2024-08-30 (3 days old, still shortlist).
+  - Health has no stale-price warning.
+- **Halted ticker:** in the `stale_price` test the provider gives nothing new for 10 days, and
+  the company is quarantined.
+- **Today's close:** in the success test `price_date` is today's date and mcap uses today's close.
+- **Stale-price warning:** `STALE_RUN_DAYS["daily"]` goes from 8 to 4, the same as the weekly.
+  The parametrized ops test covers:
+  - a Friday daily on Thursday's close (no warning);
+  - a Monday after a Friday holiday (4 days, no warning);
+  - a Friday daily still on last Friday's close (warning).
+- **Dashboard:** it now says "Prices refresh on weekdays and Saturdays, fundamentals and 10-K
+  text on Saturdays".
+
+Where bugs are most likely in this part:
+- A real outage goes through `_download_with_retry`, not the fake. It backs off 30+60+120 s per
+  batch before raising, over about 84 batches of 50. So a full Yahoo outage could hold the daily
+  (and the run lock) for hours before the strict exit. This was already true of the weekly; the
+  daily now has it 5 times a week. Not changed here; it could be a follow-up (stop after N
+  consecutive failed batches).
+- `--strict` on prices means one company that keeps erroring stops the daily publish every day.
+  The weekly logs of 11-07, 11-14 and 11-21 show 0 errors after retries.
+- The daily gets about 220 s longer (weekly price step 217-219 s).
+
 ## Re-check (Codex)
 
 _Codex writes agree or disagree per answer here._
