@@ -23,10 +23,10 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 from src.db.pit import Policy
 from src.db.queries import conviction_buys_sql
-from src.forensics import assess, forensics
+from src.forensics import STALE_FY_DAYS, assess, forensics
 from src.journal import REVIEW_DAYS, read_journals, since, snapshot, to_date
 from src.obsidian.writer import PersonRegistry, create_note, slug, split_note, upsert_note
-from src.redline import risk_factor_redline
+from src.redline import related_party_redline, risk_factor_redline
 from src.tone import load_lists
 from src import config
 from src.screen import Filters, screen
@@ -183,9 +183,12 @@ def sync_vault(con: duckdb.DuckDBPyConnection, vault: Path, as_of: date, filters
     lists = load_lists(config.LM_DICT)
     redlines = risk_factor_redline(con, sorted(by_cik), as_of, lists)
     tenks = {a: cik for cik, rl in redlines.items() for a in (rl["accn"], rl["prior_accn"]) if a}
+    # M10: related-party note of the same 10-Ks (informational: never feeds status or rank).
+    related = related_party_redline(con, sorted(by_cik), as_of)
+    rp_tenks = {a: cik for cik, x in related.items() for a in (x["accn"], x["prior_accn"]) if a}
     forensic = forensics(con, sorted(by_cik), as_of, policy)
     accns = ({a for r in by_cik.values() for s in r["sources"] or [] for a in s["accns"]} | {a for a, _ in lots}
-             | set(tenks) | {a for f in forensic.values() for a in f["accns"]})
+             | set(tenks) | set(rp_tenks) | {a for f in forensic.values() for a in f["accns"]})
     filing_link = {a: _note_path(filings_idx, vault / "Filings", a, a, "filing").stem for a in sorted(accns)}
 
     events = {}
@@ -243,6 +246,9 @@ def sync_vault(con: duckdb.DuckDBPyConnection, vault: Path, as_of: date, filters
     for a, cik in sorted(tenks.items()):
         filings.setdefault(a, {"accn": a, "cik": cik, "used_for": [], "event": None, "form": None, "filed": None})
         filings[a]["used_for"].append("risk factors")
+    for a, cik in sorted(rp_tenks.items()):
+        filings.setdefault(a, {"accn": a, "cik": cik, "used_for": [], "event": None, "form": None, "filed": None})
+        filings[a]["used_for"].append("related parties")
     for e in events.values():
         filings.setdefault(e["accn"], {"accn": e["accn"], "cik": e["cik"], "used_for": [], "event": e["title"],
                                        "form": "4", "filed": e["filed"]})
@@ -271,7 +277,7 @@ def sync_vault(con: duckdb.DuckDBPyConnection, vault: Path, as_of: date, filters
     for cik, r in sorted(by_cik.items()):
         mine = [{**b, "person": person_link[b["owner_cik"]], "event": events[(b["accn"], b["owner_cik"])]["title"]}
                 for b in reversed(buys) if b["issuer_cik"] == cik]
-        rl, fx = redlines.get(cik), forensic.get(cik)
+        rl, fx, rp = redlines.get(cik), forensic.get(cik), related.get(cik)
         fa = assess(fx, r) if fx else None
         changed = upsert_note(companies_idx[cik], {
             "type": "company", "ticker": r["ticker"], "cik": cik, "name": r["name"], "status": r["status"],
@@ -280,13 +286,15 @@ def sync_vault(con: duckdb.DuckDBPyConnection, vault: Path, as_of: date, filters
             "insider_buy_90d_usd": _r(r["insider_buy_90d_usd"], 0), "drawdown_52w": _r(r["drawdown_52w"]),
             "mcap": _r(r["mcap"], 0), "as_of": as_of, "issues": list(r["issues"]), "flags": list(r["flags"]),
             "rf_new_sentences": len(rl["new"]) if rl and rl["status"] == "ok" else None,
+            "related_party_new": len(rp["new"]) if rp and rp["compared"] else None,
             "forensic_flags": fa["flags"] if fa else [],
             "forensic_unknown": fa["unknown"] if fa else [],
             **{f"tone_{k}_change": _r(rl["tone"][k][0] - rl["tone"][k][1], 4)
                if rl and "tone" in rl and None not in rl["tone"][k] else None for k in TONE_KEYS},
             "aliases": [r["name"]] if r["name"] else [], "tags": ["company"]},
             env.get_template("company.md.j2").render(c={**r, "as_of": as_of}, buys=mine, filing_link=filing_link,
-                                                       rl=rl, fx=fx, fa=fa, tone_installed=lists is not None,
+                                                       rl=rl, fx=fx, fa=fa, rp=rp, stale_days=STALE_FY_DAYS,
+                                                       tone_installed=lists is not None,
                                                        new_shown=NEW_SHOWN,
                                                        removed_shown=REMOVED_SHOWN))
         stats.record("Companies", changed)

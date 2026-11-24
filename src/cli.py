@@ -29,6 +29,7 @@ from src.db.schema import connect
 from src.ingestion import companyfacts, form4_sources, prices, reference
 from src.ingestion.sec import SecClient, sha256_file
 from src.ingestion.filing_text import fetch_sections
+from src.ingestion.related_party import fetch_related_party
 from src.journal import REVIEW_DAYS
 from src.obsidian.sync import sync_vault, vault_ciks, write_journal
 from src.obsidian.writer import upsert_note
@@ -297,6 +298,10 @@ def cmd_fetch_text(args, con=None) -> None:
     got = fetch_sections(con, _client(), ciks, args.as_of)
     print(f"10-K risk factors for {len(ciks)} companies as of {args.as_of}: "
           f"{got['ok']} found, {got['not_found']} not found, in {time.perf_counter() - t0:.0f}s")
+    t0 = time.perf_counter()
+    rp = fetch_related_party(con, _client(), ciks, args.as_of)
+    print(f"10-K related-party notes: {rp['ok']} found, {rp['not_found']} not tagged, {rp['ambiguous']} ambiguous, "
+          f"{rp['error']} could not be read (retried next run), in {time.perf_counter() - t0:.0f}s")
 
 
 def cmd_sync_vault(args, con=None) -> None:
@@ -439,7 +444,8 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--no-leak-check", action="store_true", help="skip the look-ahead control run")
     b.set_defaults(func=cmd_backtest)
 
-    ft = sub.add_parser("fetch-text", help="fetch Item 1A of the latest two 10-Ks of the vault's companies")
+    ft = sub.add_parser("fetch-text", help="fetch Item 1A and the related-party note of the latest two 10-Ks "
+                                           "of the vault's companies")
     ft.add_argument("--as-of", type=date.fromisoformat, default=date.today())
     ft.add_argument("--vault", help="vault folder (default: EOQ_VAULT_DIR); its companies are included")
     ft.add_argument("--cik", type=int, action="append", help="only these CIKs (repeatable)")

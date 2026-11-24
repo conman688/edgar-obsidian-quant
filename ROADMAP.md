@@ -249,7 +249,28 @@ code checked out in the repository folder, so keep `main` checked out there. Ope
 unattended weeks" check, 2026-11-06 to about 2026-11-19; `run_log` and `Reports/Health.md`
 show each run.
 
-### M10 Footnote checks: related-party only (size: S, planned; starts only after the M9 two-week check passes)
+### M10 Footnote checks: related-party only (size: S; merged 2026-11-22; first live weekly run pending)
+
+Status (2026-11-22):
+- Built test-first in PR #34; review `reviews/M10-footnote-checks.md` resolved (C1-C10).
+  Merged on the user's yes at the Codex-checked head `8775380`, as `7145698`. 280 tests pass.
+- Live check, Part A (SEC requests only, in-memory DB, the frozen 59 companies of the 11-07
+  vault, as_of 2026-11-07; corroborated by Codex). Evidence:
+  `edgar-obsidian-quant-checks/m10-live-2026-11-22/` (`ASSESSMENT.md`, SHA256SUMS).
+  - Every plan check reproduces: 13 latest blocks; the 9 new-sentence counts below exactly;
+    stored text equals the 11-07 blocks 25 of 25; GIII parity 1,484 = 1,484 characters.
+    Throttled 0.
+  - The script exited 1 on two of its own criteria, not M10 behaviour. CAVA's prior 10-K has a
+    block outside the saved 11-07 sample (latest: none tagged). The FLOC and INR prior 10-Ks
+    (no `*_htm.xml`) are `error` rows, retried by design; the repeat fetch downloaded 0
+    instances and 0 documents.
+- Vault backed up before the first live run: `/Volumes/External/edgar-obsidian-quant-backups/vault-2026-11-22`.
+  1,390 of 1,390 files match by SHA-256; Codex checked it independently.
+- Not yet live: the scheduled checkout stays on `a993b70` until the user says to pull. The plan is
+  to pull after the Mon 2026-11-23 daily (migration 9) and before the Sat 2026-11-28 weekly.
+- Then Part B, after the first M10 weekly run: health warnings, then a sole read-only DB slot
+  booked with Codex for `fn_related_party` rows per status against Part A, then a read-only vault
+  check (`related_party_new` values; Journal notes unchanged against the backup).
 
 Decision (user, 2026-11-05 and R1): footnotes first, narrow. Plan written 2026-11-07, revised
 after review round 1 (`reviews/M10-footnote-checks.md`). **Scope cut to related-party only by the
@@ -320,6 +341,13 @@ How (reusing M7, no new dependency):
   - `error`: the request failed, the index has no or several `*_htm.xml`, or the XML does not
     parse. The row is retried on the next run and listed in the health report's warnings. An
     `error` row is never shown as "not found".
+  - Review round 4: a response that is not a DTD-free XBRL instance (an HTML error page, a
+    UTF-16 entity declaration) is `error` (C8, C10). A tagged current block that is nil or has
+    no text is `ambiguous`, reason `empty`: final for the parser version, shown as "tagged ...
+    but has no text", never as untagged (C9). The two 10-Ks shown are the latest two known from
+    either text family by `as_of`; one without a related-party row (or whose row fails the
+    same cutoff, CIK and form) is `pending`, "not read yet", never replaced by an older note
+    and never compared (C7).
 - If the selected 10-K's report date is more than 470 days before `as_of` (forensics'
   `STALE_FY_DAYS`), the company's M10 result is marked stale.
 - Runs inside `fetch-text`, so the weekly job's steps do not change.

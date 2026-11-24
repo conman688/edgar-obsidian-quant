@@ -15,7 +15,9 @@ from difflib import SequenceMatcher
 
 import duckdb
 
-from src.ingestion.filing_text import SECTION
+from src.forensics import STALE_FY_DAYS
+from src.ingestion import related_party as rp
+from src.ingestion.filing_text import FORMS, SECTION
 from src.tone import tone
 
 SIMILAR = 0.8
@@ -109,6 +111,21 @@ def redline(prior: str, current: str) -> Redline:
     return Redline(new=_unmatched(new, old), removed=_unmatched(old, new), total=len(new), prior_total=len(old))
 
 
+def _latest_two(con: duckdb.DuckDBPyConnection, section: str, ciks: list[int], as_of: date) -> dict[int, list[tuple]]:
+    """Per company, its latest two rows of `section` filed on or before as_of, newest first:
+    (cik, accn, filed, report_date, status, text, url)."""
+    rows = con.execute("""
+        SELECT cik, accn, filed, report_date, status, text, url FROM filing_sections
+        WHERE section = $section AND filed <= $as_of AND list_contains($ciks, cik)
+        QUALIFY row_number() OVER (PARTITION BY cik ORDER BY filed DESC, accn DESC) <= 2
+        ORDER BY cik, filed DESC, accn DESC
+    """, {"section": section, "as_of": as_of, "ciks": sorted(ciks)}).fetchall()
+    by_cik: dict[int, list[tuple]] = {}
+    for r in rows:
+        by_cik.setdefault(r[0], []).append(r)
+    return by_cik
+
+
 def risk_factor_redline(con: duckdb.DuckDBPyConnection, ciks: list[int], as_of: date,
                         lists: dict[str, set[str]] | None = None) -> dict[int, dict]:
     """Per company: the latest 10-K known on as_of against the one before it.
@@ -116,17 +133,8 @@ def risk_factor_redline(con: duckdb.DuckDBPyConnection, ciks: list[int], as_of: 
     status: ok | no_prior (one 10-K known) | no_section (latest has no Item 1A found) |
     no_prior_section. Companies with no 10-K in the table are left out. With word `lists`
     (src/tone.py), an ok redline also carries `tone`: {list: (this year, prior year)}."""
-    rows = con.execute("""
-        SELECT cik, accn, filed, report_date, status, text FROM filing_sections
-        WHERE section = $section AND filed <= $as_of AND list_contains($ciks, cik)
-        QUALIFY row_number() OVER (PARTITION BY cik ORDER BY filed DESC, accn DESC) <= 2
-        ORDER BY cik, filed DESC, accn DESC
-    """, {"section": SECTION, "as_of": as_of, "ciks": sorted(ciks)}).fetchall()
-    by_cik: dict[int, list[tuple]] = {}
-    for r in rows:
-        by_cik.setdefault(r[0], []).append(r)
     out = {}
-    for cik, rs in by_cik.items():
+    for cik, rs in _latest_two(con, SECTION, ciks, as_of).items():
         cur, prior = rs[0], rs[1] if len(rs) > 1 else None
         r = {"accn": cur[1], "filed": cur[2], "report_date": cur[3], "prior_accn": prior and prior[1],
              "prior_report_date": prior and prior[3], "new": [], "removed": [], "total": None, "prior_total": None}
@@ -142,5 +150,69 @@ def risk_factor_redline(con: duckdb.DuckDBPyConnection, ciks: list[int], as_of: 
             if lists is not None:
                 now, before = tone(cur[5], lists), tone(prior[5], lists)
                 r["tone"] = {k: (now[k], before[k]) for k in lists}
+        out[cik] = r
+    return out
+
+
+# M10: what the vault says for each related-party result that is not a current note (review C6).
+RP_MESSAGES = {
+    "not_found": "no related-party note tagged in this 10-K",
+    "elsewhere": "related-party note found only for another period or entity; not compared",
+    "conflict": ("related-party note could not be uniquely identified: two different current company-wide notes; "
+                 "not compared"),
+    "empty": "related-party note is tagged in this 10-K but has no text; not compared",
+    "error": "the 10-K's XBRL instance could not be read; retried on the next fetch-text",
+    "pending": "the related-party note of this 10-K has not been read yet (fetch-text); not compared",
+}
+RP_NO_COMPARISON = {None: "no prior 10-K known", "not_found": "the prior 10-K has no related-party note tagged",
+                    "ambiguous": "the prior 10-K's related-party note could not be uniquely identified",
+                    "error": "the prior 10-K's XBRL instance could not be read",
+                    "pending": "the prior 10-K's related-party note has not been read yet"}
+
+
+def related_party_redline(con: duckdb.DuckDBPyConnection, ciks: list[int], as_of: date) -> dict[int, dict]:
+    """Per company: the related-party note of the latest 10-K filed by as_of, against the 10-K
+    before it with `redline` as is. Companies with no 10-K known here are left out.
+
+    The two 10-Ks are the latest two known from either text family (Item 1A or related party),
+    and only then is each one's related-party row looked up (review C7): a 10-K whose row is
+    missing is `pending`, never replaced by an older note or skipped in a comparison.
+    status is the latest row's (ok | not_found | ambiguous | error | pending); `reason` is an ambiguous
+    row's elsewhere | conflict, or an error row's error, and `message` what the vault shows for
+    anything but ok. A comparison needs both notes ok; otherwise `compared` is False and
+    `no_comparison` says why. `stale`: the report date is more than STALE_FY_DAYS before as_of
+    (or unknown). Informational only: nothing here feeds the screen."""
+    rows = con.execute("""
+        WITH known AS (
+            SELECT cik, accn, min(filed) AS filed, max(report_date) AS report_date FROM filing_sections
+            WHERE list_contains($forms, form) AND filed <= $as_of AND list_contains($ciks, cik)
+            GROUP BY cik, accn
+            QUALIFY row_number() OVER (PARTITION BY cik ORDER BY min(filed) DESC, accn DESC) <= 2)
+        SELECT k.cik, k.accn, k.filed, k.report_date, coalesce(s.status, 'pending'), s.text, s.url
+        FROM known k LEFT JOIN filing_sections s        -- the attached row obeys the same cutoff (PIT)
+            ON s.accn = k.accn AND s.section = $section AND s.cik = k.cik
+            AND list_contains($forms, s.form) AND s.filed <= $as_of
+        ORDER BY k.cik, k.filed DESC, k.accn DESC
+    """, {"forms": list(FORMS), "as_of": as_of, "ciks": sorted(ciks), "section": rp.SECTION}).fetchall()
+    by_cik: dict[int, list[tuple]] = {}
+    for row in rows:
+        by_cik.setdefault(row[0], []).append(row)
+    out = {}
+    for cik, rs in by_cik.items():
+        cur, prior = rs[0], rs[1] if len(rs) > 1 else None
+        status, report_date = cur[4], cur[3]
+        r = {"accn": cur[1], "filed": cur[2], "report_date": report_date, "url": cur[6], "status": status,
+             "reason": None if status in ("ok", "not_found", "pending") else cur[5],
+             "text": cur[5] if status == "ok" else None,
+             "message": RP_MESSAGES[cur[5] if status == "ambiguous" else status] if status != "ok" else None,
+             "stale": report_date is None or (as_of - report_date).days > STALE_FY_DAYS,
+             "prior_accn": prior and prior[1], "prior_report_date": prior and prior[3],
+             "prior_status": prior and prior[4], "compared": False, "no_comparison": None,
+             "new": [], "removed": [], "total": None, "prior_total": None}
+        if status == "ok" and prior is not None and prior[4] == "ok":
+            d = redline(prior[5], cur[5])
+            r.update(compared=True, new=d.new, removed=d.removed, total=d.total, prior_total=d.prior_total)
+        elif status == "ok":
+            r["no_comparison"] = RP_NO_COMPARISON[prior and prior[4]]
         out[cik] = r
     return out

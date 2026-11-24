@@ -128,6 +128,17 @@ acquisitions and impairments of the latest fiscal year, the debt maturity schedu
 `debt_wall` (due within 2 years above cash), `acquisitive` (10% of market cap),
 `impairment` (5% of market cap). Flags are for checking by hand; they do not change the screen.
 
+`fetch-text` also reads each of those 10-Ks' related-party note
+(`us-gaap:RelatedPartyTransactionsDisclosureTextBlock`) from its XBRL instance: `index.json`
+to find the one `*_htm.xml`, then the instance (section `fn_related_party`, its own ledger). Only
+the filer's own, non-dimensional block ending on `dei:DocumentPeriodEndDate` counts. The company
+note's "Related parties" section shows it (10-K only), the new and removed sentences against the
+prior 10-K as candidates to read, and the full text folded; frontmatter `related_party_new`. A
+10-K without the tag is "no related-party note tagged", never "no dealings"; a note found only in
+other contexts, or two different current notes, is shown as not uniquely identified; an
+instance that could not be read is retried next run and listed in the health warnings.
+Informational only: it never changes status, rank or the shortlist.
+
 ### Decision journal
 
 ```bash
@@ -229,7 +240,8 @@ Uncapped, a heavy query on an 8 GB machine with little free disk can crash the c
 | `src/llm/schemas.py` | Optional quote-anchored extraction guard (only if an LLM is added) |
 | `src/obsidian/writer.py` | Atomic note writer, AUTO-block merge (comments kept), CIK-keyed person registry |
 | `src/ingestion/filing_text.py` | `fetch-text`: 10-K primary document to text, Item 1A cut, `filing_sections` ledger |
-| `src/redline.py` | Risk Factors redline: sentences, number/date masking, new and removed sentences |
+| `src/ingestion/related_party.py` | `fetch-text` (M10): 10-K XBRL instance, current related-party block, `fn_related_party` rows |
+| `src/redline.py` | Risk Factors and related-party redline: sentences, number/date masking, new and removed sentences |
 | `src/tone.py` | Loughran-McDonald word lists (current words only) and word-share tone |
 | `src/forensics.py` | Buybacks, acquisitions, impairments, debt maturities of the latest fiscal year; flags |
 | `src/obsidian/sync.py`, `src/obsidian/templates/` | `sync-vault`: companies, insiders, purchases, filings, dashboard (Jinja); `journal` notes |
@@ -279,7 +291,8 @@ Done: schema with migrations, PIT layer, screens, Obsidian writer, M1 ingestion 
 M2 prices/splits/dividends, M3 insider trades, M4 screener, M5 backtest, M6 vault sync,
 M7 Risk Factors redline and forensics, M8 decision journal, M9 operations (run, backup, health,
 launchd files, CI), CLI.
-Not done: M7 executive pay and footnote text (deferred; footnotes first, after the M9 check);
+M10 related-party footnotes: merged 2026-11-22; first live weekly run pending (ROADMAP M10, Status).
+Not done: M7 executive pay (deferred); footnotes other than related-party (out of M10's scope);
 two unattended weeks of the installed launchd agents (M9 check, to about 2026-11-19).
 
 See [ROADMAP.md](ROADMAP.md) for goals, milestones and acceptance checks.
