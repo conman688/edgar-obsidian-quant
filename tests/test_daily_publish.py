@@ -186,36 +186,48 @@ def test_strict_is_only_the_daily_gate(env, capsys):                            
     con.close()
 
 
-def test_daily_without_a_vault_stays_import_only(env, monkeypatch):                # C2
+def test_daily_without_a_vault_is_the_legacy_form4_import(env, monkeypatch):      # C2
+    """Nothing to publish: the daily stays what it was, `ingest form4` alone, warning on failures."""
     monkeypatch.setattr(config, "VAULT_DIR", None)
     code, row = env["run"]()
     assert code == 0 and row[0] == "ok"
-    assert steps(row) == [("ingest form4", "ok"), ("ingest prices", "ok")]
+    assert steps(row) == [("ingest form4", "ok")]
+    assert env["yahoo"].calls == 0                                 # no price fetch
     assert not env["vault"].exists() and screens(env) == []
 
 
-@pytest.mark.parametrize("failure", ["document", "provider"])
-def test_daily_without_a_vault_warns_and_retries_instead_of_failing(env, monkeypatch, failure):  # C2 recheck
-    """Nothing to publish, so nothing to gate: failures warn and are retried, as before the daily
-    published."""
+def test_daily_without_a_vault_warns_and_retries_a_failed_filing(env, monkeypatch):     # C2 re-check
     monkeypatch.setattr(config, "VAULT_DIR", None)
-    env["yahoo"].mode = "down" if failure == "provider" else "ok"
-    env["pin"](AS_OF, document_fails=failure == "document")
+    env["pin"](AS_OF, document_fails=True)
     cli.main(["run", "daily"])                                     # no SystemExit: exit 0
     con = connect(str(env["db"]))
     status, steps_json, warnings = con.execute(
         "SELECT status, steps, warnings FROM run_log ORDER BY started DESC LIMIT 1").fetchall()[0]
-    assert status == "ok"
-    assert steps((status, steps_json)) == [("ingest form4", "ok"), ("ingest prices", "ok")]
-    warning = ("1 Form 4 filings failed (retried next run)" if failure == "document"
-               else "1 companies failed their price refresh")
-    assert warning in json.loads(warnings)
-    if failure == "document":
-        assert [a for a, *_ in form4_sources.pending_filings(con)] == [NEW_ACCN]
-    else:
-        assert con.execute("SELECT status FROM price_status").fetchall() == [("error",)]
+    assert status == "ok" and steps((status, steps_json)) == [("ingest form4", "ok")]
+    assert "1 Form 4 filings failed (retried next run)" in json.loads(warnings)
+    assert [a for a, *_ in form4_sources.pending_filings(con)] == [NEW_ACCN]
     con.close()
-    assert not env["vault"].exists()
+    assert env["yahoo"].calls == 0 and not env["vault"].exists()
+
+
+@pytest.mark.parametrize("today, warns", [(date(2024, 9, 6), False),    # Fri: last Friday's close, 7 days
+                                          (date(2024, 9, 9), True)])    # Mon: 10 days
+def test_daily_without_a_vault_keeps_the_weekly_price_age_cadence(env, monkeypatch, today, warns):
+    monkeypatch.setattr(config, "VAULT_DIR", None)
+    code, row = env["run"](today)
+    assert code == 0
+    with duckdb.connect(str(env["db"]), read_only=True) as c:
+        warnings = json.loads(c.execute("SELECT warnings FROM run_log ORDER BY started DESC LIMIT 1").fetchall()[0][0])
+    assert any(w.startswith("latest price is") for w in warnings) is warns, warnings
+
+
+def test_daily_with_prices_warns_at_four_days(env):
+    env["yahoo"].mode = "no_new"                                  # refreshed, but no new close
+    code, row = env["run"](date(2024, 9, 4))                       # Wed: Friday's close, 5 days
+    assert code == 0 and steps(row) == OK3
+    with duckdb.connect(str(env["db"]), read_only=True) as c:
+        warnings = json.loads(c.execute("SELECT warnings FROM run_log ORDER BY started DESC LIMIT 1").fetchall()[0][0])
+    assert "latest price is 2024-08-30 (5 days old)" in warnings
 
 
 def test_daily_publish_keeps_journals_and_the_users_text(env):

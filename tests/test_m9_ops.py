@@ -180,18 +180,31 @@ def test_health_warns_on_drift_failures_stale_prices_throttling_and_backup(tmp_p
 
 
 @pytest.mark.parametrize("job, latest, today, warns", [
-    ("daily", "2026-11-12", "2026-11-13", False),   # Fri daily on Thursday's close: 1 day
-    ("daily", "2026-11-05", "2026-11-09", False),   # Monday after a Friday holiday: Thursday's close, 4 days
-    ("daily", "2026-11-06", "2026-11-13", True),    # Fri daily on last Friday's close: its refresh is stuck
+    ("daily", "2026-11-06", "2026-11-13", False),   # Fri daily, last close before the 11-07 weekly: 7 days
+    ("daily", "2026-11-05", "2026-11-13", False),   # Friday-holiday week: Thursday's close, 8 days
+    ("daily", "2026-11-04", "2026-11-13", True),    # 9 days: older than any weekly cadence allows
     ("weekly", "2026-11-13", "2026-11-14", False),  # Sat weekly right after its refresh: 1 day
     ("weekly", "2026-11-06", "2026-11-14", True),   # the weekly's own refresh did not move prices: 8 days
 ])
-def test_stale_price_limit_follows_the_price_cadence(job, latest, today, warns):
-    """Both jobs refresh prices, so both must see a recent close: at most 4 days old (a long
-    weekend), as in the acceptance-2026-11-21 exception for the weekly."""
+def test_stale_price_limit_follows_the_weekly_price_cadence(job, latest, today, warns):
+    """A daily that does not refresh prices (no vault) may see a close up to 8 days old (Friday
+    holiday); the weekly itself must see a fresh close (acceptance-2026-11-21 exception)."""
     con = connect(":memory:")
     con.execute("INSERT INTO prices VALUES (1, 'A', ?, 10, NULL, 't')", [date.fromisoformat(latest)])
     r = ops.run_steps(con, job, [], date.fromisoformat(today))
+    assert any(w.startswith("latest price is") for w in r["warnings"]) is warns, r["warnings"]
+
+
+@pytest.mark.parametrize("step, status, latest, today, warns", [
+    ("ingest prices --strict", "ok", "2026-11-12", "2026-11-13", False),   # Thursday's close on Friday
+    ("ingest prices --strict", "ok", "2026-11-05", "2026-11-09", False),   # Monday after a Friday holiday: 4 days
+    ("ingest prices --strict", "ok", "2026-11-06", "2026-11-13", True),    # refreshed, still last week's close
+    ("ingest form4", "ok", "2026-11-06", "2026-11-13", False),            # no refresh: the 8-day cadence
+])
+def test_a_daily_that_refreshed_prices_must_see_a_recent_close(step, status, latest, today, warns):
+    con = connect(":memory:")
+    con.execute("INSERT INTO prices VALUES (1, 'A', ?, 10, NULL, 't')", [date.fromisoformat(latest)])
+    r = ops.run_steps(con, "daily", [(step, lambda: None)], date.fromisoformat(today))
     assert any(w.startswith("latest price is") for w in r["warnings"]) is warns, r["warnings"]
 
 
