@@ -123,6 +123,10 @@ def ingest_prices(con, args) -> None:
     s = prices.load(con, exchanges, args.ticker, progress=progress)
     print(f"prices: {s.priced:,} of {s.companies:,} companies priced, {s.price_rows:,} rows, "
           f"{s.splits:,} splits, {s.no_data:,} with no data, {s.errors:,} errors in {s.seconds:,.0f}s")
+    if s.errors and args.strict:
+        # Failed companies keep their stored closes (price_status 'error') and are retried next
+        # run; failing the step stops the daily before it publishes a mix of old and new closes.
+        sys.exit(f"{s.errors:,} companies failed their price refresh (retried next run)")
 
 
 def ingest_form4(con, args) -> None:
@@ -336,12 +340,13 @@ def cmd_journal(args, con=None) -> None:
     print(f"wrote {path}; review due {args.as_of + timedelta(days=args.review_days)}")
 
 
-# Weekly (Saturday) is the full refresh: prices, facts, Form 4, the screen Parquet and 10-K text.
-# Daily (weekdays) imports Form 4, then syncs the vault, which recomputes the screen from the
-# stored prices and fundamentals. A failed step leaves the rest not run, and --strict fails the
-# import if any filing failed, so the daily publishes only after a complete import.
+# Weekly (Saturday) is the full refresh: tickers, companies, facts, prices, Form 4, the screen
+# Parquet and 10-K text. Daily (weekdays) imports Form 4 and the day's closes, then syncs the
+# vault, which recomputes the screen on them and the stored fundamentals. A failed step leaves
+# the rest not run, and --strict fails an import if any filing or company failed, so the daily
+# publishes only after both imports are complete.
 RUN_STEPS = {"weekly": [["ingest", "all"], ["screen"], ["fetch-text"], ["sync-vault"]],
-             "daily": [["ingest", "form4", "--strict"], ["sync-vault"]]}
+             "daily": [["ingest", "form4", "--strict"], ["ingest", "prices", "--strict"], ["sync-vault"]]}
 
 
 def cmd_run(args) -> None:
@@ -424,7 +429,7 @@ def build_parser() -> argparse.ArgumentParser:
     ing.add_argument("--since", help="form4: first quarter to load, e.g. 2024q4 (default: 2 years back)")
     ing.add_argument("--xml-limit", type=int, help="form4: fetch at most this many filings as XML")
     ing.add_argument("--strict", action="store_true",
-                     help="form4: exit 1 if any filing failed (failures stay in the ledger for the next run)")
+                     help="form4, prices: exit 1 if any filing or company failed (retried next run)")
     ing.set_defaults(func=cmd_ingest)
 
     f = sub.add_parser("facts", help="show point-in-time facts for one company")

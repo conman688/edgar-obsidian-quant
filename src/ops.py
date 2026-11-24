@@ -30,10 +30,9 @@ from src import config
 
 KEEP = 4
 ROOM = 1.05                 # free space needed on the backup disk, as a multiple of the database
-# Latest close older than this many days on a run day: the price refresh is stuck. Prices refresh
-# only in the Saturday weekly, so a daily may see the previous week's last close: 7 days on a
-# Friday, 8 after a Friday market holiday. The weekly has just refreshed, so it stays strict.
-STALE_RUN_DAYS = {"weekly": 4, "daily": 8}
+# Latest close older than this many days on a run day: the price refresh is stuck. Both jobs
+# refresh prices (the daily since 2026-11-24), so 4 days allows a long weekend and no more.
+STALE_RUN_DAYS = {"weekly": 4, "daily": 4}
 DRIFT = 0.01                # a table that shrinks by more than this in one run gets a warning
 LEDGERS = ("loaded_filings", "form4_filings", "filing_sections")   # never shrink: any drop is a warning
 BACKUP_NAME = re.compile(r"^edgar-\d{4}-\d{2}-\d{2}\.duckdb$")
