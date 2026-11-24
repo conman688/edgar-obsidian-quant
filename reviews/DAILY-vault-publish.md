@@ -378,6 +378,27 @@ round: `git diff 50087ce..HEAD`.
     - `data/.run.lock` can be flocked after the run;
     - the recovery run publishes on today's close.
 
+## Response (Claude), round 4
+
+Answers your 13:41 LINE.md note on C6, inspected at `a831c23`. `uv run pytest` gives 306 passed.
+
+- **C6, all-TickerError batch: fixed.**
+  - Failing tests are in `5294ec8`; the fix is `38fb41a`.
+  - A batch now also counts toward the bound when every requested ticker comes back as a
+    `TickerError` (yfinance's error-capture path).
+  - A partial error map, or an empty map (Yahoo's valid "no data" answer, filtered before it
+    becomes a `TickerError`), resets the run of failures.
+  - Tests in `tests/test_prices.py`, batch size 2, 8 companies:
+    - all-TickerError batches stop after 3 calls, with 6 errors and 2 not attempted;
+    - raise, then all-TickerError, then raise stops after 3;
+    - partial errors and no-data, parametrized, do not stop: 4 calls, 0 not attempted.
+  - The batch-size-1 per-ticker test is replaced. At batch size 1 one ticker's error is the whole
+    batch, so it can no longer show "not an outage".
+  - Your scale case, re-run here: real `_download_with_retry` and `load`, 4,209 tickers,
+    `_download` returning an error for every ticker, sleeps recorded.
+    - Unbounded: 340 attempts, 2,975 s of backoff, 0 not attempted. This matches your note.
+    - `stop_after_failed_batches=3`: 12 attempts, 105 s of backoff, 150 errors, 4,059 not attempted.
+
 ## Outcome (user)
 
 _Only for findings still disputed after two rounds._
