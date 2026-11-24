@@ -35,7 +35,7 @@ class FakeYahoo:
     """In place of yfinance. mode 'ok': the 2024-08-30 close plus a close for `today` when it is a
     trading day. 'no_new': nothing after 2024-08-30 (halted). 'down': the provider fails."""
     def __init__(self):
-        self.mode, self.today, self.calls = "ok", AS_OF, 0
+        self.mode, self.today, self.calls, self.batch_size = "ok", AS_OF, 0, 50
 
     def __call__(self, tickers: list[str], start: date) -> dict:
         self.calls += 1
@@ -92,7 +92,8 @@ def env(tmp_path, monkeypatch):
     vault = tmp_path / "vault"
     yf = FakeYahoo()
     real_load = prices.load
-    monkeypatch.setattr(prices, "load", lambda *a, **k: real_load(*a, **{**k, "download": yf, "pause_s": 0}))
+    monkeypatch.setattr(prices, "load", lambda *a, **k: real_load(
+        *a, **{**k, "download": yf, "pause_s": 0, "batch_size": yf.batch_size}))
     monkeypatch.setattr(config, "DATA_DIR", db.parent)
     monkeypatch.setattr(config, "DB_PATH", db)
     monkeypatch.setattr(config, "VAULT_DIR", vault)
@@ -304,3 +305,32 @@ def test_dashboard_dates_are_database_wide_and_not_coverage(env):               
     assert "through" not in dash.split("## Shortlist")[0]
     assert "each company note lists its own close date and sources" in dash
     assert 'price_date AS "Close date"' in dash
+
+
+def test_provider_outage_stops_the_strict_daily_early_and_releases_the_lock(env):   # C6
+    import fcntl
+    assert env["run"](AS_OF - timedelta(days=1))[0] == 0          # yesterday's dashboard
+    before = vault_files(env["vault"])
+    con = connect(str(env["db"]))                                 # 5 more companies, priced first (no history)
+    for c in range(101, 106):
+        con.execute("INSERT INTO companies (cik, name, is_financial, is_shell) VALUES (?, ?, FALSE, FALSE)", [c, f"Co {c}"])
+        con.execute("INSERT INTO tickers VALUES (?, ?, ?, 'NYSE', DATE '2024-08-01')", [c, f"T{c}", f"Co {c}"])
+        con.execute("INSERT INTO loaded_filings (cik, accn) VALUES (?, ?)", [c, f"x{c}"])
+    con.close()
+    env["yahoo"].mode, env["yahoo"].batch_size, env["yahoo"].calls = "down", 1, 0
+    code, row = env["run"](AS_OF)
+    assert code == 1 and env["yahoo"].calls == prices.OUTAGE_BATCHES     # not all 6 batches
+    assert steps(row) == [("ingest form4 --strict", "ok"), ("ingest prices --strict", "failed"),
+                          ("sync-vault", "not run")]
+    assert "3 not attempted" in json.loads(row[1])[1]["message"]
+    assert vault_files(env["vault"]) == before
+    con = connect(str(env["db"]))
+    assert con.execute("SELECT status, last_date FROM price_status WHERE cik = ?", [CIK]).fetchall() == [
+        ("ok", date(2024, 8, 30))]                                 # not attempted: stored close kept
+    con.close()
+    with open(env["db"].parent / ".run.lock", "a") as f:          # the run released its lock
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    env["yahoo"].mode = "ok"
+    code, row = env["run"](AS_OF)
+    assert code == 0 and steps(row) == OK3
+    assert fm(env["vault"] / "Companies" / "ACME.md")["price_date"] == AS_OF

@@ -461,3 +461,60 @@ def test_first_load_still_stores_actions_before_the_first_close():
     prices.load(con, pause_s=0, download=FakeYahoo({"NVDA": src}))
     assert con.execute("SELECT ex_date FROM dividends WHERE cik = 2").fetchall() == [(date(2026, 11, 4),)]
     assert con.execute("SELECT count(*) FROM price_actions_held").fetchall() == [(0,)]
+
+
+# --- provider outage bound for the strict daily (review DAILY-vault-publish C6) --------------
+
+def outage_universe(n: int = 6):
+    con = connect(":memory:")
+    con.executemany("INSERT INTO companies (cik, name, is_financial, is_shell) VALUES (?, ?, FALSE, FALSE)",
+                    [(c, f"Co {c}") for c in range(1, n + 1)])
+    con.executemany("INSERT INTO tickers VALUES (?, ?, ?, 'NYSE', DATE '2026-11-01')",
+                    [(c, f"T{c}", f"Co {c}") for c in range(1, n + 1)])
+    con.executemany("INSERT INTO loaded_filings (cik, accn) VALUES (?, ?)", [(c, f"a{c}") for c in range(1, n + 1)])
+    return con
+
+
+def scripted(outcomes: list[str]):
+    """One outcome per batch: 'down' raises, 'ticker' fails each ticker alone, 'ok' returns a close."""
+    calls = []
+
+    def download(tickers, start):
+        kind = outcomes[len(calls)]
+        calls.append(tickers)
+        if kind == "down":
+            raise ConnectionError("provider down")
+        if kind == "ticker":
+            return {t: prices.TickerError(f"{t}: failed") for t in tickers}
+        return {t: yahoo([("2026-11-20", 10.0, 100.0, 0.0, 0.0)]) for t in tickers}
+    return download, calls
+
+
+def test_strict_bound_stops_after_consecutive_whole_batch_failures():
+    con = outage_universe()
+    download, calls = scripted(["down"] * 6)
+    s = prices.load(con, batch_size=1, pause_s=0, download=download, stop_after_failed_batches=3)
+    assert len(calls) == 3 and s.errors == 3 and s.not_attempted == 3
+    assert con.execute("SELECT count(*) FROM price_status WHERE status = 'error'").fetchall() == [(3,)]
+    assert con.execute("SELECT count(*) FROM price_status").fetchall() == [(3,)]   # the rest untouched
+
+
+def test_bound_counts_only_consecutive_whole_batch_failures():
+    con = outage_universe()
+    download, calls = scripted(["down", "ok", "down", "down", "ok", "down"])
+    s = prices.load(con, batch_size=1, pause_s=0, download=download, stop_after_failed_batches=3)
+    assert len(calls) == 6 and s.not_attempted == 0 and s.errors == 4
+
+
+def test_per_ticker_errors_are_not_an_outage():
+    con = outage_universe()
+    download, calls = scripted(["ticker"] * 6)
+    s = prices.load(con, batch_size=1, pause_s=0, download=download, stop_after_failed_batches=3)
+    assert len(calls) == 6 and s.not_attempted == 0 and s.errors == 6
+
+
+def test_without_a_bound_every_batch_is_tried():                   # weekly and standalone runs
+    con = outage_universe()
+    download, calls = scripted(["down"] * 6)
+    s = prices.load(con, batch_size=1, pause_s=0, download=download)
+    assert len(calls) == 6 and s.not_attempted == 0 and s.errors == 6
