@@ -182,8 +182,8 @@ that fails. Every load keeps a ledger, so the next run picks up where it stopped
 mid-way refetches at most the batch it was writing. Each run adds a row to `run_log` and writes
 a health report (stdout, and `Reports/Health.md` in the vault). The report lists step results,
 row counts against the previous run, and warnings for: a step that failed, a table that shrank,
-failed Form 4 or price ledger entries, a stale latest price (more than 4 days old: both jobs
-refresh prices), SEC throttling, and a
+failed Form 4 or price ledger entries, a stale latest price (more than 4 days old after a run
+that refreshed prices; more than 8 on a daily without a vault, which does not), SEC throttling, and a
 backup that did not happen.
 
 The weekday daily republishes the dashboard on that day's closes. It runs `ingest form4
@@ -191,8 +191,9 @@ The weekday daily republishes the dashboard on that day's closes. It runs `inges
 the failures stay in their ledger (`form4_filings`, `price_status`) and are retried next run.
 Only after both are complete does it run `sync-vault`, which recomputes the screen. A failed step
 stops the run, so the vault keeps the previous dashboard. On a market holiday the provider has no
-new close and the dashboard uses the last one. Without `EOQ_VAULT_DIR` the daily is the two
-imports alone, without `--strict`: failures warn and are retried, as before the daily published. Tickers, company profiles, XBRL facts, 10-K text and the dated screen Parquet
+new close and the dashboard uses the last one. Without `EOQ_VAULT_DIR` the daily is what it
+was before it published: `ingest form4` alone, without `--strict` (failures warn and are retried)
+and without a price fetch. Tickers, company profiles, XBRL facts, 10-K text and the dated screen Parquet
 (`data/screens/`) refresh only on Saturday's weekly. The dashboard shows the newest dated close,
 Form 4 and XBRL fact in the database (across all companies, not a coverage claim), and each
 company note keeps its own close date (`price_date`) and sources. The screen's freshness rules

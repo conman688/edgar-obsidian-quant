@@ -363,9 +363,11 @@ def cmd_run(args) -> None:
             parser = build_parser()
             argvs = RUN_STEPS[args.job]
             if args.job == "daily" and config.VAULT_DIR is None:
-                # Nothing to publish, so nothing to gate: the imports alone, which warn on failed
-                # filings or companies and retry them next run.
-                argvs = [[x for x in a if x != "--strict"] for a in argvs if a != ["sync-vault"]]
+                # Nothing to publish: the daily as it was before it published, the Form 4 import
+                # alone (no price fetch, no --strict), which warns on failed filings and retries
+                # them next run.
+                argvs = [[x for x in a if x != "--strict"] for a in argvs
+                         if a != ["sync-vault"] and a[:2] != ["ingest", "prices"]]
             steps = [(" ".join(a), functools.partial(_step, parser, a, con)) for a in argvs]
             r = ops.run_steps(con, args.job, steps, today, backup=b,
                               throttled=lambda: _client().throttled if _client.cache_info().currsize else 0,
