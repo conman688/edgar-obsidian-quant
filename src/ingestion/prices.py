@@ -329,8 +329,9 @@ def load(con: duckdb.DuckDBPyConnection, exchanges: tuple[str, ...] = EXCHANGES,
 
     Each batch commits on its own, so an interrupted run resumes where it stopped.
     stop_after_failed_batches: after this many batches in a row whose whole download failed
-    (after its retries), skip the rest as not attempted; their stored prices and status stay as
-    they are. Per-ticker errors and "no data" answers do not count. None tries every batch.
+    (after its retries: it raised, or returned an error for every ticker), skip the rest as not
+    attempted; their stored prices and status stay as they are. Partial errors and "no data"
+    answers do not count. None tries every batch.
     """
     t0, stats = time.monotonic(), PriceStats()
     todo = universe(con, exchanges, tickers)
@@ -350,8 +351,10 @@ def load(con: duckdb.DuckDBPyConnection, exchanges: tuple[str, ...] = EXCHANGES,
             _mark_error(con, [(cik, t, e) for cik, t, _ in batch])
             failed_in_a_row += 1
             continue
-        failed_in_a_row = 0
         failed = {t: v for t, v in frames.items() if isinstance(v, TickerError)}
+        # yfinance can also fail a whole batch by capturing an error for every ticker it was
+        # asked for; that counts like a raised download. Partial errors and "no data" do not.
+        failed_in_a_row = failed_in_a_row + 1 if all(t in failed for _, t, _ in batch) else 0
         if failed:
             _mark_error(con, [(cik, t, failed[t]) for cik, t, _ in batch if t in failed])
             stats.errors += len(failed)
