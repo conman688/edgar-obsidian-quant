@@ -9,10 +9,11 @@ Sources (checked 2026-11-25; LINE.md "M12-A3 design"):
   project's SEC User-Agent (it names the user) is never sent to a non-SEC host.
 
 Known-at: FINRA publishes each cycle 7 business days after settlement (its 2026-27
-schedule) but posts no past publication dates, so every row is known 9 weekdays after
-settlement: one holiday allowed for, plus a day of cushion. FINRA revises rows in place
-(revisionFlag R), so history holds revised values, not the first published ones; a file is
-fetched once and never refetched.
+schedule) but posts no past publication dates. `published_est` is settlement + 9 weekdays:
+one holiday allowed for, plus a day of cushion. FINRA revises rows in place (revisionFlag R),
+and a cycle can be late, so a row is known no earlier than our first fetch of it:
+known_at = max(published_est, fetch date). A backfill is therefore known only from the day
+it ran. A file is fetched once and never refetched.
 """
 from __future__ import annotations
 
@@ -28,7 +29,7 @@ from src.db import ledger
 
 STAGE = "finra_short_interest"
 ROW_SCHEMA = pa.schema([
-    ("settlement_date", pa.date32()), ("symbol", pa.string()), ("known_at", pa.date32()),
+    ("settlement_date", pa.date32()), ("symbol", pa.string()), ("known_at", pa.date32()), ("published_est", pa.date32()),
     ("market", pa.string()), ("issue_name", pa.string()), ("short_shares", pa.int64()),
     ("prev_short_shares", pa.int64()), ("avg_daily_volume", pa.int64()), ("days_to_cover", pa.float64()),
     ("revision_flag", pa.string()), ("split_flag", pa.string()), ("fetched_at", pa.timestamp("us")),
@@ -49,8 +50,8 @@ class FinraError(RuntimeError):
     pass
 
 
-def known_at(settlement: date) -> date:
-    """Settlement plus KNOWN_AFTER_WEEKDAYS weekdays."""
+def published_est(settlement: date) -> date:
+    """FINRA's estimated publication date: settlement plus KNOWN_AFTER_WEEKDAYS weekdays."""
     d, n = settlement, 0
     while n < KNOWN_AFTER_WEEKDAYS:
         d += timedelta(days=1)
@@ -86,11 +87,15 @@ def parse_file(payload: bytes) -> list[tuple]:
     if tuple(header) != COLUMNS:
         raise FinraError(f"unexpected FINRA header: {header!r:.200}")
     out = []
-    for r in ([_unquote(f) for f in line.split("|")] for line in lines[1:]):
+    for n, r in enumerate(([_unquote(f) for f in line.split("|")] for line in lines[1:]), start=2):
         if len(r) != len(COLUMNS) or not r[1].strip():
             continue
-        out.append((date.fromisoformat(r[13].strip()), r[1].strip(), r[4].strip() or None, r[2].strip() or None,
-                    _int(r[5]), _int(r[6]), _int(r[8]), _float(r[9]), r[10].strip() or None, r[7].strip() or None))
+        try:
+            out.append((date.fromisoformat(r[13].strip()), r[1].strip(), r[4].strip() or None, r[2].strip() or None,
+                        _int(r[5]), _int(r[6]), _int(r[8]), _float(r[9]), r[10].strip() or None,
+                        r[7].strip() or None))
+        except ValueError as e:
+            raise FinraError(f"FINRA line {n}: {e}") from e
     return out
 
 
@@ -137,28 +142,30 @@ def _key(settlement: date) -> str:
     return f"finra-si@{settlement:%Y%m%d}"
 
 
-def load(con: duckdb.DuckDBPyConnection, client) -> LoadStats:
-    """Fetch every settlement file not loaded yet. A failed file is reported and retried on
-    the next run; it never stops the others."""
+def load(con: duckdb.DuckDBPyConnection, client, now: datetime | None = None) -> LoadStats:
+    """Fetch every settlement file not loaded yet. A failed file (no response, a bad line, or
+    no rows for its own settlement date) is reported and retried on the next run; it never
+    stops the others. `now` fixes the fetch time (tests)."""
     s = LoadStats()
     for d in client.settlement_dates():
         if ledger.is_done(con, _key(d), STAGE, SCHEMA_VERSION):
             continue
         try:
-            rows = parse_file(client.file(d))
+            rows = [r for r in parse_file(client.file(d)) if r[0] == d]
+            if not rows:
+                raise FinraError(f"FINRA file {d}: no rows for its settlement date")
         except (FinraError, requests.RequestException) as e:
             s.failed += 1
             s.errors.append(str(e))
             continue
-        rows = [r for r in rows if r[0] == d]
-        now = datetime.now()
+        fetched = now or datetime.now()
+        known = max(published_est(d), fetched.date())
         con.begin()
         try:
             before = con.execute("SELECT count(*) FROM short_interest").fetchall()[0][0]
-            full = [(*r[:2], known_at(d), *r[2:], now) for r in rows]
+            full = [(*r[:2], known, published_est(d), *r[2:], fetched) for r in rows]
             con.register("si_rows", pa.Table.from_arrays(
-                [pa.array(c, type=f.type) for c, f in zip(zip(*full), ROW_SCHEMA)] if full
-                else [pa.array([], type=f.type) for f in ROW_SCHEMA], schema=ROW_SCHEMA))
+                [pa.array(c, type=f.type) for c, f in zip(zip(*full), ROW_SCHEMA)], schema=ROW_SCHEMA))
             try:
                 con.execute("INSERT OR IGNORE INTO short_interest SELECT * FROM si_rows")
             finally:

@@ -363,13 +363,15 @@ CREATE TABLE IF NOT EXISTS filings_8k (
 );
 """),
     (11, """
--- M12-A3: FINRA equity short interest, one row per settlement date and symbol. known_at is
--- settlement + 9 weekdays (FINRA publishes after 7 business days; see short_interest.py):
--- a screen reads a row only when known_at <= as_of. Values may be FINRA revisions.
+-- M12-A3: FINRA equity short interest, one row per settlement date and symbol.
+-- published_est is settlement + 9 weekdays (FINRA publishes after 7 business days); known_at
+-- is the later of that and our first fetch, because rows may be FINRA revisions and a cycle
+-- may be late (see short_interest.py). A screen reads a row only when known_at <= as_of.
 CREATE TABLE IF NOT EXISTS short_interest (
     settlement_date  DATE      NOT NULL,
     symbol           VARCHAR   NOT NULL,
     known_at         DATE      NOT NULL,
+    published_est    DATE      NOT NULL,
     market           VARCHAR,
     issue_name       VARCHAR,
     short_shares     BIGINT,

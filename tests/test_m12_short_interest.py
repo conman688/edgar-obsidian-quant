@@ -92,7 +92,7 @@ def test_a_file_with_an_unknown_header_is_refused():
     (date(2026, 11, 30), date(2026, 12, 11)),      # publishes Dec 9
 ])
 def test_known_at_is_nine_weekdays_after_settlement(settlement, known):
-    assert si.known_at(settlement) == known
+    assert si.published_est(settlement) == known
 
 
 # --- ingest --------------------------------------------------------------------------
@@ -116,7 +116,7 @@ def test_a_full_size_file_loads_in_seconds(con):
     d = date(2024, 8, 15)
     fake = FakeFinra({d: file_for(d, [(f"S{i}", i, 1.0) for i in range(22_000)])})
     t = time.perf_counter()
-    assert si.load(con, fake).rows == 22_000
+    assert si.load(con, fake, now=EARLY).rows == 22_000
     assert time.perf_counter() - t < 5
     assert con.sql("SELECT short_shares, known_at FROM short_interest WHERE symbol = 'S7'").fetchall() == \
         [(7, date(2024, 8, 28))]

@@ -40,8 +40,9 @@ SOURCES = {
                   "(shrtYYYYMMDD.csv, pipe-delimited). Fetched at 1 request a second with a generic User-Agent.",
         "terms": "FINRA Data is provided for non-commercial use.",
         "history": "Settlement dates from 2017-12-29; nothing earlier on the public file list.",
-        "known_at": "Settlement date + 9 weekdays (FINRA publishes 7 business days after settlement). "
-                    "Rows can be FINRA revisions, not the values first published.",
+        "known_at": "The later of settlement + 9 weekdays (FINRA publishes 7 business days after "
+                    "settlement) and the day we first fetched the file. Rows can be FINRA revisions, "
+                    "so the 2017-2026 backfill is known only from the day it ran (2026-11-25 or later).",
         "refresh": "Saturday (`ingest all`); each settlement file is fetched once.",
     },
 }
