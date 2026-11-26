@@ -299,18 +299,125 @@ def conviction_buys_sql(window_days: int = 30, include_unknown_10b5_1: bool = Fa
                t.officer_title, t.txn_date, t.filed, t.shares, t.price, t.shares * t.price AS usd, t.is_10b5_1
         FROM form4_effective($as_of, p_since := $as_of - INTERVAL {int(window_days)} DAY) t
         LEFT JOIN prices p ON p.cik = t.issuer_cik AND p.price_date = t.txn_date
-        WHERE NOT t.is_derivative AND NOT t.is_holding
-          AND t.txn_code = 'P' AND t.acq_disp = 'A'
+        WHERE {_open_market_trade("P", "A", window_days)}
+          AND {plan_filter}
+    """
+
+
+def _open_market_trade(code: str, acq_disp: str, window_days: int) -> str:
+    """WHERE clause shared by buys and sells over form4_effective t LEFT JOIN prices p: an
+    officer's or director's common-stock trade with this code, dated in the window and not
+    after its filing, priced within 0.5-2x that day's close when one is stored, with no
+    offering named in the footnotes."""
+    return f"""NOT t.is_derivative AND NOT t.is_holding
+          AND t.txn_code = '{code}' AND t.acq_disp = '{acq_disp}'
           AND t.price > 0 AND t.shares > 0
           AND t.txn_date > $as_of - INTERVAL {int(window_days)} DAY
           AND t.txn_date <= t.filed          -- a later date is a typo (2033 in a 2022 filing)
-          AND {plan_filter}
           AND (t.is_officer OR t.is_director)
           AND NOT regexp_matches(coalesce(t.security_title, ''),
                                  '(?i)preferred|warrant|note|debenture|unit|right|option')
           AND NOT regexp_matches(coalesce(t.footnotes, ''),
                                  '(?i)initial public offering|\\bIPO\\b|private placement|underwritten|registered direct|public offering|subscription agreement|securities purchase agreement')
-          AND (p.close_raw IS NULL OR t.price BETWEEN 0.5 * p.close_raw AND 2 * p.close_raw)
+          AND (p.close_raw IS NULL OR t.price BETWEEN 0.5 * p.close_raw AND 2 * p.close_raw)"""
+
+
+def insider_sells(con: duckdb.DuckDBPyConnection, as_of: date, window_days: int = 90):
+    """Officer and director open-market sales known by as_of; see insider_sells_sql."""
+    return con.sql(insider_sells_sql(window_days), params={"as_of": as_of})
+
+
+def insider_sells_sql(window_days: int = 90) -> str:
+    """One row per officer or director open-market sale (code S, disposed) known by as_of
+    (filed <= as_of) with a trade date in the window, under the same row rules as the buys.
+    Binds $as_of. Informational (M12-A1): never feeds status or rank.
+
+    plan: 'planned' (10b5-1 box or footnote), 'discretionary' (box unchecked, or no box
+    before 2023-04-01 when none existed), 'unknown' (no box from 2023-04-01: a parse gap).
+    An unchecked box can still be a grandfathered pre-2023 plan, so it is not proof.
+
+    routine: the same owner sold this issuer's stock in the same calendar month in each of
+    the 3 prior calendar years (Cohen, Malloy and Pomorski 2012, "Decoding Inside
+    Information"; their routine trades carry no signal). The only way to separate
+    scheduled selling before the 10b5-1 box existed.
+    """
+    return f"""
+    WITH s AS (
+        SELECT t.accn, t.line_no, t.issuer_cik, t.owner_cik, t.owner_name, t.is_officer, t.is_director,
+               t.officer_title, t.txn_date, t.filed, t.shares, t.price, t.shares * t.price AS usd, t.is_10b5_1,
+               CASE WHEN t.is_10b5_1 THEN 'planned'
+                    WHEN t.is_10b5_1 = FALSE OR t.filed < DATE '2023-04-01' THEN 'discretionary'
+                    ELSE 'unknown' END AS plan
+        FROM form4_effective($as_of, p_since := $as_of - INTERVAL {int(window_days)} DAY) t
+        LEFT JOIN prices p ON p.cik = t.issuer_cik AND p.price_date = t.txn_date
+        WHERE {_open_market_trade("S", "D", window_days)}
+    ),
+    hist AS (        -- earlier sales by the same owners of the same issuers, known by as_of
+        SELECT DISTINCT h.issuer_cik, h.owner_cik, year(h.txn_date) AS y, month(h.txn_date) AS m
+        FROM form4_effective($as_of) h
+        SEMI JOIN (SELECT DISTINCT issuer_cik, owner_cik FROM s) o
+             ON o.issuer_cik = h.issuer_cik AND o.owner_cik = h.owner_cik
+        WHERE NOT h.is_derivative AND NOT h.is_holding AND h.txn_code = 'S' AND h.acq_disp = 'D'
+          AND h.shares > 0 AND h.txn_date <= h.filed
+    ),
+    r AS (
+        SELECT s.accn, s.line_no, count(DISTINCT h.y) = 3 AS routine
+        FROM s LEFT JOIN hist h
+          ON h.issuer_cik = s.issuer_cik AND h.owner_cik = s.owner_cik AND h.m = month(s.txn_date)
+         AND h.y BETWEEN year(s.txn_date) - 3 AND year(s.txn_date) - 1
+        GROUP BY s.accn, s.line_no
+    )
+    SELECT s.*, r.routine FROM s JOIN r USING (accn, line_no)
+    """
+
+
+def insider_flow_sql(window_days: int = 90) -> str:
+    """Per issuer, insider selling and net flow in the window as of $as_of (M12-A1,
+    informational). Sold, sellers and net flow count discretionary, non-routine sales only;
+    planned, unknown-plan and routine sales are summed apart. Net flow is every conviction
+    buy (not only clusters) minus those sales. n_peer_sellers: discretionary sellers who did
+    not also buy. Exercises (M, shares acquired) and gifts (G) are counted as context;
+    tax withholding (F) is not."""
+    w = int(window_days)
+    disc = "plan = 'discretionary' AND NOT routine"
+    return f"""
+    WITH s AS ({insider_sells_sql(w)}),
+    b AS ({conviction_buys_sql(w)}),
+    bs AS (
+        SELECT issuer_cik, round(sum(usd), 2) AS usd_bought, list(DISTINCT owner_cik) AS buyer_ciks
+        FROM b GROUP BY issuer_cik
+    ),
+    ss AS (
+        SELECT issuer_cik,
+               round(sum(usd) FILTER (WHERE {disc}), 2) AS usd_sold,     -- cents: float sums vary with thread order
+               nullif(count(DISTINCT owner_cik) FILTER (WHERE {disc}), 0) AS n_sellers,
+               round(sum(usd) FILTER (WHERE plan = 'planned'), 2) AS usd_planned,
+               round(sum(usd) FILTER (WHERE plan = 'unknown'), 2) AS usd_unknown,
+               round(sum(usd) FILTER (WHERE plan = 'discretionary' AND routine), 2) AS usd_routine,
+               list_sort(list(DISTINCT owner_name) FILTER (WHERE {disc})) AS sellers,
+               list(DISTINCT owner_cik) FILTER (WHERE {disc}) AS seller_ciks,
+               list_sort(list(DISTINCT accn) FILTER (WHERE {disc})) AS accns
+        FROM s GROUP BY issuer_cik
+    ),
+    ctx AS (
+        SELECT t.issuer_cik,
+               nullif(count(DISTINCT t.owner_cik) FILTER (WHERE t.txn_code = 'M' AND t.acq_disp = 'A'), 0)
+                   AS n_exercisers,
+               nullif(count(DISTINCT t.owner_cik) FILTER (WHERE t.txn_code = 'G'), 0) AS n_gifters
+        FROM form4_effective($as_of, p_since := $as_of - INTERVAL {w} DAY) t
+        WHERE NOT t.is_derivative AND NOT t.is_holding AND t.txn_code IN ('M', 'G')
+          AND t.txn_date > $as_of - INTERVAL {w} DAY AND t.txn_date <= t.filed
+          AND (t.is_officer OR t.is_director)
+        GROUP BY t.issuer_cik
+    )
+    SELECT issuer_cik, ss.usd_sold, ss.n_sellers, ss.usd_planned, ss.usd_unknown, ss.usd_routine,
+           ss.sellers, ss.accns,
+           CASE WHEN bs.usd_bought IS NOT NULL OR ss.usd_sold IS NOT NULL
+                THEN round(coalesce(bs.usd_bought, 0) - coalesce(ss.usd_sold, 0), 2) END AS net_flow,
+           nullif(len(list_filter(coalesce(ss.seller_ciks, []),
+                                  lambda x: NOT list_contains(coalesce(bs.buyer_ciks, []), x))), 0) AS n_peer_sellers,
+           ctx.n_exercisers, ctx.n_gifters
+    FROM ss FULL JOIN bs USING (issuer_cik) FULL JOIN ctx USING (issuer_cik)
     """
 
 

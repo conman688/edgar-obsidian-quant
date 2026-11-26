@@ -102,7 +102,7 @@ def test_routine_history_counts_only_this_issuer(con):
 
 def test_offering_sales_and_price_typos_are_not_sells(con):
     add_txn(con, "s1", 501, "2024-08-20", fn=True, footnote="Shares sold in an underwritten public offering.")
-    add_txn(con, "s2", 502, "2024-08-20", price=1_200.0)           # total typed into the price field
+    add_txn(con, "s2", 502, "2024-08-15", price=1_200.0)           # total in the price field (close 12)
     add_txn(con, "s3", 503, "2024-08-20", ad="A")                  # code S must dispose
     add_txn(con, "s4", 504, "2024-08-25", filed=date(2024, 8, 20)) # trade dated after its filing
     r = row(con)

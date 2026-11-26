@@ -9,7 +9,8 @@ or NULL (an input is missing), and each company gets one status:
 - shortlist:  every filter passes on clean data. Ranked by EV/EBIT, cheapest first.
 
 `flags` are warnings that do not block ranking (multi-class share counts, pre-tax
-income standing in for EBIT); check those names by hand. `sources` and `form4_accns`
+income standing in for EBIT); check those names by hand. `signals` (M12) are
+informational: insider selling, shown but never read by status or rank. `sources` and `form4_accns`
 trace every number to the filings it came from.
 """
 from __future__ import annotations
@@ -25,7 +26,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from src.db.pit import Policy
-from src.db.queries import cluster_buys_sql, share_trend_sql, valuation_sql
+from src.db.queries import cluster_buys_sql, insider_flow_sql, share_trend_sql, valuation_sql
 
 
 @dataclass(frozen=True)
@@ -47,19 +48,26 @@ def metrics_sql(insider_window_days: int = 90, policy: Policy = "as_last_known")
     return f"""
     WITH v AS ({valuation_sql(policy)}),
     st AS ({share_trend_sql(policy)}),
-    b AS ({cluster_buys_sql(insider_window_days)})
+    b AS ({cluster_buys_sql(insider_window_days)}),
+    fl AS ({insider_flow_sql(insider_window_days)})
     SELECT $as_of::DATE AS as_of, ps.ticker, c.name,
            v.* REPLACE (list_concat(v.issues, CASE WHEN st.quarantine THEN ['share_jump'] END) AS issues),
            v.fcf_ttm / nullif(v.mcap, 0) AS fcf_yield,
            st.cagr_1y AS share_cagr_1y, st.cagr_3y AS share_cagr_3y,
            b.n_insiders, b.n_c_suite, b.usd_bought AS insider_buy_90d_usd,
            b.usd_bought / nullif(v.mcap, 0) AS insider_buy_to_mcap,
-           b.buyers, b.accns AS form4_accns
+           b.buyers, b.accns AS form4_accns,
+           -- M12-A1, informational only: shown, never read by a filter, status or rank.
+           fl.usd_sold AS insider_sell_90d_usd, fl.n_sellers, fl.sellers,
+           fl.usd_planned AS insider_sell_planned_90d_usd, fl.usd_unknown AS insider_sell_unknown_plan_90d_usd,
+           fl.usd_routine AS insider_sell_routine_90d_usd, fl.net_flow AS net_insider_flow_90d_usd,
+           fl.n_peer_sellers, fl.n_exercisers, fl.n_gifters, fl.accns AS form4_sell_accns
     FROM v
     JOIN companies c USING (cik)
     JOIN price_status ps USING (cik)
     LEFT JOIN st USING (cik)
     LEFT JOIN b ON b.issuer_cik = v.cik
+    LEFT JOIN fl ON fl.issuer_cik = v.cik
     WHERE NOT c.is_financial AND NOT c.is_shell
     """
 
@@ -91,7 +99,11 @@ def rank_sql(filters: Filters, source: str) -> str:
                             CASE WHEN NOT pass_insider THEN 'insider' END], lambda x: x IS NOT NULL) AS failed_filters,
                list_filter([CASE WHEN multi_class_risk THEN 'multi_class_risk' END,
                             CASE WHEN ebit_tag <> 'OperatingIncomeLoss' THEN 'ebit_is_pretax' END],
-                           lambda x: x IS NOT NULL) AS flags
+                           lambda x: x IS NOT NULL) AS flags,
+               -- Informational (M12-A1): never read by status or rank below.
+               list_filter([CASE WHEN n_sellers >= 2 THEN 'cluster_sell' END,
+                            CASE WHEN n_insiders IS NOT NULL AND n_peer_sellers > 0 THEN 'buy_while_peers_sell' END],
+                           lambda x: x IS NOT NULL) AS signals
         FROM j
     ),
     r AS (
