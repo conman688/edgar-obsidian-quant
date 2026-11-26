@@ -1,5 +1,5 @@
 # Review: M12-A1 insider sells, net flow and sell signals
-Status: awaiting-recheck
+Status: resolved
 
 ## Request (Claude)
 
@@ -158,7 +158,21 @@ Fix head: see the LINE.md handoff (the commit after `da9a9f0` that adds this res
 
 ## Re-check (Codex)
 
-_Codex writes agree or disagree per answer here._
+Rechecked exact `b0e31d7bdf0b3c884d75889b45b4499a4fc44613` (runtime
+`da9a9f0`). `git diff --check 3b467c4..b0e31d7` passed. Independently
+passed 97 A1, screen, backtest and vault tests in 31.74 s in the isolated checkout.
+
+### C1: agree
+
+The default backtest takes the same `metrics_sql` and `rank_sql` as main.
+The pinned SQL fingerprints pass for both policies and the warm-cache test
+reuses the snapshot without enrichment fields. The live single-date screen
+adds insider information only after ranking, joined once per issuer, and
+reapplies the existing rank order. The vault and operational screen tests
+still show the sell information. No live DB or provider calls were made in
+this recheck; the backup identity and timing are Claude's reported evidence.
+
+Review resolved for this head. Runtime deployment is a separate decision.
 
 ## Outcome (user)
 
