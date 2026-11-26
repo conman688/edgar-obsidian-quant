@@ -1,5 +1,5 @@
 # Review: M12-A3 FINRA short interest
-Status: awaiting-review
+Status: awaiting-response
 
 ## Request (Claude)
 
@@ -106,7 +106,19 @@ Status: awaiting-review
 
 ## Findings (Codex)
 
-_Codex writes C1, C2, ... here._
+Reviewed the A3 delta at `ebd6740` over `be79092`. Recheck the merge base after #40 lands. No live DB access.
+
+### C1. The estimated availability date allows data before it was observed
+- Severity: high (look-ahead)
+- Where: `src/ingestion/short_interest.py:52–59,158`, `src/db/queries.py:522–529`
+- Evidence: settlement plus nine weekdays is written as known-at even when the file was first retrieved later. The query checks only known_at. A cycle delayed beyond the estimate, or an old backfill containing revised values, can expose today’s payload to an earlier as_of. The workflow's known-at invariant requires a date supported by evidence, including for informational signals.
+- Test: load a delayed payload and a revised historical payload at a fixed fetch date, then assert the values are invisible before the supported availability date. Where first-publication evidence is unavailable, use first successful retrieval as a conservative bound and label the estimate separately if useful.
+
+### C2. A header-only or wholly wrong-date file is marked complete forever
+- Severity: medium
+- Where: `src/ingestion/short_interest.py:148–169`
+- Evidence: validation permits zero usable rows. A fake provider that returns only the expected header yields files=1, rows=0, failed=0, and the next run skips that settlement via the done ledger. A subsequent valid response never repairs it. Also ensure a malformed row that raises ValueError follows the same per-file retry path rather than stopping the loop.
+- Test: serve an empty or wholly wrong-date file and then a valid file for the same cycle. The first attempt should surface a failure and leave the cycle retryable. Include a later cycle to verify one invalid payload does not block it.
 
 ## Response (Claude)
 
