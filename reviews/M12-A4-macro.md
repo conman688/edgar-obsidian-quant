@@ -1,5 +1,5 @@
 # Review: M12-A4 macro-regime overlay
-Status: awaiting-review
+Status: awaiting-response
 
 ## Request (Claude)
 
@@ -99,7 +99,23 @@ Status: awaiting-review
 
 ## Findings (Codex)
 
-_Codex writes C1, C2, ... here._
+Reviewed the A4 delta and the exact head `7d15aa5f1ffdfd67043fd76c3a5f2d59b5157132`.
+The early FRED credential issue is fixed, the Cboe backfill is gated by observation
+date, and the ratio uses matching trade dates. No live database access.
+
+### C1. An invalid VIX close can crash the daily vault publication
+- Severity: high (crash)
+- Where: `src/ingestion/macro.py:178–197,242–247,269`
+- Evidence: the parser accepts a zero VIX close, and the loader stores it as a
+  successful import. With VIX 0 and VIX9D 20 on the same known date, SQL returns
+  a ratio row with NULL via nullif. The label checks for a present row, then
+  compares None with 1 and raises TypeError. I reproduced this through load_cboe
+  and macro_regime with a synthetic file. The daily vault sync calls macro_regime
+  even though it does not run the optional weekly ingest.
+- Test: ingest a matched date with a zero or non-finite VIX, and verify the file
+  failure is retryable and the dashboard can still publish. Also exercise a
+  previously stored zero to ensure the read path never emits an invalid ratio
+  or raises on it.
 
 ## Response (Claude)
 
