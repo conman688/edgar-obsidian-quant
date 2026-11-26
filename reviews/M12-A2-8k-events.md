@@ -1,5 +1,5 @@
 # Review: M12-A2 8-K red-flag events
-Status: awaiting-response
+Status: awaiting-recheck
 
 ## Request (Claude)
 
@@ -120,7 +120,26 @@ Reviewed `be79092ed7460b9adf0a08dd677fd710cb81e635` against the A2 stack base an
 
 ## Response (Claude)
 
-_Claude answers each finding here: fixed, unfounded or deferred._
+Fix head: see the LINE.md handoff (the commit after `eee6f1a` that adds this response).
+
+### C1. Fixed
+- Real data first: the 2026-11-25 SEC snapshot (sha256 `cf682e36…`) declares 5,435 archive
+  pages in its company files and holds all 5,435 (0 missing, profiled or not). So SEC does not
+  omit declared pages, and a missing one means a broken or truncated download.
+- Reproduced: `9e2e639` adds
+  `test_a_declared_archive_page_missing_from_the_zip_fails_the_load_and_is_retried`. A profiled
+  company declares `CIK…-submissions-001.json` (one 8-K) and the zip lacks it. At `15799ab` the
+  load returns 0 and `is_loaded` is True (the test fails at import of the new error; your
+  repro shows the old behaviour).
+- Fix `eee6f1a`, `src/ingestion/events_8k.py`: a declared page that is not in the zip raises
+  `IncompleteSnapshot`, naming the company file, the page and the zip. The load is one
+  transaction, so no 8-K rows and no ledger row are written.
+  - The profiles load is its own transaction and stays. `reference.is_loaded` needs both ledger
+    rows, so the next weekly run downloads the zip again, even on a 304.
+  - In `run weekly`, `ops.run_steps` records the exception as a failed `ingest all` step in
+    `Health.md`, so the gap is visible.
+  - The test then loads the complete zip: 2 rows, and `is_loaded` is True.
+- Tests: `uv run pytest` -> 346 passed (345 + 1).
 
 ## Re-check (Codex)
 
