@@ -509,3 +509,22 @@ def last_results_8k_sql() -> str:
     WHERE filed <= $as_of AND list_contains(list_transform(string_split(items, ','), lambda x: trim(x)), '{RESULTS_ITEM}')
     GROUP BY cik
     """
+
+
+# M12-A3: short interest as a share of shares outstanding that counts as high, and how old the
+# newest cycle may be (3 cycles) before a company is treated as having none.
+HIGH_SHORT_INTEREST = 0.10
+# Screen issues that make the cover-page share count unusable as a denominator.
+UNTRUSTED_SHARE_ISSUES = ("stale_shares", "share_jump", "foreign_filer")
+SHORT_INTEREST_MAX_AGE_DAYS = 45
+
+
+def short_interest_sql() -> str:
+    """Per company, the newest FINRA cycle known by as_of (known_at <= as_of, never the
+    settlement date), matched on the company's current ticker. Binds $as_of."""
+    return f"""
+    SELECT ps.cik, s.settlement_date, s.known_at, s.short_shares, s.days_to_cover
+    FROM short_interest s JOIN price_status ps ON ps.ticker = s.symbol
+    WHERE s.known_at <= $as_of AND s.settlement_date > $as_of - INTERVAL {SHORT_INTEREST_MAX_AGE_DAYS} DAY
+    QUALIFY row_number() OVER (PARTITION BY ps.cik ORDER BY s.settlement_date DESC) = 1
+    """

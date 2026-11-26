@@ -26,7 +26,7 @@ from typing import Callable
 from src import backtest, config, ops
 from src.db.pit import concept_sql
 from src.db.schema import connect
-from src.ingestion import companyfacts, events_8k, form4_sources, prices, reference
+from src.ingestion import companyfacts, events_8k, form4_sources, prices, reference, short_interest
 from src.ingestion.sec import SecClient, sha256_file
 from src.ingestion.filing_text import fetch_sections
 from src.ingestion.related_party import fetch_related_party
@@ -171,12 +171,24 @@ def ingest_form4(con, args) -> None:
         sys.exit(f"{s.failed:,} Form 4 filings failed (retried next run)")
 
 
+def ingest_short_interest(con, args) -> None:
+    """FINRA short interest (M12-A3). A FINRA failure warns and is retried next run: it never
+    stops the weekly refresh, and the strict daily does not run this step."""
+    s = short_interest.load(con, short_interest.FinraClient())
+    print(f"short interest: {s.files:,} files, {s.rows:,} rows"
+          + (f"; {s.failed:,} failed (retried next run): {s.errors[0]}" if s.failed else ""))
+
+
+INGEST_JOBS = {"tickers": [ingest_tickers], "companies": [ingest_companies], "facts": [ingest_facts],
+               "prices": [ingest_prices], "form4": [ingest_form4], "short-interest": [ingest_short_interest],
+               "all": [ingest_tickers, ingest_companies, ingest_facts, ingest_prices, ingest_form4,
+                       ingest_short_interest]}
+
+
 def cmd_ingest(args, con=None) -> None:
     config.DATA_DIR.mkdir(parents=True, exist_ok=True)
     con = _db(con)
-    jobs = {"tickers": [ingest_tickers], "companies": [ingest_companies], "facts": [ingest_facts],
-            "prices": [ingest_prices], "form4": [ingest_form4],
-            "all": [ingest_tickers, ingest_companies, ingest_facts, ingest_prices, ingest_form4]}[args.what]
+    jobs = INGEST_JOBS[args.what]
     if args.zip and args.what == "all":
         sys.exit("--zip works with a single source, not 'all'")
     for job in jobs:
@@ -433,7 +445,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     ing = sub.add_parser("ingest", help="download and load SEC data")
-    ing.add_argument("what", choices=["tickers", "companies", "facts", "prices", "form4", "all"])
+    ing.add_argument("what", choices=["tickers", "companies", "facts", "prices", "form4", "short-interest", "all"])
     ing.add_argument("--zip", help="use an already-downloaded zip instead of fetching")
     ing.add_argument("--cik", type=int, action="append", help="load only these CIKs (repeatable)")
     ing.add_argument("--keep-raw", action="store_true", help="keep downloaded zips after loading")

@@ -117,7 +117,10 @@ reading only and never change status or rank. A section "8-K events" lists Forms
 8-K/A with Item 4.02 (non-reliance), 4.01 (auditor change), 2.06 (impairment) or 3.01 (listing
 notice) in the last year and 5.02 (any director or officer change) in the last 90 days, each a
 signal too, plus the date of the last results 8-K (Item 2.02). `ingest companies` stores them
-from the same `submissions.zip`, so they refresh on Saturdays.
+from the same `submissions.zip`, so they refresh on Saturdays. A "Short interest" line gives
+FINRA's newest known cycle: short shares as a share of shares outstanding (signal
+`high_short_interest` at 10% or more) and days to cover. `Sources/` holds one note per added
+data source with its terms and known-at rule.
 
 Notes are found by the `cik` in their frontmatter, so renaming one is safe. Only the
 `AUTO-GENERATED` block and the auto frontmatter keys change; your own keys, comments and text
@@ -305,6 +308,10 @@ Uncapped, a heavy query on an 8 GB machine with little free disk can crash the c
 - 8-K events (M12) are known from their SEC filing date (`filed <= as_of`), never the acceptance
   time. Items are SEC's raw string, matched as whole tokens; the legacy numbers used before
   2004-08-23 are not mapped to the current ones.
+- FINRA short interest (M12) is known at the later of 9 weekdays after its settlement date
+  (FINRA publishes after 7 business days) and the day it was first fetched, because rows are
+  revised in place; it is matched to companies by current ticker. FINRA requests use a
+  generic User-Agent, never the SEC one.
 - Notes are written atomically. Only the `AUTO-GENERATED` block and auto frontmatter keys change.
 - A journal note is written once, on its decision date, and never rewritten; its snapshot is the
   screen as it was then.

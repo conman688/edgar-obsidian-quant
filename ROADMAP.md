@@ -445,6 +445,10 @@ Phase A: high value, low effort (do first, in this order)
 3. **FINRA short interest and days-to-cover.** Twice-monthly CSVs; key to publication date. Files are
    for non-commercial use. Do not hard-code the cadence: SR-FINRA-2026-012 proposes weekly reporting
    (SEC approval **unverified**).
+   Verified 2026-11-25: files from 2017-12-29 only (214 cycles; earlier names 403); FINRA's
+   2026-27 schedule is still twice monthly and publishes 7 business days after settlement; rows
+   are revised in place. Cadence comes from FINRA's date list, never hard-coded. Status: built on
+   `feat/m12-short-interest` (stacked on A2), review `reviews/M12-A3-short-interest.md`.
 4. **Macro-regime overlay.** FRED `T10Y2Y` (10y-2y spread) and `NFCI` (weekly), via the FRED REST API
    directly (fredapi is unmaintained since 2024-05), ALFRED vintages for revised series; Cboe VIX,
    VIX9D, VVIX CSVs (VIX9D/VIX as a free term-structure proxy). Do **not** store `BAMLH0A0HYM2` (HY

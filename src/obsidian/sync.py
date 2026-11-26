@@ -31,8 +31,21 @@ from src.tone import load_lists
 from src import config
 from src.screen import Filters, screen
 
-FOLDERS = ("Companies", "Executives", "Filings", "Events", "Journal")
+FOLDERS = ("Companies", "Executives", "Filings", "Events", "Journal", "Sources")
 SYNCED = ("shortlist", "quarantine")     # statuses that get a note; existing notes are always updated
+SOURCES = {
+    "FINRA short interest": {
+        "what": "Equity short interest positions reported by FINRA member firms, twice a month, all exchanges and OTC.",
+        "access": "Public, no key: settlement dates from api.finra.org, files from cdn.finra.org "
+                  "(shrtYYYYMMDD.csv, pipe-delimited). Fetched at 1 request a second with a generic User-Agent.",
+        "terms": "FINRA Data is provided for non-commercial use.",
+        "history": "Settlement dates from 2017-12-29; nothing earlier on the public file list.",
+        "known_at": "The later of settlement + 9 weekdays (FINRA publishes 7 business days after "
+                    "settlement) and the day we first fetched the file. Rows can be FINRA revisions, "
+                    "so the 2017-2026 backfill is known only from the day it ran (2026-11-25 or later).",
+        "refresh": "Saturday (`ingest all`); each settlement file is fetched once.",
+    },
+}
 SELL_LABELS = {"discretionary": "discretionary", "planned": "10b5-1 plan", "unknown": "plan unknown"}
 HISTORY_DAYS = 365                       # insider purchases shown per company and person
 TONE_KEYS = ("negative", "litigious", "uncertainty")
@@ -305,6 +318,7 @@ def sync_vault(con: duckdb.DuckDBPyConnection, vault: Path, as_of: date, filters
             "insider_buy_90d_usd": _r(r["insider_buy_90d_usd"], 0),
             "insider_sell_90d_usd": _r(r["insider_sell_90d_usd"], 0),
             "net_insider_flow_90d_usd": _r(r["net_insider_flow_90d_usd"], 0), "signals": list(r["signals"]),
+            "short_interest_pct": _r(r["short_interest_pct"]), "days_to_cover": _r(r["days_to_cover"], 2),
             "drawdown_52w": _r(r["drawdown_52w"]),
             "mcap": _r(r["mcap"], 0), "as_of": as_of, "price_date": r["price_date"], "issues": list(r["issues"]), "flags": list(r["flags"]),
             "rf_new_sentences": len(rl["new"]) if rl and rl["status"] == "ok" else None,
@@ -322,6 +336,11 @@ def sync_vault(con: duckdb.DuckDBPyConnection, vault: Path, as_of: date, filters
                                                        removed_shown=REMOVED_SHOWN))
         stats.record("Companies", changed)
 
+    # M12: one note per added data source (terms, access, known-at rule).
+    for title, meta in SOURCES.items():
+        stats.record("Sources", upsert_note(vault / "Sources" / f"{title}.md", {"type": "source", "tags": ["source"]},
+                                            env.get_template("source.md.j2").render(title=title, s=meta)))
+
     changed = upsert_note(vault / "Dashboard.md", {"type": "dashboard"}, env.get_template("dashboard.md.j2").render(
         as_of=as_of, filters=json.dumps(asdict(filters), sort_keys=True), data=_data_dates(con, as_of),
         decisions=_decisions(con, journals, {r["cik"]: r for r in rows}, as_of)))
@@ -332,12 +351,14 @@ def sync_vault(con: duckdb.DuckDBPyConnection, vault: Path, as_of: date, filters
 def _data_dates(con: duckdb.DuckDBPyConnection, as_of: date) -> dict:
     """The newest dated price, Form 4, XBRL fact and 8-K stored by as_of, across all companies.
     Not coverage: an import can have gaps, and a company's own inputs are in its note."""
-    (px, f4, xf, e8), = con.execute("""
+    (px, f4, xf, e8, si), = con.execute("""
         SELECT (SELECT max(price_date) FROM prices WHERE price_date <= $as_of),
                (SELECT max(filed) FROM form4_transactions WHERE filed <= $as_of),
                (SELECT max(filed) FROM xbrl_facts WHERE filed <= $as_of),
-               (SELECT max(filed) FROM filings_8k WHERE filed <= $as_of)""", {"as_of": as_of}).fetchall()
-    return {"price": px, "form4": f4, "facts": xf, "form8k": e8}
+               (SELECT max(filed) FROM filings_8k WHERE filed <= $as_of),
+               (SELECT max(settlement_date) FROM short_interest WHERE known_at <= $as_of)""",
+                              {"as_of": as_of}).fetchall()
+    return {"price": px, "form4": f4, "facts": xf, "form8k": e8, "short": si}
 
 
 def _decisions(con: duckdb.DuckDBPyConnection, journals: list[dict], now: dict, as_of: date) -> list[dict]:

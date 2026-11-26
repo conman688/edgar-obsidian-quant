@@ -43,6 +43,13 @@ Last {{ window }} days: discretionary sales {{ c.insider_sell_90d_usd | usd }}{%
 {% endfor %}{% else %}None found.
 {% endif %}
 
+## Short interest
+
+{% if c.short_settlement_date %}Short interest (FINRA, settled {{ c.short_settlement_date }}, known {{ c.short_known_at }}): {{ c.short_interest_pct | pct }} of shares, {{ c.days_to_cover | num(1) }} days to cover.
+{% else %}No FINRA short interest known for this ticker in the last 45 days.
+{% endif %}
+Shown for reading only: it never changes status or rank. See [[FINRA short interest]].
+
 ## 8-K events
 
 Red-flag items from Forms 8-K and 8-K/A filed by {{ c.as_of }}: 4.02, 4.01, 2.06 and 3.01 over the last year, 5.02 (any director or officer change, including appointments) over the last 90 days. Shown for reading only: they never change status or rank. SEC's item list is refreshed on Saturdays.
