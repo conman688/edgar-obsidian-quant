@@ -218,3 +218,25 @@ def test_company_note_lists_sells_and_a_second_sync_writes_nothing(con, tmp_path
     assert "| 2024-08-21 | OWNER 502 | 1,000 | 12.00 | $12k | 10b5-1 plan |" in body
     assert "000123424000501" in body                                # EDGAR link to the filing
     assert sum(sync_vault(con, tmp_path, AS_OF).written.values()) == 0
+
+
+# --- backtest separation (review M12-A1 C1) -----------------------------------------
+
+def test_backtest_metrics_sql_is_unchanged_so_its_snapshot_cache_survives():
+    # sha256 of main 3b467c4's metrics_sql(90, policy): the snapshot fingerprint hashes this SQL.
+    import hashlib
+    from src.screen import metrics_sql
+    assert hashlib.sha256(metrics_sql(90, "as_last_known").encode()).hexdigest() == \
+        "4aa88c7da1007500040db222716d1c5f6d210ac35f0484862429e2c4ecc09be1"
+    assert hashlib.sha256(metrics_sql(90, "as_first_reported").encode()).hexdigest() == \
+        "02ef4fac2f4d2f070255b731e85a7d25e5b58bbc387e6d02cc6ba9683da276a4"
+
+
+def test_backtest_snapshot_cache_from_before_a1_is_reused(con, tmp_path):
+    import pyarrow.parquet as pq
+    from src.backtest import snapshots
+    add_txn(con, "s1", 501, "2024-08-20")
+    assert snapshots(con, [AS_OF], "as_last_known", tmp_path) == 1
+    cols = pq.read_schema(tmp_path / "as_last_known" / f"metrics-{AS_OF}.parquet").names
+    assert "insider_sell_90d_usd" not in cols                       # the backtest never reads sells
+    assert snapshots(con, [AS_OF], "as_last_known", tmp_path) == 0
