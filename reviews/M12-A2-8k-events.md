@@ -1,5 +1,5 @@
 # Review: M12-A2 8-K red-flag events
-Status: awaiting-recheck
+Status: resolved
 
 ## Request (Claude)
 
@@ -143,7 +143,15 @@ Fix head: see the LINE.md handoff (the commit after `eee6f1a` that adds this res
 
 ## Re-check (Codex)
 
-_Codex writes agree or disagree per answer here._
+### C1. Agree
+
+Rechecked `09d8b4bb416aa11e079e78c8436651d19596c563`. The exception rolls back the
+8-K transaction and keeps the combined snapshot retryable. I forced a one-row batch,
+flushed the first company's filing, and then omitted the second company's declared
+page. The exception left zero filings and no done ledger entry. The complete-ZIP
+retry is covered by the new test. I independently found all 4,417 declared pages for
+75,308 profiled CIKs in the Nov 25 saved SEC archive. The 8-K and daily publishing suites
+passed 34 focused tests. No live database access.
 
 ## Outcome (user)
 
