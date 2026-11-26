@@ -285,10 +285,15 @@ def test_a_non_positive_or_non_finite_close_is_refused_and_the_regime_never_brea
     assert con.sql("SELECT count(*) FROM cboe_daily WHERE index_id = 'VIX'").fetchall() == [(0,)]
     r = macro.macro_regime(con, date(2026, 11, 20))
     assert r["VIX"] is None and r["VIX9D_VIX"] is None and r["labels"] == []
+    f.files["VIX"] = ohlc(("11/20/2026", 22.0))                       # retried next run
+    assert macro.load_cboe(con, f, now=datetime(2026, 11, 21, 9)).rows == 1
 
 
-def test_a_null_ratio_already_stored_never_breaks_the_regime(con):
+def test_a_zero_close_already_stored_never_breaks_the_regime_or_the_dashboard(con, tmp_path):
+    from src.obsidian.sync import sync_vault
     con.execute("INSERT INTO cboe_daily VALUES ('VIX', DATE '2026-11-20', 0, DATE '2026-11-20', now()), "
                 "('VIX9D', DATE '2026-11-20', 20, DATE '2026-11-20', now())")
     r = macro.macro_regime(con, date(2026, 11, 20))
     assert r["VIX9D_VIX"] is None and r["labels"] == []
+    sync_vault(con, tmp_path, date(2026, 11, 20))
+    assert "VIX9D/VIX none" in (tmp_path / "Dashboard.md").read_text()
