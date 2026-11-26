@@ -463,10 +463,9 @@ Phase C: optional, low value for this screener
 
 Avoid: Reddit, StockTwits, pytrends (terms restrict use, access ending or archived, not reproducible).
 
-Decision needed (user): survivorship-free prices. The biggest limit is the price layer (57% of filers
-have no price history; yfinance data is personal-use only). A paid survivorship-free source would
-improve every signal more than any feed above but conflicts with G4 ($0/month). Not scheduled until
-the user decides.
+Decision (user, 2026-11-25): no paid price data. G4 ($0/month) stands. The price layer stays the
+biggest limit (57% of filers have no price history; yfinance data is personal-use only), so
+backtests keep reporting the survivorship gap and treating results as an upper bound.
 
 Checks:
 - Each Phase A item: a PIT test where a value whose known-at date is after `as_of` is never read.
@@ -755,6 +754,6 @@ M1 and M3 can run in parallel. M5 (backtest) should finish before trusting M4's 
 | Multi-class share counts unreliable in companyfacts | Wrong market cap | Flag multi-class filers; manual check for shortlisted ones |
 | Filer tagging errors | Silent bad ratios | Quarantine rules plus accession-level traceability |
 | SEC blocks traffic | Ingestion stops | Real contact in User-Agent, 8 req/s, backoff on 403 |
-| yfinance / Yahoo data is personal-use only | Licence limits sharing results | Keep personal; see M12 price decision |
+| yfinance / Yahoo data is personal-use only | Licence limits sharing results | Keep personal; no paid prices (M12 decision) |
 | New sources leak future data (13F quarter end, FINRA settlement date, recomputed factor files) | Backtest looks better than reality | M12 known-at date rule; snapshots for recomputed files |
 | Licence-restricted series (ICE HY OAS, FINRA non-commercial) | Cannot store or redistribute | Live display only; licence recorded per source |
