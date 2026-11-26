@@ -514,6 +514,8 @@ def last_results_8k_sql() -> str:
 # M12-A3: short interest as a share of shares outstanding that counts as high, and how old the
 # newest cycle may be (3 cycles) before a company is treated as having none.
 HIGH_SHORT_INTEREST = 0.10
+# Screen issues that make the cover-page share count unusable as a denominator.
+UNTRUSTED_SHARE_ISSUES = ("stale_shares", "share_jump", "foreign_filer")
 SHORT_INTEREST_MAX_AGE_DAYS = 45
 
 
