@@ -304,15 +304,16 @@ def conviction_buys_sql(window_days: int = 30, include_unknown_10b5_1: bool = Fa
     """
 
 
-def _open_market_trade(code: str, acq_disp: str, window_days: int) -> str:
+def _open_market_trade(code: str, acq_disp: str, window_days: int | None) -> str:
     """WHERE clause shared by buys and sells over form4_effective t LEFT JOIN prices p: an
-    officer's or director's common-stock trade with this code, dated in the window and not
-    after its filing, priced within 0.5-2x that day's close when one is stored, with no
-    offering named in the footnotes."""
+    officer's or director's common-stock trade with this code, dated in the window (None:
+    any date) and not after its filing, priced within 0.5-2x that day's close when one is
+    stored, with no offering named in the footnotes."""
+    window = "" if window_days is None else f"AND t.txn_date > $as_of - INTERVAL {int(window_days)} DAY"
     return f"""NOT t.is_derivative AND NOT t.is_holding
           AND t.txn_code = '{code}' AND t.acq_disp = '{acq_disp}'
           AND t.price > 0 AND t.shares > 0
-          AND t.txn_date > $as_of - INTERVAL {int(window_days)} DAY
+          {window}
           AND t.txn_date <= t.filed          -- a later date is a typo (2033 in a 2022 filing)
           AND (t.is_officer OR t.is_director)
           AND NOT regexp_matches(coalesce(t.security_title, ''),
@@ -352,13 +353,14 @@ def insider_sells_sql(window_days: int = 90) -> str:
         LEFT JOIN prices p ON p.cik = t.issuer_cik AND p.price_date = t.txn_date
         WHERE {_open_market_trade("S", "D", window_days)}
     ),
-    hist AS (        -- earlier sales by the same owners of the same issuers, known by as_of
-        SELECT DISTINCT h.issuer_cik, h.owner_cik, year(h.txn_date) AS y, month(h.txn_date) AS m
-        FROM form4_effective($as_of) h
+    hist AS (        -- earlier sales by the same owners of the same issuers, known by as_of,
+                     -- under the same row rules (any plan status): offerings never make a routine
+        SELECT DISTINCT t.issuer_cik, t.owner_cik, year(t.txn_date) AS y, month(t.txn_date) AS m
+        FROM form4_effective($as_of) t
         SEMI JOIN (SELECT DISTINCT issuer_cik, owner_cik FROM s) o
-             ON o.issuer_cik = h.issuer_cik AND o.owner_cik = h.owner_cik
-        WHERE NOT h.is_derivative AND NOT h.is_holding AND h.txn_code = 'S' AND h.acq_disp = 'D'
-          AND h.shares > 0 AND h.txn_date <= h.filed
+             ON o.issuer_cik = t.issuer_cik AND o.owner_cik = t.owner_cik
+        LEFT JOIN prices p ON p.cik = t.issuer_cik AND p.price_date = t.txn_date
+        WHERE {_open_market_trade("S", "D", None)}
     ),
     r AS (
         SELECT s.accn, s.line_no, count(DISTINCT h.y) = 3 AS routine
