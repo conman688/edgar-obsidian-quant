@@ -100,6 +100,17 @@ def test_routine_history_counts_only_this_issuer(con):
     assert row(con)["insider_sell_90d_usd"] == pytest.approx(120_000)
 
 
+def test_routine_history_uses_the_same_sale_rules(con):
+    # Review A1 early finding (Codex): offering sales in prior years must not make a routine.
+    for y in (2021, 2022, 2023):
+        add_txn(con, f"r{y}", 501, f"{y}-08-10", plan=None if y < 2023 else 0, fn=True,
+                footnote="Shares sold in an underwritten public offering.")
+    add_txn(con, "s1", 501, "2024-08-20")
+    [s] = sells(con, AS_OF)
+    assert s["accn"] == "s1" and not s["routine"]
+    assert row(con)["insider_sell_90d_usd"] == pytest.approx(120_000)
+
+
 def test_offering_sales_and_price_typos_are_not_sells(con):
     add_txn(con, "s1", 501, "2024-08-20", fn=True, footnote="Shares sold in an underwritten public offering.")
     add_txn(con, "s2", 502, "2024-08-15", price=1_200.0)           # total in the price field (close 12)
