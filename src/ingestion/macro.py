@@ -48,21 +48,21 @@ class FredClient:
         self._session.headers.update({"User-Agent": USER_AGENT})
         self._interval, self._next = 1.0 / rate_per_s, 0.0
 
-    def _redact(self, text: str) -> str:
-        return text.replace(self._key, "REDACTED")
-
     def _get(self, path: str, **params) -> dict:
         wait = self._next - time.monotonic()
         if wait > 0:
             time.sleep(wait)
         self._next = max(self._next, time.monotonic()) + self._interval
+        # Errors are fixed text: the endpoint and the status or exception class only. A response
+        # body or a requests message can echo the URL, and so the key. A redirect is refused,
+        # so the key's query string never follows it to another host.
         try:
             r = self._session.get(API + path, params={**params, "api_key": self._key, "file_type": "json"},
-                                  timeout=120)
-        except requests.RequestException as e:          # its message holds the URL, and so the key
-            raise FredError(self._redact(f"FRED {path}: {e}")) from None
+                                  timeout=120, allow_redirects=False)
+        except requests.RequestException as e:
+            raise FredError(f"FRED {path} {type(e).__name__}") from None
         if r.status_code != 200:
-            raise FredError(self._redact(f"FRED {path} HTTP {r.status_code}: {r.text[:200]}"))
+            raise FredError(f"FRED {path} HTTP {r.status_code}")
         return r.json()
 
     def vintage_dates(self, series: str) -> list[date]:
