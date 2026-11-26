@@ -5,7 +5,7 @@ revised every week (the 2020-03-20 value was -0.17, then -0.13, -0.17, -0.20 ...
 vintages from 2014-01-27 and is almost never revised. One request holds at most 2,000 vintages.
 Known-at is the vintage date (realtime_start).
 """
-from datetime import date
+from datetime import date, datetime
 
 import pytest
 
@@ -193,3 +193,76 @@ def test_weekly_ingest_all_includes_macro_and_a_fred_failure_only_warns(con, mon
     assert "macro: 5 rows" in capsys.readouterr().out
     assert cli.ingest_macro in cli.INGEST_JOBS["all"]
     assert ["ingest", "macro"] not in cli.RUN_STEPS["daily"]
+
+
+# --- Cboe volatility indexes -----------------------------------------------------------
+# Live headers (cdn-api.cboe.com, 2026-11-26): VIX and VIX9D "DATE,OPEN,HIGH,LOW,CLOSE",
+# VVIX "DATE,VVIX"; dates MM/DD/YYYY. Cboe backdated the modern VIX to 1990 after its 2003
+# redesign (Codex, LINE.md), so a close is known no earlier than our first fetch of it.
+
+def ohlc(*rows):
+    return ("DATE,OPEN,HIGH,LOW,CLOSE\n" + "".join(f"{d},1,1,1,{c}\n" for d, c in rows)).encode()
+
+
+class FakeCboe:
+    def __init__(self, files):
+        self.files = files
+
+    def history(self, index):
+        if isinstance(self.files[index], Exception):
+            raise self.files[index]
+        return self.files[index]
+
+
+def cboe(vix=(("11/19/2026", 20.0), ("11/20/2026", 22.0)), vix9d=(("11/19/2026", 21.0), ("11/20/2026", 23.0)),
+         vvix=b"DATE,VVIX\n11/20/2026,115.38\n"):
+    return FakeCboe({"VIX": ohlc(*vix), "VIX9D": ohlc(*vix9d), "VVIX": vvix})
+
+
+def test_parses_ohlc_and_single_value_files():
+    assert macro.parse_cboe(b"DATE,OPEN,HIGH,LOW,CLOSE\n01/02/1990,17.24,17.24,17.24,17.24\n") == [(date(1990, 1, 2), 17.24)]
+    assert macro.parse_cboe(b"DATE,VVIX\n03/06/2006,71.73\n") == [(date(2006, 3, 6), 71.73)]
+    with pytest.raises(macro.CboeError):
+        macro.parse_cboe(b"day,level\n1,2\n")
+
+
+def test_a_close_is_known_no_earlier_than_its_first_fetch(con):
+    macro.load_cboe(con, cboe(), now=datetime(2026, 11, 26, 9))
+    assert macro.macro_regime(con, date(2026, 11, 25))["VIX"] is None     # backfilled: not known yet
+    r = macro.macro_regime(con, date(2026, 11, 26))
+    assert r["VIX"] == (date(2026, 11, 20), 22.0) and r["VVIX"] == (date(2026, 11, 20), 115.38)
+
+
+def test_a_close_fetched_the_same_evening_is_known_that_day_and_replay_inserts_nothing(con):
+    f = cboe()
+    assert macro.load_cboe(con, f, now=datetime(2026, 11, 20, 18)).rows == 5
+    assert macro.macro_regime(con, date(2026, 11, 20))["VIX"] == (date(2026, 11, 20), 22.0)
+    assert macro.load_cboe(con, f, now=datetime(2026, 11, 27, 9)).rows == 0
+    assert con.sql("SELECT DISTINCT known_at FROM cboe_daily").fetchall() == [(date(2026, 11, 20),)]
+
+
+def test_term_ratio_uses_matching_trade_dates_only(con):
+    # VIX9D has no 11-20 row: the ratio is 11-19's (21/20), never 11-19's VIX9D over 11-20's VIX.
+    macro.load_cboe(con, cboe(vix9d=(("11/19/2026", 21.0),)), now=datetime(2026, 11, 20, 18))
+    r = macro.macro_regime(con, date(2026, 11, 20))
+    assert r["VIX9D_VIX"] == (date(2026, 11, 19), pytest.approx(1.05))
+    assert r["labels"] == ["vol_backwardation"]
+
+
+def test_a_failing_index_warns_and_the_others_load(con):
+    f = cboe()
+    f.files["VVIX"] = macro.CboeError("Cboe VVIX HTTP 403")
+    s = macro.load_cboe(con, f, now=datetime(2026, 11, 20, 18))
+    assert s.failed == ["VVIX"] and s.rows == 4
+    assert macro.load_cboe(con, cboe(), now=datetime(2026, 11, 21, 9)).rows == 1   # retried next run
+
+
+def test_dashboard_shows_volatility_and_the_cboe_source_note(con, tmp_path):
+    from src.obsidian.sync import sync_vault
+    macro.load_cboe(con, cboe(), now=datetime(2026, 11, 20, 18))
+    sync_vault(con, tmp_path, date(2026, 11, 20))
+    dash = (tmp_path / "Dashboard.md").read_text()
+    assert "VIX 22.00 (2026-11-20), VIX9D/VIX 1.05 (2026-11-20), VVIX 115.38 (2026-11-20)" in dash
+    assert "Regime: vol_backwardation." in dash
+    src = (tmp_path / "Sources" / "Cboe volatility indexes.md").read_text()
+    assert "backdated" in src and "first fetch" in src
