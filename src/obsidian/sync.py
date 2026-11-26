@@ -29,6 +29,7 @@ from src.obsidian.writer import PersonRegistry, create_note, slug, split_note, u
 from src.redline import related_party_redline, risk_factor_redline
 from src.tone import load_lists
 from src import config
+from src.ingestion.macro import macro_regime
 from src.screen import Filters, screen
 
 FOLDERS = ("Companies", "Executives", "Filings", "Events", "Journal", "Sources")
@@ -44,6 +45,31 @@ SOURCES = {
                     "settlement) and the day we first fetched the file. Rows can be FINRA revisions, "
                     "so the 2017-2026 backfill is known only from the day it ran (2026-11-25 or later).",
         "refresh": "Saturday (`ingest all`); each settlement file is fetched once.",
+    },
+    "FRED macro series": {
+        "what": "T10Y2Y (10-year minus 2-year Treasury spread, daily) and NFCI (Chicago Fed National "
+                "Financial Conditions Index, weekly), as ALFRED published them. Informational only.",
+        "access": "FRED REST API (api.stlouisfed.org) with a free key, FRED_API_KEY in .env, sent to no other "
+                  "host. 1 request a second, generic User-Agent, at most 2,000 vintages a request.",
+        "terms": "FRED API Terms of Use. Neither series carries a copyright notice on FRED. The ICE BofA "
+                 "high-yield spread (BAMLH0A0HYM2) is not stored: ICE prohibits reproduction.",
+        "history": "Vintages from 2011-05-25 (NFCI) and 2014-01-27 (T10Y2Y); older observations are known "
+                   "only from those dates.",
+        "known_at": "The ALFRED vintage date (realtime_start). NFCI is revised every week; each value is read "
+                    "as it was published on or before the date.",
+        "refresh": "Saturday (`ingest all`); only vintages newer than the newest stored are fetched.",
+    },
+    "Cboe volatility indexes": {
+        "what": "Daily closes of VIX (30-day S&P 500 implied volatility), VIX9D (9-day) and VVIX (volatility "
+                "of VIX). VIX9D/VIX above 1 is read as short-term stress (vol_backwardation). Informational only.",
+        "access": "Public, no key: cdn-api.cboe.com/api/global/us_indices/daily_prices/<INDEX>_History.csv. "
+                  "1 request a second, generic User-Agent.",
+        "terms": "Cboe states the data is furnished without responsibility for accuracy.",
+        "history": "VIX from 1990-01-02, VIX9D from 2011-01-04, VVIX from 2006-03-06. Cboe backdated the "
+                   "modern VIX to 1990 after its 2003 redesign, so early values were not published at the time.",
+        "known_at": "The later of the trade date and our first fetch of the close: the backfill is known only "
+                    "from the day it ran. VIX9D/VIX uses two closes from the same trade date.",
+        "refresh": "Saturday (`ingest all`); each close is stored once.",
     },
 }
 SELL_LABELS = {"discretionary": "discretionary", "planned": "10b5-1 plan", "unknown": "plan unknown"}
@@ -343,6 +369,7 @@ def sync_vault(con: duckdb.DuckDBPyConnection, vault: Path, as_of: date, filters
 
     changed = upsert_note(vault / "Dashboard.md", {"type": "dashboard"}, env.get_template("dashboard.md.j2").render(
         as_of=as_of, filters=json.dumps(asdict(filters), sort_keys=True), data=_data_dates(con, as_of),
+        macro=macro_regime(con, as_of),
         decisions=_decisions(con, journals, {r["cik"]: r for r in rows}, as_of)))
     stats.record("Dashboard", changed)
     return stats

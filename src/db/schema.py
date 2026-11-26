@@ -384,6 +384,30 @@ CREATE TABLE IF NOT EXISTS short_interest (
     PRIMARY KEY (settlement_date, symbol)
 );
 """),
+    (12, """
+-- M12-A4: macro series as ALFRED published them. One row per observation per vintage in which
+-- its value changed; known-at is realtime_start. The value of obs d as of a date is the row
+-- with the newest realtime_start <= that date, so rows are never updated. value NULL is FRED's
+-- "." (no value that day).
+CREATE TABLE IF NOT EXISTS macro_vintages (
+    series_id       VARCHAR   NOT NULL,
+    obs_date        DATE      NOT NULL,
+    realtime_start  DATE      NOT NULL,
+    value           DOUBLE,
+    fetched_at      TIMESTAMP NOT NULL,
+    PRIMARY KEY (series_id, obs_date, realtime_start)
+);
+-- Cboe daily closes (VIX, VIX9D, VVIX), inserted once. Cboe backdated the modern VIX to 1990
+-- after its 2003 redesign, so known_at is the later of trade_date and our first fetch.
+CREATE TABLE IF NOT EXISTS cboe_daily (
+    index_id    VARCHAR   NOT NULL,
+    trade_date  DATE      NOT NULL,
+    close       DOUBLE    NOT NULL,
+    known_at    DATE      NOT NULL,
+    fetched_at  TIMESTAMP NOT NULL,
+    PRIMARY KEY (index_id, trade_date)
+);
+"""),
 ]
 
 # Macros and views are code, not data: recreated on every connect so edits take effect.
