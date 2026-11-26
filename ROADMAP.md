@@ -433,10 +433,15 @@ Phase A: high value, low effort (do first, in this order)
    Status (2026-11-25): built on `feat/m12-insider-sells`, review `reviews/M12-A1-insider-sells.md`.
    Routine sellers (Cohen, Malloy and Pomorski 2012) are kept apart, which also covers the
    pre-2023 gap. Forms 3 and 5 are not loaded yet: left for A1b.
+   Review C1 kept the backtest SQL byte-identical: M12 columns join after ranking, live screen only.
 2. **8-K red-flag events.** Item 4.01 auditor change, 4.02 non-reliance, 2.06 impairment, 3.01
    delisting notice, 5.02 officer departure (2.02 results as context). Source: submissions JSON /
    filing index. **Unverified:** the item list and whether submissions carries per-filing `items`
    across full history; pull a sample first.
+   Verified 2026-11-25 (Codex, 15 SEC responses, fixture in `tests/test_m12_8k_events.py`): `items`
+   is present on recent and paged files; dotted items from 2004-08-23, legacy integers before;
+   5.02 also covers appointments, so it is labelled neutrally. Status: built on
+   `feat/m12-8k-events` (stacked on A1), review `reviews/M12-A2-8k-events.md`.
 3. **FINRA short interest and days-to-cover.** Twice-monthly CSVs; key to publication date. Files are
    for non-commercial use. Do not hard-code the cadence: SR-FINRA-2026-012 proposes weekly reporting
    (SEC approval **unverified**).
