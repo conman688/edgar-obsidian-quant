@@ -120,7 +120,9 @@ signal too, plus the date of the last results 8-K (Item 2.02). `ingest companies
 from the same `submissions.zip`, so they refresh on Saturdays. A "Short interest" line gives
 FINRA's newest known cycle: short shares as a share of shares outstanding (signal
 `high_short_interest` at 10% or more) and days to cover. `Sources/` holds one note per added
-data source with its terms and known-at rule.
+data source with its terms and known-at rule. The dashboard's "Macro" line gives the 10y-2y
+Treasury spread and NFCI as known on the sync date, with regime labels `curve_inverted`
+(spread < 0) and `tight_financial_conditions` (NFCI > 0); it never changes the screen.
 
 Notes are found by the `cik` in their frontmatter, so renaming one is safe. Only the
 `AUTO-GENERATED` block and the auto frontmatter keys change; your own keys, comments and text
@@ -312,6 +314,9 @@ Uncapped, a heavy query on an 8 GB machine with little free disk can crash the c
   (FINRA publishes after 7 business days) and the day it was first fetched, because rows are
   revised in place; it is matched to companies by current ticker. FINRA requests use a
   generic User-Agent, never the SEC one.
+- FRED macro series (M12) are known at their ALFRED vintage date (`realtime_start`), so a revised
+  value is read as it was published on or before `as_of`. The FRED key (`FRED_API_KEY`) goes only
+  to api.stlouisfed.org.
 - Notes are written atomically. Only the `AUTO-GENERATED` block and auto frontmatter keys change.
 - A journal note is written once, on its decision date, and never rewritten; its snapshot is the
   screen as it was then.
