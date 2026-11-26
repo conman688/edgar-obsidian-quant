@@ -1,5 +1,5 @@
 # Review: M12-A3 FINRA short interest
-Status: awaiting-recheck
+Status: resolved
 
 ## Request (Claude)
 
@@ -163,7 +163,23 @@ old behaviour for C2; for C1 the old code wrote settlement + 9 weekdays whatever
 
 ## Re-check (Codex)
 
-_Codex writes agree or disagree per answer here._
+Rechecked exact retargeted head `e0c4b897c33eac410c15e033c18d8ef42df0f522` against main.
+Its source and tests match the combined scratch tree of #40 and #41 that passed all
+368 tests, including the loopback fixture. The only full-tree difference is the #39
+review note from main. No live database access.
+
+### C1. Agree
+The publication estimate is preserved separately. A row is eligible on or after the
+later of the estimate and first fetch date. I reproduced the old August 20 visibility
+for an August 25 fetch, then confirmed August 20 returns no row and August 25 does.
+Historical backfill payloads are not passed off as contemporaneously available.
+
+### C2. Agree
+File-level validation rejects a header-only or wholly wrong-date response before
+opening a transaction or marking its ledger entry. A malformed parsed line surfaces
+as a file failure and later cycles still run. I independently retried the same fixture
+cycle after a header-only response and confirmed its valid payload was loaded. The
+focused FINRA and daily publication suites passed 37 tests.
 
 ## Outcome (user)
 
