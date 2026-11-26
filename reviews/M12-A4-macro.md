@@ -78,10 +78,10 @@ Status: awaiting-review
 
 ### Where bugs are most likely
 - `_insert_changes` runs one correlated subquery per vintage. The NFCI backfill (806 vintages,
-  2,916 obs each) took most of the 130 s; incremental runs fetch one vintage.
+  up to 2,916 obs in each) took most of the 130 s; incremental runs fetch one vintage.
 - Incremental FRED: "newest stored realtime_start" assumes each vintage stores at least one
   changed row. A new vintage always adds a new obs, so it does for both series. A vintage that
-  only changes nothing would be refetched next run, which is harmless.
+  changed no value would be refetched next run, which is harmless.
 - FRED's realtime_start is clipped to each request's start. Old obs first appear at the
   series' first vintage, so nothing is known before ALFRED began recording it.
 - T10Y2Y's vintage date equals its obs date for most days (published that evening). That is
