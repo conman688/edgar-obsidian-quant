@@ -119,6 +119,38 @@ def test_the_api_key_never_appears_in_an_error(monkeypatch):
     assert "@" not in c._session.headers["User-Agent"]
 
 
+KEY = "abcdefghij" + "k" * 22                     # a fixture key, never the real one
+
+
+class Resp:
+    def __init__(self, status, text=""):
+        self.status_code, self.text = status, text
+
+
+@pytest.mark.parametrize("make", [
+    # Codex: the body echoed with the key at offset 190; slicing before redacting kept "abcdefghij".
+    lambda kw: Resp(400, "x" * 190 + f"api_key={KEY}"),
+    lambda kw: (_ for _ in ()).throw(__import__("requests").ConnectionError(
+        f"HTTPSConnectionPool: Max retries exceeded with url: /fred/series?api_key={KEY}")),
+    lambda kw: Resp(302, f"<a href='https://elsewhere.example/?api_key={KEY}'>"),
+])
+def test_errors_name_the_endpoint_and_status_only_and_redirects_are_refused(monkeypatch, make):
+    monkeypatch.setenv("FRED_API_KEY", KEY)
+    c = macro.FredClient()
+    seen = []
+
+    def get(url, **kw):
+        seen.append(kw)
+        return make(kw)
+    monkeypatch.setattr(c._session, "get", get)
+    with pytest.raises(macro.FredError) as e:
+        c.vintage_dates("NFCI")
+    msg = str(e.value)
+    assert KEY[:6] not in msg and "api_key" not in msg and "elsewhere" not in msg
+    assert msg.startswith("FRED series/vintagedates ")
+    assert seen[0]["allow_redirects"] is False
+
+
 def test_no_key_is_a_clear_error(monkeypatch):
     monkeypatch.delenv("FRED_API_KEY", raising=False)
     with pytest.raises(macro.FredError, match="FRED_API_KEY"):
