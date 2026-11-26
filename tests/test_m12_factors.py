@@ -148,6 +148,8 @@ def factor_table(n: int = 60, start=(2015, 1), seed: int = 7) -> dict[tuple[int,
         # The files hold two decimals of a percent: round so the parsed value is exact.
         for k in ("MKT", "SMB", "SMB5", "HML", "RMW", "CMA", "MOM"):
             out[ym][k] = round(out[ym][k], 4)
+        for k in ("QMKT", "ME", "IA", "ROE", "EG"):        # q5 holds four decimals of a percent
+            out[ym][k] = round(out[ym][k], 6)
     return out
 
 

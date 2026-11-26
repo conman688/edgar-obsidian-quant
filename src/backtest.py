@@ -30,9 +30,11 @@ from typing import Callable
 import duckdb
 import pyarrow.parquet as pq
 
+from src import attribution
 from src.db.pit import Policy
 from src.db.queries import MIN_PRICE, PRICE_BREAK
 from src.obsidian.writer import atomic_write, upsert_note
+from src.ingestion.factors import Snapshot
 from src.screen import Filters, metrics_sql, rank_sql
 
 HORIZONS = (1, 3, 6, 12)
@@ -286,10 +288,10 @@ def evaluate(con: duckdb.DuckDBPyConnection, ranked: str, cost_bps: float = 50) 
         FROM {ranked} GROUP BY as_of ORDER BY as_of
     """).fetchall()
     unmeasured = with_picks = 0
-    curve, ucurve, turns = [], [], []
+    curve, ucurve, turns, series = [], [], [], []
     held: dict = {"cash": 1.0}      # weights at the end of the last month, after each holding's return
     v = uv = 1.0
-    for _, u, picks, broke_m in months:
+    for as_of, u, picks, broke_m in months:
         picks = picks or []         # no shortlist this month: the FILTER list is NULL
         if u is None and not broke_m:
             continue                # the future: nothing realized yet
@@ -308,6 +310,7 @@ def evaluate(con: duckdb.DuckDBPyConnection, ranked: str, cost_bps: float = 50) 
         pr = sum(p["r"] for p in picks) / len(picks) if picks else 0.0
         v *= 1 + pr - cost
         curve.append(v)
+        series.append({"as_of": as_of, "strategy": pr - cost, "universe": u, "picks": len(picks)})
         # Weights drift with returns; the next rebalance trades back from there (review C4).
         grown = {p["cik"]: target[p["cik"]] * (1 + p["r"]) for p in picks}
         total = sum(grown.values())
@@ -318,7 +321,9 @@ def evaluate(con: duckdb.DuckDBPyConnection, ranked: str, cost_bps: float = 50) 
                "turnover": sum(turns) / len(turns) if complete and turns else None,
                "max_drawdown": _max_drawdown(curve) if complete else None,
                "universe_max_drawdown": _max_drawdown(ucurve) if ucurve else None}
-    return {"horizons": horizons, "monthly": monthly, "halves": halves}
+    # series: each measured month's after-cost strategy return (0 less costs in a cash month) and
+    # universe return, for factor attribution (M12-A5).
+    return {"horizons": horizons, "monthly": monthly, "halves": halves, "series": series}
 
 
 def survivorship_gap(con: duckdb.DuckDBPyConnection, dates: list[date]) -> float | None:
@@ -384,6 +389,8 @@ def render_report(results: dict[str, dict[str, dict]], meta: dict) -> str:
             flag = "one half only" if a["one_half_only"] or b["one_half_only"] else ""
             lines.append(f"| {name} | {policy} | {a['split_date'] or '-'} | {_pct(a['first'])} | {_pct(a['second'])} | "
                          f"{_pct(b['first'])} | {_pct(b['second'])} | {flag} |")
+    if "factors" in meta:
+        lines += [""] + attribution.render(meta["factors"], meta.get("attribution"))[:-1]
     leak = meta.get("leak_check")
     lines += ["", "## Checks", ""]
     if leak:
@@ -420,7 +427,8 @@ def write_report(md: str, run_date: date, reports_dir: Path, vault_dir: Path | N
 
 
 def run(con: duckdb.DuckDBPyConnection, start: date, end: date, cache_dir: Path, cost_bps: float = 50,
-        leak_check: bool = True, progress: Callable[[str, date, bool], None] | None = None) -> tuple[str, dict]:
+        leak_check: bool = True, progress: Callable[[str, date, bool], None] | None = None,
+        factors: Snapshot | None = None) -> tuple[str, dict]:
     dates = month_ends(start, end)
     policies: list[Policy] = ["as_first_reported"] + (["leaky_period_end"] if leak_check else [])
     results: dict[str, dict[str, dict]] = {}
@@ -439,6 +447,9 @@ def run(con: duckdb.DuckDBPyConnection, start: date, end: date, cache_dir: Path,
         leaky = results[LEAK_VARIANT]["leaky_period_end"]["horizons"][3]["excess"]
         leak = {"variant": LEAK_VARIANT, "real": real, "leaky": leaky,
                 "passed": real is not None and leaky is not None and leaky > real}
+    attr = ({name: attribution.attribute(by["as_first_reported"]["series"], factors)
+             for name, by in results.items()} if factors else None)
     meta = {"run_date": date.today(), "start": dates[0], "end": dates[-1], "cost_bps": cost_bps,
-            "survivorship_gap": survivorship_gap(con, dates), "leak_check": leak, "variants": VARIANTS}
+            "survivorship_gap": survivorship_gap(con, dates), "leak_check": leak, "variants": VARIANTS,
+            "factors": factors, "attribution": attr}
     return render_report(results, meta), {"results": results, "meta": meta}
