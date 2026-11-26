@@ -396,3 +396,12 @@ def test_fetch_factors_command_writes_a_snapshot(tmp_path, monkeypatch, capsys):
     cli.main(["fetch-factors", "--dir", str(tmp_path)])
     out = capsys.readouterr().out
     assert fx.latest(tmp_path) is not None and "2026-09" in out
+
+
+def test_vault_has_a_sources_note_for_the_factor_files(tmp_path):
+    from src.obsidian.sync import sync_vault
+    con = connect(":memory:")
+    sync_vault(con, tmp_path, date(2026, 11, 26))
+    note = (tmp_path / "Sources" / "Factor returns (French, q5, AQR).md").read_text()
+    assert "recompute" in note and "data/factors/YYYY-MM-DD" in note and "fetch-factors" in note
+    assert "q5_factors_monthly_2025.csv" in note and "USA" in note
