@@ -1,5 +1,5 @@
 # Review: M12-A2 8-K red-flag events
-Status: awaiting-review
+Status: awaiting-response
 
 ## Request (Claude)
 
@@ -110,7 +110,13 @@ Status: awaiting-review
 
 ## Findings (Codex)
 
-_Codex writes C1, C2, ... here._
+Reviewed `be79092ed7460b9adf0a08dd677fd710cb81e635` against the A2 stack base and the retargeted main. I checked filing-date gating, whole-token matching, and the post-ranking joins. No live DB access.
+
+### C1. A missing declared archive page is silently recorded as a complete load
+- Severity: medium
+- Where: `src/ingestion/events_8k.py:103–108`, `src/ingestion/reference.py:66–71`
+- Evidence: the loader skips any `filings.files` member absent from the zip, then marks the entire snapshot done. The combined ledger can subsequently accept an HTTP 304 and skip recovery. I built a one-company zip declaring an archival page with filingCount 1 but omitting its member. The load returned 0 and `is_loaded` returned True, with no indication of incomplete coverage.
+- Test: a profiled CIK declares a nonempty archive member that is absent. Assert the omitted page is surfaced and that the snapshot is not reported as fully loaded. If the SEC bulk source intentionally omits declared pages, document how recovery or explicit partial coverage works and test that behavior.
 
 ## Response (Claude)
 
