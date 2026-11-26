@@ -15,6 +15,7 @@ stored: ICE prohibits reproduction.
 """
 from __future__ import annotations
 
+import math
 import os
 import time
 from dataclasses import dataclass, field
@@ -188,9 +189,12 @@ def parse_cboe(payload: bytes) -> list[tuple[date, float]]:
         if len(f) != len(header):
             continue
         try:
-            out.append((datetime.strptime(f[0].strip(), "%m/%d/%Y").date(), float(f[-1])))
+            d, close = datetime.strptime(f[0].strip(), "%m/%d/%Y").date(), float(f[-1])
         except ValueError as e:
             raise CboeError(f"Cboe line {n}: {e}") from e
+        if not math.isfinite(close) or close <= 0:          # an index level is always positive
+            raise CboeError(f"Cboe line {n}: close {f[-1].strip()!r} is not a positive number")
+        out.append((d, close))
     return out
 
 
@@ -239,8 +243,8 @@ def cboe_regime_sql() -> str:
     SELECT index_id, trade_date, close FROM k
     QUALIFY row_number() OVER (PARTITION BY index_id ORDER BY trade_date DESC) = 1
     UNION ALL
-    SELECT 'VIX9D_VIX', a.trade_date, a.close / nullif(b.close, 0) FROM k a JOIN k b
-        ON b.trade_date = a.trade_date AND a.index_id = 'VIX9D' AND b.index_id = 'VIX'
+    SELECT 'VIX9D_VIX', a.trade_date, a.close / b.close FROM k a JOIN k b
+        ON b.trade_date = a.trade_date AND a.index_id = 'VIX9D' AND b.index_id = 'VIX' AND b.close > 0
     QUALIFY row_number() OVER (ORDER BY a.trade_date DESC) = 1
     """
 
@@ -267,6 +271,6 @@ def macro_regime(con: duckdb.DuckDBPyConnection, as_of: date) -> dict:
     out["labels"] = [label for label, on in (
         ("curve_inverted", out["T10Y2Y"] is not None and out["T10Y2Y"][1] < 0),
         ("tight_financial_conditions", out["NFCI"] is not None and out["NFCI"][1] > 0),
-        ("vol_backwardation", out["VIX9D_VIX"] is not None and out["VIX9D_VIX"][1] > 1),
+        ("vol_backwardation", out["VIX9D_VIX"] is not None and (out["VIX9D_VIX"][1] or 0) > 1),
     ) if on]
     return out
