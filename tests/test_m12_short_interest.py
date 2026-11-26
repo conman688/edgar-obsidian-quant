@@ -109,6 +109,19 @@ def test_ingest_loads_each_file_once_and_a_replay_fetches_nothing(con):
     assert (s.files, s.rows, fake.fetched) == (0, 0, [])
 
 
+def test_a_full_size_file_loads_in_seconds(con):
+    # Live files hold 15-23k rows. Row-by-row executemany took about 21 s a file (75 min for
+    # the 214-file backfill on 2026-11-25).
+    import time
+    d = date(2024, 8, 15)
+    fake = FakeFinra({d: file_for(d, [(f"S{i}", i, 1.0) for i in range(22_000)])})
+    t = time.perf_counter()
+    assert si.load(con, fake).rows == 22_000
+    assert time.perf_counter() - t < 5
+    assert con.sql("SELECT short_shares, known_at FROM short_interest WHERE symbol = 'S7'").fetchall() == \
+        [(7, date(2024, 8, 28))]
+
+
 def test_a_missing_file_is_retried_next_run_and_does_not_stop_the_others(con):
     d1, d2 = date(2024, 7, 31), date(2024, 8, 15)
     fake = FakeFinra({d1: file_for(d1, [("ACME", 100_000, 2.0)])}, missing={d2})
