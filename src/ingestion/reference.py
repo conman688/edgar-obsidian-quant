@@ -64,7 +64,10 @@ def _key(sha256: str) -> str:
 
 
 def is_loaded(con: duckdb.DuckDBPyConnection, sha256: str | None) -> bool:
-    return bool(sha256) and ledger.is_done(con, _key(sha256), "companies", SCHEMA_VERSION)
+    """Profiles and 8-Ks (M12-A2) both loaded from this snapshot: no need to download it."""
+    from src.ingestion import events_8k
+    return (bool(sha256) and ledger.is_done(con, _key(sha256), "companies", SCHEMA_VERSION)
+            and events_8k.is_loaded(con, sha256))
 
 
 def load_companies_zip(con: duckdb.DuckDBPyConnection, path: Path, sha256: str) -> int:

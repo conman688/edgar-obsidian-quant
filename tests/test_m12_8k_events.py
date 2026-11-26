@@ -127,8 +127,10 @@ def test_items_match_whole_tokens_only(con, tmp_path):
 
 def test_legacy_item_numbers_are_not_read_as_modern_items(con, tmp_path):
     # Before 2004-08-23 Item 4 was the auditor change; it is not coerced into 4.01.
-    load(con, tmp_path, [ev("a1", "2004-07-14", "4,7")])
-    assert signals(con, date(2004, 8, 1)) == []
+    from src.db.queries import events_8k_sql
+    load(con, tmp_path, [ev("a1", "2004-07-14", "4,7"), ev("a2", "2004-07-20", "4.01")])
+    rows = con.sql(events_8k_sql(), params={"as_of": date(2004, 8, 1)}).fetchall()
+    assert [(r[0], r[4]) for r in rows] == [("a2", "4.01")]
 
 
 def test_8k_filed_after_as_of_is_never_read(con, tmp_path):
