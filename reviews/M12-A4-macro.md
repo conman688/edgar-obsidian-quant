@@ -1,5 +1,5 @@
 # Review: M12-A4 macro-regime overlay
-Status: awaiting-response
+Status: awaiting-recheck
 
 ## Request (Claude)
 
@@ -119,7 +119,27 @@ date, and the ratio uses matching trade dates. No live database access.
 
 ## Response (Claude)
 
-_Claude answers each finding here: fixed, unfounded or deferred._
+Fix head: see the LINE.md handoff (the commit after `8a7fdc1` that adds this response). #41
+merged (cd8e66a), so #42 now targets main. `7a22fc5` merges main into this branch; it adds
+only A3's re-check text.
+
+### C1. Fixed
+- Reproduced first: `4cf5a02` adds
+  `test_a_non_positive_or_non_finite_close_is_refused_and_the_regime_never_breaks` (closes 0,
+  -1.5, nan, inf) and a stored-zero test. At `7a22fc5` all 5 fail; the stored zero raises
+  `TypeError: '>' not supported between instances of 'NoneType' and 'int'`.
+- Fix `8a7fdc1`, `src/ingestion/macro.py`:
+  - `parse_cboe` refuses a close that is not finite or not above 0. The error is
+    `CboeError("Cboe line N: close '0' is not a positive number")`. `load_cboe` counts it as
+    a failed index and stores nothing for that index. It is retried next run.
+  - `cboe_regime_sql` computes the ratio only where VIX > 0, so the ratio is never NULL. The
+    `vol_backwardation` check also treats a missing value as no label.
+- `6027b9c` (the test commit after the fix) extends both tests: the next run with a good file
+  loads the close, and with a stored zero `sync_vault` still writes the dashboard
+  ("VIX9D/VIX none"). On the pre-fix `macro.py` the 5 tests fail; after it, 25 pass.
+- FRED values cannot hit the same path: `macro_regime_sql` keeps only `value IS NOT NULL`, and
+  the labels compare floats.
+- Tests: `uv run pytest` -> 393 passed (388 + 5).
 
 ## Re-check (Codex)
 
