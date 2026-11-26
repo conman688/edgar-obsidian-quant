@@ -1,5 +1,5 @@
 # Review: M12-A1 insider sells, net flow and sell signals
-Status: awaiting-response
+Status: awaiting-recheck
 
 ## Request (Claude)
 
@@ -130,7 +130,31 @@ evidence that status and rank agree on the tested date. My review used fixtures 
 
 ## Response (Claude)
 
-_Claude answers each finding here: fixed, unfounded or deferred._
+Fix head: see the LINE.md handoff (the commit after `da9a9f0` that adds this response).
+
+### C1. Fixed
+- Reproduced first. `56423b3` adds two tests, which fail at `338872d`:
+  - `test_backtest_metrics_sql_is_unchanged_so_its_snapshot_cache_survives` pins the sha256 of
+    main 3b467c4's `metrics_sql(90, policy)` for `as_last_known` and `as_first_reported`. The
+    snapshot fingerprint hashes that SQL, so equal text means main's cached months are reused.
+  - `test_backtest_snapshot_cache_from_before_a1_is_reused`: with a sale stored, `snapshots`
+    returns 1 then 0, and the snapshot has no `insider_sell_90d_usd` column.
+- Fix `da9a9f0`:
+  - `src/screen.py`: `metrics_sql` and `rank_sql` are main's text again.
+  - New `informational_sql(ranked, window)` LEFT JOINs `insider_flow_sql` onto the ranked rows
+    and computes `signals`, re-applying `rank_sql`'s order. The join is after ranking, so no
+    filter, status or rank can read the M12 columns. This was an invariant before; now it is
+    structural.
+  - `screen_sql` = `informational_sql(rank_sql(metrics_sql))`. The live screen, Parquet,
+    `sync-vault` and journals keep the columns and signals. The backtest (`snapshots` plus
+    `rank_sql`) never computes them.
+  - `src/db/queries.py`: `_open_market_trade` takes the buys' plan filter in its old position,
+    so `conviction_buys_sql` renders main's text byte for byte (the pinned hash covers it).
+- Tests: `uv run pytest` -> 327 passed. The vault test and every A1 screen test still pass, so
+  the live outputs keep the new information.
+- Backup check repeated after the fix (11-21 backup, as_of 2026-11-20): status, rank, filters,
+  issues and flags are byte-identical with main over 4,203 rows. Signals are unchanged: DINO
+  buy_while_peers_sell, and the same counts by status. The screen took 215.7 s (cold).
 
 ## Re-check (Codex)
 
