@@ -71,6 +71,21 @@ SOURCES = {
                     "from the day it ran. VIX9D/VIX uses two closes from the same trade date.",
         "refresh": "Saturday (`ingest all`); each close is stored once.",
     },
+    "Factor returns (French, q5, AQR)": {
+        "what": "Monthly US factor returns used only to explain the backtest (its Factor attribution section): "
+                "Fama-French 3 and 5 factors (2x3) and momentum, Hou-Xue-Zhang q5 (MKT, ME, IA, ROE, EG), and "
+                "AQR Quality Minus Junk and Betting Against Beta (USA column). Never an input to the screen.",
+        "access": "Public, no key: Kenneth French's data library (mba.tuck.dartmouth.edu, CSV zips), global-q.org "
+                  "(q5_factors_monthly_2025.csv; the name changes each year) and aqr.com (xlsx, first sheet). "
+                  "Generic User-Agent. `fetch-factors` writes data/factors/YYYY-MM-DD with a sha256 manifest.",
+        "terms": "The files carry copyright notices (Fama and French; Asness, Frazzini and Pedersen) and state no "
+                 "licence. Raw files stay in data/ (not in git); only regression results are published.",
+        "history": "French from 1926-07 (5 factors from 1963-07), q5 from 1967-01, QMJ from 1957-07, BAB from "
+                   "1930-12. French and q5 are in percent, AQR in decimals; all are stored as decimals.",
+        "known_at": "Not point-in-time. All three recompute their full histories at each update, so a report "
+                    "names the one snapshot it used (date and sha256). A same-date fetch keeps that snapshot.",
+        "refresh": "Manual (`fetch-factors`); not scheduled.",
+    },
 }
 SELL_LABELS = {"discretionary": "discretionary", "planned": "10b5-1 plan", "unknown": "plan unknown"}
 HISTORY_DAYS = 365                       # insider purchases shown per company and person
