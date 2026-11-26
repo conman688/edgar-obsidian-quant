@@ -21,11 +21,18 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 
 import duckdb
+import pyarrow as pa
 import requests
 
 from src.db import ledger
 
 STAGE = "finra_short_interest"
+ROW_SCHEMA = pa.schema([
+    ("settlement_date", pa.date32()), ("symbol", pa.string()), ("known_at", pa.date32()),
+    ("market", pa.string()), ("issue_name", pa.string()), ("short_shares", pa.int64()),
+    ("prev_short_shares", pa.int64()), ("avg_daily_volume", pa.int64()), ("days_to_cover", pa.float64()),
+    ("revision_flag", pa.string()), ("split_flag", pa.string()), ("fetched_at", pa.timestamp("us")),
+])
 SCHEMA_VERSION = 1
 API_URL = "https://api.finra.org/data/group/otcMarket/name/consolidatedShortInterest"
 FILE_URL = "https://cdn.finra.org/equity/otcmarket/biweekly/shrt{d:%Y%m%d}.csv"
@@ -148,8 +155,14 @@ def load(con: duckdb.DuckDBPyConnection, client) -> LoadStats:
         con.begin()
         try:
             before = con.execute("SELECT count(*) FROM short_interest").fetchall()[0][0]
-            con.executemany("INSERT OR IGNORE INTO short_interest VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                            [(*r[:2], known_at(d), *r[2:], now) for r in rows])
+            full = [(*r[:2], known_at(d), *r[2:], now) for r in rows]
+            con.register("si_rows", pa.Table.from_arrays(
+                [pa.array(c, type=f.type) for c, f in zip(zip(*full), ROW_SCHEMA)] if full
+                else [pa.array([], type=f.type) for f in ROW_SCHEMA], schema=ROW_SCHEMA))
+            try:
+                con.execute("INSERT OR IGNORE INTO short_interest SELECT * FROM si_rows")
+            finally:
+                con.unregister("si_rows")
             added = con.execute("SELECT count(*) FROM short_interest").fetchall()[0][0] - before
             ledger.mark(con, _key(d), STAGE, SCHEMA_VERSION, "done", output_ref=f"rows={added}")
             con.commit()
