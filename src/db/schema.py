@@ -344,6 +344,24 @@ CREATE TABLE IF NOT EXISTS price_actions_held (
     PRIMARY KEY (cik, kind, ex_date, ticker)
 );
 """),
+    (10, """
+-- M12-A2: Forms 8-K and 8-K/A of the profiled companies, from submissions.zip (recent and
+-- paged files). Known-at date is `filed` (SEC filing date); `accepted` can be the evening
+-- before and is kept for reference only. `items` is SEC's raw string ("2.02,9.01"; legacy
+-- integers before 2004-08-23); NULL when SEC gives none (unknown, not "no items").
+-- An accession filed by several registrants appears once per CIK.
+CREATE TABLE IF NOT EXISTS filings_8k (
+    accn         VARCHAR   NOT NULL,
+    cik          INTEGER   NOT NULL,
+    form         VARCHAR   NOT NULL,     -- '8-K' | '8-K/A'
+    filed        DATE      NOT NULL,
+    accepted     TIMESTAMP,
+    report_date  DATE,
+    items        VARCHAR,
+    primary_doc  VARCHAR,
+    PRIMARY KEY (accn, cik)
+);
+"""),
 ]
 
 # Macros and views are code, not data: recreated on every connect so edits take effect.

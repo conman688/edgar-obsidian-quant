@@ -26,7 +26,7 @@ from typing import Callable
 from src import backtest, config, ops
 from src.db.pit import concept_sql
 from src.db.schema import connect
-from src.ingestion import companyfacts, form4_sources, prices, reference
+from src.ingestion import companyfacts, events_8k, form4_sources, prices, reference
 from src.ingestion.sec import SecClient, sha256_file
 from src.ingestion.filing_text import fetch_sections
 from src.ingestion.related_party import fetch_related_party
@@ -105,6 +105,8 @@ def ingest_companies(con, args) -> None:
         return
     n = reference.load_companies_zip(con, path, sha)
     print(f"companies: {n:,} profiles loaded" if n else "companies: this version is already loaded")
+    n = events_8k.load_8k_zip(con, path, sha)
+    print(f"8-K: {n:,} new filings stored" if n else "8-K: no new filings in this version")
     _finish(path, delete, args.keep_raw)
 
 

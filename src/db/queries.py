@@ -470,3 +470,42 @@ def insider_holdings(con: duckdb.DuckDBPyConnection, as_of: date):
     FROM last_per_account GROUP BY issuer_cik, owner_cik
     """
     return con.sql(sql, params={"as_of": as_of})
+
+
+# M12-A2: 8-K items read as red flags, with how far back each counts. 5.02 covers departures,
+# elections and appointments alike (Codex, Form 8-K check 2026-11-25), so its label is neutral
+# and its window short. Order here is the order of `signals`.
+EVENT_ITEMS: dict[str, tuple[str, str, int]] = {
+    "4.02": ("8k_non_reliance", "non-reliance on prior financial statements", 365),
+    "4.01": ("8k_auditor_change", "change in certifying accountant", 365),
+    "2.06": ("8k_impairment", "material impairment", 365),
+    "3.01": ("8k_listing_notice", "delisting or listing-rule notice, or transfer", 365),
+    "5.02": ("8k_officer_change", "director or officer change", 90),
+}
+RESULTS_ITEM = "2.02"
+
+
+def events_8k_sql() -> str:
+    """One row per (8-K, red-flag item) known by as_of (filed <= as_of: the SEC filing date,
+    never the acceptance time) inside that item's window. Binds $as_of. Items are SEC's
+    comma-separated string, matched as whole tokens; the legacy integers used before
+    2004-08-23 never match. Informational (M12-A2): never feeds status or rank."""
+    cases = "\n".join(f"WHEN '{k}' THEN {w}" for k, (_, _, w) in EVENT_ITEMS.items())
+    return f"""
+    WITH t AS (
+        SELECT e.accn, e.cik, e.form, e.filed, trim(unnest(string_split(e.items, ','))) AS item
+        FROM filings_8k e
+        WHERE e.filed <= $as_of AND e.filed > $as_of - INTERVAL {max(w for *_, w in EVENT_ITEMS.values())} DAY
+    )
+    SELECT accn, cik, form, filed, item FROM t
+    WHERE filed > $as_of - (CASE item {cases} END) * INTERVAL 1 DAY
+    """
+
+
+def last_results_8k_sql() -> str:
+    """Per company, the newest 8-K carrying Item 2.02 (results) filed by as_of. Binds $as_of."""
+    return f"""
+    SELECT cik, max(filed) AS last_results_8k FROM filings_8k
+    WHERE filed <= $as_of AND list_contains(list_transform(string_split(items, ','), lambda x: trim(x)), '{RESULTS_ITEM}')
+    GROUP BY cik
+    """

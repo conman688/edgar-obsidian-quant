@@ -27,7 +27,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from src.db.pit import Policy
-from src.db.queries import cluster_buys_sql, insider_flow_sql, share_trend_sql, valuation_sql
+from src.db.queries import (EVENT_ITEMS, cluster_buys_sql, events_8k_sql, insider_flow_sql, last_results_8k_sql,
+                             share_trend_sql, valuation_sql)
 
 
 @dataclass(frozen=True)
@@ -117,19 +118,29 @@ def rank_sql(filters: Filters, source: str) -> str:
 
 def informational_sql(ranked: str, insider_window_days: int = 90) -> str:
     """Ranked rows (one as_of) plus M12 information: insider selling and `signals`. Joined
-    after ranking, so status, rank and order are exactly `ranked`'s. Binds $as_of."""
+    after ranking, so status, rank and order are exactly `ranked`'s. Binds $as_of.
+    8-K signals (M12-A2) follow EVENT_ITEMS order."""
+    eight_k = ",\n                        ".join(
+        f"CASE WHEN list_contains(ev.items_8k, '{k}') THEN '{name}' END" for k, (name, _, _) in EVENT_ITEMS.items())
     return f"""
     WITH r AS ({ranked}),
-    fl AS ({insider_flow_sql(insider_window_days)})
+    fl AS ({insider_flow_sql(insider_window_days)}),
+    ev AS (SELECT cik, list(DISTINCT item) AS items_8k, list_sort(list(DISTINCT accn)) AS accns
+           FROM ({events_8k_sql()}) GROUP BY cik),
+    res AS ({last_results_8k_sql()})
     SELECT r.*,
            fl.usd_sold AS insider_sell_90d_usd, fl.n_sellers, fl.sellers,
            fl.usd_planned AS insider_sell_planned_90d_usd, fl.usd_unknown AS insider_sell_unknown_plan_90d_usd,
            fl.usd_routine AS insider_sell_routine_90d_usd, fl.net_flow AS net_insider_flow_90d_usd,
            fl.n_peer_sellers, fl.n_exercisers, fl.n_gifters, fl.accns AS form4_sell_accns,
            list_filter([CASE WHEN fl.n_sellers >= 2 THEN 'cluster_sell' END,
-                        CASE WHEN r.n_insiders IS NOT NULL AND fl.n_peer_sellers > 0 THEN 'buy_while_peers_sell' END],
-                       lambda x: x IS NOT NULL) AS signals
+                        CASE WHEN r.n_insiders IS NOT NULL AND fl.n_peer_sellers > 0 THEN 'buy_while_peers_sell' END,
+                        {eight_k}],
+                       lambda x: x IS NOT NULL) AS signals,
+           ev.accns AS form8k_accns, res.last_results_8k
     FROM r LEFT JOIN fl ON fl.issuer_cik = r.cik
+    LEFT JOIN ev ON ev.cik = r.cik
+    LEFT JOIN res ON res.cik = r.cik
     ORDER BY r.as_of, CASE r.status WHEN 'shortlist' THEN 0 WHEN 'quarantine' THEN 1 ELSE 2 END,
              r.ev_ebit NULLS LAST, r.cik
     """

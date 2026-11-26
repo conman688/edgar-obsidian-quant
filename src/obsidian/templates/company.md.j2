@@ -43,6 +43,18 @@ Last {{ window }} days: discretionary sales {{ c.insider_sell_90d_usd | usd }}{%
 {% endfor %}{% else %}None found.
 {% endif %}
 
+## 8-K events
+
+Red-flag items from Forms 8-K and 8-K/A filed by {{ c.as_of }}: 4.02, 4.01, 2.06 and 3.01 over the last year, 5.02 (any director or officer change, including appointments) over the last 90 days. Shown for reading only: they never change status or rank. SEC's item list is refreshed on Saturdays.
+{% if c.last_results_8k %}Last results 8-K (Item 2.02): {{ c.last_results_8k }}.
+{% endif %}
+
+{% if events_8k %}| Filed | Form | Items | Filing |
+|---|---|---|---|
+{% for e in events_8k %}| {{ e.filed }} | {{ e.form }} | {{ e.labels }} | [EDGAR]({{ e.url }}) |
+{% endfor %}{% else %}None found.
+{% endif %}
+
 ## Where the numbers come from
 
 | Item | Tag | Period end | Filings |

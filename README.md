@@ -113,7 +113,11 @@ due; needs the Dataview plugin) and a then-vs-now table of decisions. Each compa
 lists a year of officer and director sales (10b5-1 plan, discretionary or routine, with EDGAR
 links), the window's net insider flow, and `signals` (`cluster_sell`: two or more discretionary
 sellers; `buy_while_peers_sell`: a cluster buy while another insider sells). These are for
-reading only and never change status or rank.
+reading only and never change status or rank. A section "8-K events" lists Forms 8-K and
+8-K/A with Item 4.02 (non-reliance), 4.01 (auditor change), 2.06 (impairment) or 3.01 (listing
+notice) in the last year and 5.02 (any director or officer change) in the last 90 days, each a
+signal too, plus the date of the last results 8-K (Item 2.02). `ingest companies` stores them
+from the same `submissions.zip`, so they refresh on Saturdays.
 
 Notes are found by the `cik` in their frontmatter, so renaming one is safe. Only the
 `AUTO-GENERATED` block and the auto frontmatter keys change; your own keys, comments and text
@@ -298,6 +302,9 @@ Uncapped, a heavy query on an 8 GB machine with little free disk can crash the c
 - Insider sells (M12) = the same row rules with code `S`, disposed `D`; discretionary only when
   outside a 10b5-1 plan and not routine (same month in each of the 3 prior years). They and
   `signals` are informational: they never change a filter, status, rank or the shortlist.
+- 8-K events (M12) are known from their SEC filing date (`filed <= as_of`), never the acceptance
+  time. Items are SEC's raw string, matched as whole tokens; the legacy numbers used before
+  2004-08-23 are not mapped to the current ones.
 - Notes are written atomically. Only the `AUTO-GENERATED` block and auto frontmatter keys change.
 - A journal note is written once, on its decision date, and never rewritten; its snapshot is the
   screen as it was then.

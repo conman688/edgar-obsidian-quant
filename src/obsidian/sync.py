@@ -22,7 +22,7 @@ import duckdb
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 from src.db.pit import Policy
-from src.db.queries import conviction_buys_sql, insider_sells_sql
+from src.db.queries import EVENT_ITEMS, conviction_buys_sql, events_8k_sql, insider_sells_sql
 from src.forensics import STALE_FY_DAYS, assess, forensics
 from src.journal import REVIEW_DAYS, read_journals, since, snapshot, to_date
 from src.obsidian.writer import PersonRegistry, create_note, slug, split_note, upsert_note
@@ -173,6 +173,15 @@ def sync_vault(con: duckdb.DuckDBPyConnection, vault: Path, as_of: date, filters
         WHERE list_contains($ciks, issuer_cik) ORDER BY txn_date DESC, filed DESC, accn, line_no
     """, params={"as_of": as_of, "ciks": sorted(by_cik)}).to_arrow_table().to_pylist()
 
+    # M12-A2: red-flag 8-Ks inside each item's window, one row per filing (informational).
+    events_8k: dict[int, list[dict]] = defaultdict(list)
+    for accn, cik, form, filed, items in con.execute(f"""
+            SELECT accn, cik, form, filed, list(item) FROM ({events_8k_sql()})
+            WHERE list_contains($ciks, cik) GROUP BY ALL ORDER BY filed DESC, accn""",
+            {"as_of": as_of, "ciks": sorted(by_cik)}).fetchall():
+        events_8k[cik].append({"filed": filed, "form": form, "url": _edgar_url(cik, accn),
+                               "labels": "; ".join(f"{i} {EVENT_ITEMS[i][1]}" for i in EVENT_ITEMS if i in items)})
+
     registry = PersonRegistry(con)
     people_idx = _index(vault / "Executives", "cik")
     canonical = {}
@@ -305,7 +314,7 @@ def sync_vault(con: duckdb.DuckDBPyConnection, vault: Path, as_of: date, filters
             **{f"tone_{k}_change": _r(rl["tone"][k][0] - rl["tone"][k][1], 4)
                if rl and "tone" in rl and None not in rl["tone"][k] else None for k in TONE_KEYS},
             "aliases": [r["name"]] if r["name"] else [], "tags": ["company"]},
-            env.get_template("company.md.j2").render(c={**r, "as_of": as_of}, buys=mine, sells=sold,
+            env.get_template("company.md.j2").render(c={**r, "as_of": as_of}, buys=mine, sells=sold, events_8k=events_8k.get(cik, []),
                                                        window=filters.insider_window_days, filing_link=filing_link,
                                                        rl=rl, fx=fx, fa=fa, rp=rp, stale_days=STALE_FY_DAYS,
                                                        tone_installed=lists is not None,
@@ -321,13 +330,14 @@ def sync_vault(con: duckdb.DuckDBPyConnection, vault: Path, as_of: date, filters
 
 
 def _data_dates(con: duckdb.DuckDBPyConnection, as_of: date) -> dict:
-    """The newest dated price, Form 4 and XBRL fact stored by as_of, across all companies.
+    """The newest dated price, Form 4, XBRL fact and 8-K stored by as_of, across all companies.
     Not coverage: an import can have gaps, and a company's own inputs are in its note."""
-    (px, f4, xf), = con.execute("""
+    (px, f4, xf, e8), = con.execute("""
         SELECT (SELECT max(price_date) FROM prices WHERE price_date <= $as_of),
                (SELECT max(filed) FROM form4_transactions WHERE filed <= $as_of),
-               (SELECT max(filed) FROM xbrl_facts WHERE filed <= $as_of)""", {"as_of": as_of}).fetchall()
-    return {"price": px, "form4": f4, "facts": xf}
+               (SELECT max(filed) FROM xbrl_facts WHERE filed <= $as_of),
+               (SELECT max(filed) FROM filings_8k WHERE filed <= $as_of)""", {"as_of": as_of}).fetchall()
+    return {"price": px, "form4": f4, "facts": xf, "form8k": e8}
 
 
 def _decisions(con: duckdb.DuckDBPyConnection, journals: list[dict], now: dict, as_of: date) -> list[dict]:
