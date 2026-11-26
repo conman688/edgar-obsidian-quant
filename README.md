@@ -109,7 +109,11 @@ company that already has a note), `Executives/` (one note per insider, by SEC ow
 spellings as aliases), `Events/` (one note per Form 4 purchase), `Filings/` (every filing a
 number came from, with an EDGAR link), `Journal/` (decision notes, below; never written by a
 sync), and `Dashboard.md` with Dataview tables (shortlist, quarantine, new insider buys, reviews
-due; needs the Dataview plugin) and a then-vs-now table of decisions.
+due; needs the Dataview plugin) and a then-vs-now table of decisions. Each company note also
+lists a year of officer and director sales (10b5-1 plan, discretionary or routine, with EDGAR
+links), the window's net insider flow, and `signals` (`cluster_sell`: two or more discretionary
+sellers; `buy_while_peers_sell`: a cluster buy while another insider sells). These are for
+reading only and never change status or rank.
 
 Notes are found by the `cik` in their frontmatter, so renaming one is safe. Only the
 `AUTO-GENERATED` block and the auto frontmatter keys change; your own keys, comments and text
@@ -291,6 +295,9 @@ Uncapped, a heavy query on an 8 GB machine with little free disk can crash the c
 - A price refresh replaces prices, splits and dividends only inside windows that returned data.
 - Market cap = raw close on `as_of` x cover-page shares. Historical share trends are split-adjusted.
 - Conviction buys = non-derivative, code `P`, acquired `A`, price > 0, not a 10b5-1 plan.
+- Insider sells (M12) = the same row rules with code `S`, disposed `D`; discretionary only when
+  outside a 10b5-1 plan and not routine (same month in each of the 3 prior years). They and
+  `signals` are informational: they never change a filter, status, rank or the shortlist.
 - Notes are written atomically. Only the `AUTO-GENERATED` block and auto frontmatter keys change.
 - A journal note is written once, on its decision date, and never rewritten; its snapshot is the
   screen as it was then.
