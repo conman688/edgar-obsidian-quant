@@ -59,6 +59,18 @@ SOURCES = {
                     "as it was published on or before the date.",
         "refresh": "Saturday (`ingest all`); only vintages newer than the newest stored are fetched.",
     },
+    "Cboe volatility indexes": {
+        "what": "Daily closes of VIX (30-day S&P 500 implied volatility), VIX9D (9-day) and VVIX (volatility "
+                "of VIX). VIX9D/VIX above 1 is read as short-term stress (vol_backwardation). Informational only.",
+        "access": "Public, no key: cdn-api.cboe.com/api/global/us_indices/daily_prices/<INDEX>_History.csv. "
+                  "1 request a second, generic User-Agent.",
+        "terms": "Cboe states the data is furnished without responsibility for accuracy.",
+        "history": "VIX from 1990-01-02, VIX9D from 2011-01-04, VVIX from 2006-03-06. Cboe backdated the "
+                   "modern VIX to 1990 after its 2003 redesign, so early values were not published at the time.",
+        "known_at": "The later of the trade date and our first fetch of the close: the backfill is known only "
+                    "from the day it ran. VIX9D/VIX uses two closes from the same trade date.",
+        "refresh": "Saturday (`ingest all`); each close is stored once.",
+    },
 }
 SELL_LABELS = {"discretionary": "discretionary", "planned": "10b5-1 plan", "unknown": "plan unknown"}
 HISTORY_DAYS = 365                       # insider purchases shown per company and person

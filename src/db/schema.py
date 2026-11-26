@@ -397,6 +397,16 @@ CREATE TABLE IF NOT EXISTS macro_vintages (
     fetched_at      TIMESTAMP NOT NULL,
     PRIMARY KEY (series_id, obs_date, realtime_start)
 );
+-- Cboe daily closes (VIX, VIX9D, VVIX), inserted once. Cboe backdated the modern VIX to 1990
+-- after its 2003 redesign, so known_at is the later of trade_date and our first fetch.
+CREATE TABLE IF NOT EXISTS cboe_daily (
+    index_id    VARCHAR   NOT NULL,
+    trade_date  DATE      NOT NULL,
+    close       DOUBLE    NOT NULL,
+    known_at    DATE      NOT NULL,
+    fetched_at  TIMESTAMP NOT NULL,
+    PRIMARY KEY (index_id, trade_date)
+);
 """),
 ]
 

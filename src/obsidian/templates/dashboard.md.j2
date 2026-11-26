@@ -6,7 +6,7 @@ Newest dated records stored in the database (all companies, not only those liste
 
 ## Macro
 
-{% set t, n = macro.T10Y2Y, macro.NFCI %}{% if t or n %}As known on {{ as_of }} (informational; [[FRED macro series]]): {% if t %}10y-2y Treasury spread {{ "%.2f" | format(t[1]) }} pp ({{ t[0] }}, FRED vintage {{ t[2] }}){% else %}10y-2y spread none{% endif %}; {% if n %}NFCI {{ "%.2f" | format(n[1]) }} (week ending {{ n[0] }}, vintage {{ n[2] }}){% else %}NFCI none{% endif %}. Regime: {{ macro.labels | join(", ") if macro.labels else "no label" }}.
+{% set t, n = macro.T10Y2Y, macro.NFCI %}{% set v, r, vv = macro.VIX, macro.VIX9D_VIX, macro.VVIX %}{% if t or n or v or vv %}As known on {{ as_of }} (informational; [[FRED macro series]], [[Cboe volatility indexes]]): {% if t %}10y-2y Treasury spread {{ "%.2f" | format(t[1]) }} pp ({{ t[0] }}, FRED vintage {{ t[2] }}){% else %}10y-2y spread none{% endif %}; {% if n %}NFCI {{ "%.2f" | format(n[1]) }} (week ending {{ n[0] }}, vintage {{ n[2] }}){% else %}NFCI none{% endif %}; {% if v %}VIX {{ "%.2f" | format(v[1]) }} ({{ v[0] }}){% else %}VIX none{% endif %}, {% if r %}VIX9D/VIX {{ "%.2f" | format(r[1]) }} ({{ r[0] }}){% else %}VIX9D/VIX none{% endif %}, {% if vv %}VVIX {{ "%.2f" | format(vv[1]) }} ({{ vv[0] }}){% else %}VVIX none{% endif %}. Regime: {{ macro.labels | join(", ") if macro.labels else "no label" }}.
 {% else %}No macro series stored as of {{ as_of }} (`ingest macro`).
 {% endif %}
 ## Shortlist

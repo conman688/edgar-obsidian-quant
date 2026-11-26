@@ -180,15 +180,18 @@ def ingest_short_interest(con, args) -> None:
 
 
 def ingest_macro(con, args) -> None:
-    """FRED/ALFRED macro series (M12-A4). A FRED failure, a missing key included, warns and is
-    retried next run: it never stops the weekly refresh, and the strict daily does not run it."""
+    """FRED/ALFRED series and Cboe volatility indexes (M12-A4). A failure, a missing FRED key
+    included, warns and is retried next run: it never stops the weekly refresh, and the strict
+    daily does not run it."""
     try:
         s = macro.load_fred(con, macro.FredClient())
+        print(f"macro: FRED {s.rows:,} rows" + (f"; {', '.join(s.failed)} failed (retried next run): {s.errors[0]}"
+                                                if s.failed else ""))
     except macro.FredError as e:
-        print(f"macro: failed (retried next run): {e}")
-        return
-    print(f"macro: {s.rows:,} rows" + (f"; {', '.join(s.failed)} failed (retried next run): {s.errors[0]}"
-                                       if s.failed else ""))
+        print(f"macro: FRED failed (retried next run): {e}")
+    c = macro.load_cboe(con, macro.CboeClient())
+    print(f"macro: Cboe {c.rows:,} rows" + (f"; {', '.join(c.failed)} failed (retried next run): {c.errors[0]}"
+                                            if c.failed else ""))
 
 
 INGEST_JOBS = {"tickers": [ingest_tickers], "companies": [ingest_companies], "facts": [ingest_facts],

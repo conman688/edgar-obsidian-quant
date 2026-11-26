@@ -186,11 +186,17 @@ def test_weekly_ingest_all_includes_macro_and_a_fred_failure_only_warns(con, mon
     def no_key():
         raise macro.FredError("Set FRED_API_KEY in .env")
     monkeypatch.setattr(macro, "FredClient", no_key)
+    monkeypatch.setattr(macro, "CboeClient", lambda: FakeCboe({i: macro.CboeError(f"Cboe {i} HTTP 403")
+                                                               for i in macro.CBOE_INDEXES}))
     cli.ingest_macro(con, SimpleNamespace())                     # no SystemExit: weekly carries on
-    assert "macro: failed (retried next run): Set FRED_API_KEY" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "macro: FRED failed (retried next run): Set FRED_API_KEY" in out
+    assert "macro: Cboe 0 rows; VIX, VIX9D, VVIX failed (retried next run): Cboe VIX HTTP 403" in out
     monkeypatch.setattr(macro, "FredClient", lambda: FakeFred(nfci()))
+    monkeypatch.setattr(macro, "CboeClient", cboe)
     cli.ingest_macro(con, SimpleNamespace())
-    assert "macro: 5 rows" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "macro: FRED 5 rows" in out and "macro: Cboe 5 rows" in out
     assert cli.ingest_macro in cli.INGEST_JOBS["all"]
     assert ["ingest", "macro"] not in cli.RUN_STEPS["daily"]
 

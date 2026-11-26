@@ -456,8 +456,9 @@ Phase A: high value, low effort (do first, in this order)
    only. Other FRED IDs **unverified** until checked.
    Verified 2026-11-26: NFCI vintages from 2011-05-25 (806, revised weekly); T10Y2Y vintages from
    2014-01-27 (3 of 13,172 dates ever revised); FRED caps a request at 2,000 vintages. Cboe CSVs at
-   cdn-api.cboe.com: VIX from 1990, VIX9D from 2011, VVIX from 2006. Status: FRED part built on
-   `feat/m12-macro` (stacked on A3); Cboe waits on the known-at rule (LINE.md, 2026-11-26).
+   cdn-api.cboe.com: VIX from 1990, VIX9D from 2011, VVIX from 2006; Cboe backdated the modern
+   VIX to 1990, so closes are known from the first fetch. Status: built on `feat/m12-macro`
+   (stacked on A3), review `reviews/M12-A4-macro.md`.
 5. **Factor attribution in the backtest.** Fama-French 3/5-factor plus momentum, AQR QMJ and BAB,
    q-factors (global-q.org). Regress M5 variant returns on factors and report alpha alongside raw
    excess return. Snapshot every download with its date.

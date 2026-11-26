@@ -152,6 +152,99 @@ def load_fred(con: duckdb.DuckDBPyConnection, client) -> FredStats:
     return s
 
 
+CBOE_URL = "https://cdn-api.cboe.com/api/global/us_indices/daily_prices/{index}_History.csv"
+CBOE_INDEXES = ("VIX", "VIX9D", "VVIX")
+CBOE_HEADERS = (("DATE", "OPEN", "HIGH", "LOW", "CLOSE"), ("DATE", "VVIX"))
+
+
+class CboeError(RuntimeError):
+    pass
+
+
+class CboeClient:
+    """Cboe's daily index history CSVs: public, no key, generic User-Agent, 1 request a second."""
+
+    def __init__(self):
+        self._session = requests.Session()
+        self._session.headers.update({"User-Agent": USER_AGENT})
+
+    def history(self, index: str) -> bytes:
+        time.sleep(1)
+        r = self._session.get(CBOE_URL.format(index=index), timeout=120)
+        if r.status_code != 200:
+            raise CboeError(f"Cboe {index} HTTP {r.status_code}")
+        return r.content
+
+
+def parse_cboe(payload: bytes) -> list[tuple[date, float]]:
+    """(trade date, close) per row; the close is the last column. Refuses an unknown header."""
+    lines = payload.decode("utf-8-sig").splitlines()
+    header = tuple(h.strip().upper() for h in lines[0].split(",")) if lines else ()
+    if header not in CBOE_HEADERS:
+        raise CboeError(f"unexpected Cboe header: {header!r:.100}")
+    out = []
+    for n, line in enumerate(lines[1:], start=2):
+        f = line.split(",")
+        if len(f) != len(header):
+            continue
+        try:
+            out.append((datetime.strptime(f[0].strip(), "%m/%d/%Y").date(), float(f[-1])))
+        except ValueError as e:
+            raise CboeError(f"Cboe line {n}: {e}") from e
+    return out
+
+
+@dataclass
+class CboeStats:
+    rows: int = 0
+    failed: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+
+
+def load_cboe(con: duckdb.DuckDBPyConnection, client, now: datetime | None = None) -> CboeStats:
+    """Insert closes not stored yet, known at max(trade date, fetch date). Stored closes are
+    never changed. A failing index warns and is retried next run."""
+    s = CboeStats()
+    for index in CBOE_INDEXES:
+        try:
+            rows = parse_cboe(client.history(index))
+            if not rows:
+                raise CboeError(f"Cboe {index}: no rows")
+        except (CboeError, requests.RequestException) as e:
+            s.failed.append(index)
+            s.errors.append(str(e) if isinstance(e, CboeError) else f"Cboe {index} {type(e).__name__}")
+            continue
+        fetched = now or datetime.now()
+        before = con.execute("SELECT count(*) FROM cboe_daily").fetchall()[0][0]
+        _insert_cboe(con, index, rows, fetched)
+        s.rows += con.execute("SELECT count(*) FROM cboe_daily").fetchall()[0][0] - before
+    return s
+
+
+def _insert_cboe(con: duckdb.DuckDBPyConnection, index: str, rows: list[tuple[date, float]], fetched: datetime) -> None:
+    schema = pa.schema([("index_id", pa.string()), ("trade_date", pa.date32()), ("close", pa.float64()),
+                        ("known_at", pa.date32()), ("fetched_at", pa.timestamp("us"))])
+    cols = list(zip(*[(index, d, c, max(d, fetched.date()), fetched) for d, c in rows]))
+    con.register("cboe_rows", pa.Table.from_arrays([pa.array(c, type=f.type) for c, f in zip(cols, schema)], schema=schema))
+    try:
+        con.execute("INSERT OR IGNORE INTO cboe_daily SELECT * FROM cboe_rows")
+    finally:
+        con.unregister("cboe_rows")
+
+
+def cboe_regime_sql() -> str:
+    """Newest known close per index, and VIX9D/VIX on the newest trade date both are known."""
+    return """
+    WITH k AS (SELECT * FROM cboe_daily WHERE known_at <= $as_of AND trade_date <= $as_of)
+    SELECT index_id, trade_date, close FROM k
+    QUALIFY row_number() OVER (PARTITION BY index_id ORDER BY trade_date DESC) = 1
+    UNION ALL
+    SELECT 'VIX9D_VIX', a.trade_date, a.close / nullif(b.close, 0) FROM k a JOIN k b
+        ON b.trade_date = a.trade_date AND a.index_id = 'VIX9D' AND b.index_id = 'VIX'
+    QUALIFY row_number() OVER (ORDER BY a.trade_date DESC) = 1
+    """
+
+
 def macro_regime_sql() -> str:
     """Per series: the newest observation with a value as known on $as_of, with its vintage."""
     return """
@@ -166,11 +259,14 @@ def macro_regime_sql() -> str:
 
 
 def macro_regime(con: duckdb.DuckDBPyConnection, as_of: date) -> dict:
-    """{series: (obs date, value, vintage) or None, "labels": [...]} as known on as_of."""
+    """As known on as_of: {FRED series: (obs date, value, vintage) or None, Cboe index and
+    "VIX9D_VIX": (trade date, value) or None, "labels": [...]}."""
     got = {r[0]: tuple(r[1:]) for r in con.execute(macro_regime_sql(), {"as_of": as_of}).fetchall()}
-    out: dict = {k: got.get(k) for k in SERIES}
+    vol = {r[0]: tuple(r[1:]) for r in con.execute(cboe_regime_sql(), {"as_of": as_of}).fetchall()}
+    out: dict = {k: got.get(k) for k in SERIES} | {k: vol.get(k) for k in (*CBOE_INDEXES, "VIX9D_VIX")}
     out["labels"] = [label for label, on in (
         ("curve_inverted", out["T10Y2Y"] is not None and out["T10Y2Y"][1] < 0),
         ("tight_financial_conditions", out["NFCI"] is not None and out["NFCI"][1] > 0),
+        ("vol_backwardation", out["VIX9D_VIX"] is not None and out["VIX9D_VIX"][1] > 1),
     ) if on]
     return out
