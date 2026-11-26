@@ -397,8 +397,11 @@ Not in scope:
 ### M12 Data expansion (size: L, HIGH PRIORITY; next after M10's first live weekly run, ahead of M11)
 
 Request (user, 2026-11-25): add the findings of the data-source research as soon as possible.
-Source: `reviews/R2-data-sources.md` (deep-research report, 2026-11-25). Value and effort are
-judgments from that report; no signal below has been backtested yet.
+Source: [reviews/R2-data-sources.md](reviews/R2-data-sources.md) (deep-research report,
+2026-11-25). **Claude and Codex: read the full report before building or reviewing any M12 item.**
+It holds the sources, URLs, known-at dates, licence terms and the unverified items behind each
+line below. Value and effort are judgments from that report; no signal below has been backtested
+yet.
 
 Why first. The screen's likely weak spots are value traps and returns that are really factor
 exposure. Phase A targets exactly those, mostly from free SEC data the repo already knows how to
@@ -728,6 +731,14 @@ GitHub's AI suggested 11 repositories to study (SEC/XBRL parsing, Form 4, DuckDB
 backtesting, Obsidian). Claude and Codex assess each one for fit, invariants, licence and cost,
 with numbers on a sample: `reviews/R1-repo-candidates.md`. Research only until the M9 two-week
 check ends; anything adopted becomes its own milestone.
+
+### Research R2: data sources and variables (2026-11-25)
+
+Deep-research report on data that could be added beyond XBRL facts and Form 4 purchases: more
+SEC filings, macro and factor data, short interest and positioning, sentiment and alternative
+data, and supporting libraries. Ranked by value against effort, with point-in-time, licence and
+rate-limit notes and every unverified claim flagged. Full report:
+[reviews/R2-data-sources.md](reviews/R2-data-sources.md). Its findings are scheduled as M12.
 
 ## Order
 
