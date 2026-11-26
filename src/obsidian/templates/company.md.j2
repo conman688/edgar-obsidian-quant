@@ -29,6 +29,20 @@ Status on {{ c.as_of }}: **{{ c.status }}**{% if c.rank %}, rank {{ c.rank }}{% 
 {% endfor %}{% else %}None found.
 {% endif %}
 
+## Insider sells, last 12 months
+
+Officer and director open-market sales (Form 4 code S). Shown for reading only: they never change status or rank. Plan is the 10b5-1 box or a plan footnote; before April 2023 there was no box, so "discretionary" there means no plan footnote. "Routine": the same person sold in the same month in each of the 3 prior years.
+
+Last {{ window }} days: discretionary sales {{ c.insider_sell_90d_usd | usd }}{% if c.n_sellers %} by {{ c.n_sellers }} insider{{ "s" if c.n_sellers > 1 }}{% endif %}; under a plan {{ c.insider_sell_planned_90d_usd | usd }}; plan unknown {{ c.insider_sell_unknown_plan_90d_usd | usd }}; routine {{ c.insider_sell_routine_90d_usd | usd }}. Net insider flow (open-market buys less discretionary sales, same days) {{ c.net_insider_flow_90d_usd | usd }}.{% if c.n_exercisers or c.n_gifters %} Option exercises by {{ c.n_exercisers or 0 }}, gifts by {{ c.n_gifters or 0 }} insiders.{% endif %}
+{% if c.signals %}Signals: {{ c.signals | join(", ") }}.
+{% endif %}
+
+{% if sells %}| Date | Insider | Shares | Price | Value | Plan | Filing |
+|---|---|---|---|---|---|---|
+{% for s in sells %}| {{ s.txn_date }} | {{ s.owner_name | cell }} | {{ s.shares | num(0) }} | {{ s.price | num(2) }} | {{ s.usd | usd }} | {{ s.label }} | [{{ s.accn }}]({{ s.url }}) |
+{% endfor %}{% else %}None found.
+{% endif %}
+
 ## Where the numbers come from
 
 | Item | Tag | Period end | Filings |

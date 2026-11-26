@@ -22,7 +22,7 @@ import duckdb
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
 from src.db.pit import Policy
-from src.db.queries import conviction_buys_sql
+from src.db.queries import conviction_buys_sql, insider_sells_sql
 from src.forensics import STALE_FY_DAYS, assess, forensics
 from src.journal import REVIEW_DAYS, read_journals, since, snapshot, to_date
 from src.obsidian.writer import PersonRegistry, create_note, slug, split_note, upsert_note
@@ -33,6 +33,7 @@ from src.screen import Filters, screen
 
 FOLDERS = ("Companies", "Executives", "Filings", "Events", "Journal")
 SYNCED = ("shortlist", "quarantine")     # statuses that get a note; existing notes are always updated
+SELL_LABELS = {"discretionary": "discretionary", "planned": "10b5-1 plan", "unknown": "plan unknown"}
 HISTORY_DAYS = 365                       # insider purchases shown per company and person
 TONE_KEYS = ("negative", "litigious", "uncertainty")
 NEW_SHOWN, REMOVED_SHOWN = 25, 10        # risk-factor sentences listed per company note
@@ -165,6 +166,13 @@ def sync_vault(con: duckdb.DuckDBPyConnection, vault: Path, as_of: date, filters
         WHERE list_contains($ciks, issuer_cik) ORDER BY filed, accn, line_no
     """, params={"as_of": as_of, "ciks": sorted(by_cik)}).to_arrow_table().to_pylist()
 
+    # M12-A1: officer and director sales over the same year (informational). Not linked to
+    # Executives notes: those stay the buyers'; each sale links to its filing on EDGAR.
+    sells = con.sql(f"""
+        SELECT * FROM ({insider_sells_sql(HISTORY_DAYS)})
+        WHERE list_contains($ciks, issuer_cik) ORDER BY txn_date DESC, filed DESC, accn, line_no
+    """, params={"as_of": as_of, "ciks": sorted(by_cik)}).to_arrow_table().to_pylist()
+
     registry = PersonRegistry(con)
     people_idx = _index(vault / "Executives", "cik")
     canonical = {}
@@ -277,13 +285,18 @@ def sync_vault(con: duckdb.DuckDBPyConnection, vault: Path, as_of: date, filters
     for cik, r in sorted(by_cik.items()):
         mine = [{**b, "person": person_link[b["owner_cik"]], "event": events[(b["accn"], b["owner_cik"])]["title"]}
                 for b in reversed(buys) if b["issuer_cik"] == cik]
+        sold = [{**x, "label": SELL_LABELS[x["plan"]] + (", routine" if x["routine"] else ""),
+                 "url": _edgar_url(cik, x["accn"])} for x in sells if x["issuer_cik"] == cik]
         rl, fx, rp = redlines.get(cik), forensic.get(cik), related.get(cik)
         fa = assess(fx, r) if fx else None
         changed = upsert_note(companies_idx[cik], {
             "type": "company", "ticker": r["ticker"], "cik": cik, "name": r["name"], "status": r["status"],
             "rank": r["rank"], "ev_ebit": _r(r["ev_ebit"]), "net_cash_to_mcap": _r(r["net_cash_to_mcap"]),
             "fcf_yield": _r(r["fcf_yield"]), "share_cagr_3y": _r(r["share_cagr_3y"]),
-            "insider_buy_90d_usd": _r(r["insider_buy_90d_usd"], 0), "drawdown_52w": _r(r["drawdown_52w"]),
+            "insider_buy_90d_usd": _r(r["insider_buy_90d_usd"], 0),
+            "insider_sell_90d_usd": _r(r["insider_sell_90d_usd"], 0),
+            "net_insider_flow_90d_usd": _r(r["net_insider_flow_90d_usd"], 0), "signals": list(r["signals"]),
+            "drawdown_52w": _r(r["drawdown_52w"]),
             "mcap": _r(r["mcap"], 0), "as_of": as_of, "price_date": r["price_date"], "issues": list(r["issues"]), "flags": list(r["flags"]),
             "rf_new_sentences": len(rl["new"]) if rl and rl["status"] == "ok" else None,
             "related_party_new": len(rp["new"]) if rp and rp["compared"] else None,
@@ -292,7 +305,8 @@ def sync_vault(con: duckdb.DuckDBPyConnection, vault: Path, as_of: date, filters
             **{f"tone_{k}_change": _r(rl["tone"][k][0] - rl["tone"][k][1], 4)
                if rl and "tone" in rl and None not in rl["tone"][k] else None for k in TONE_KEYS},
             "aliases": [r["name"]] if r["name"] else [], "tags": ["company"]},
-            env.get_template("company.md.j2").render(c={**r, "as_of": as_of}, buys=mine, filing_link=filing_link,
+            env.get_template("company.md.j2").render(c={**r, "as_of": as_of}, buys=mine, sells=sold,
+                                                       window=filters.insider_window_days, filing_link=filing_link,
                                                        rl=rl, fx=fx, fa=fa, rp=rp, stale_days=STALE_FY_DAYS,
                                                        tone_installed=lists is not None,
                                                        new_shown=NEW_SHOWN,

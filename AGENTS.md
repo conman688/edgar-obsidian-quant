@@ -39,6 +39,8 @@ locks the database.
   10-K text: a redline compares the latest two 10-Ks with `filed <= as_of`.
 - Prices are stored raw. Shares are multiplied by `split_factor`, prices divided.
 - Missing or stale inputs are named in `issues` and quarantined; they never pass as good values.
+- M12 signals (`signals`, insider-sell columns) are informational: they never change a filter,
+  status, rank or the shortlist until a backtest variant positive in both halves is approved.
 - Schema changes are append-only migrations in `src/db/schema.py`; macros and `CONCEPT_SEED` are
   re-synced on every connect.
 - Loads are idempotent (ledgers: `loaded_filings`, `form4_filings`, `ledger`, `price_status`,

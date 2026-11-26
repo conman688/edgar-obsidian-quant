@@ -9,7 +9,9 @@ or NULL (an input is missing), and each company gets one status:
 - shortlist:  every filter passes on clean data. Ranked by EV/EBIT, cheapest first.
 
 `flags` are warnings that do not block ranking (multi-class share counts, pre-tax
-income standing in for EBIT); check those names by hand. `sources` and `form4_accns`
+income standing in for EBIT); check those names by hand. `signals` (M12) are
+informational, such as insider selling: they are joined after ranking (`screen_sql`),
+so no filter, status or rank can read them, and the backtest never computes them. `sources` and `form4_accns`
 trace every number to the filings it came from.
 """
 from __future__ import annotations
@@ -25,7 +27,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from src.db.pit import Policy
-from src.db.queries import cluster_buys_sql, share_trend_sql, valuation_sql
+from src.db.queries import cluster_buys_sql, insider_flow_sql, share_trend_sql, valuation_sql
 
 
 @dataclass(frozen=True)
@@ -113,8 +115,31 @@ def rank_sql(filters: Filters, source: str) -> str:
     """
 
 
+def informational_sql(ranked: str, insider_window_days: int = 90) -> str:
+    """Ranked rows (one as_of) plus M12 information: insider selling and `signals`. Joined
+    after ranking, so status, rank and order are exactly `ranked`'s. Binds $as_of."""
+    return f"""
+    WITH r AS ({ranked}),
+    fl AS ({insider_flow_sql(insider_window_days)})
+    SELECT r.*,
+           fl.usd_sold AS insider_sell_90d_usd, fl.n_sellers, fl.sellers,
+           fl.usd_planned AS insider_sell_planned_90d_usd, fl.usd_unknown AS insider_sell_unknown_plan_90d_usd,
+           fl.usd_routine AS insider_sell_routine_90d_usd, fl.net_flow AS net_insider_flow_90d_usd,
+           fl.n_peer_sellers, fl.n_exercisers, fl.n_gifters, fl.accns AS form4_sell_accns,
+           list_filter([CASE WHEN fl.n_sellers >= 2 THEN 'cluster_sell' END,
+                        CASE WHEN r.n_insiders IS NOT NULL AND fl.n_peer_sellers > 0 THEN 'buy_while_peers_sell' END],
+                       lambda x: x IS NOT NULL) AS signals
+    FROM r LEFT JOIN fl ON fl.issuer_cik = r.cik
+    ORDER BY r.as_of, CASE r.status WHEN 'shortlist' THEN 0 WHEN 'quarantine' THEN 1 ELSE 2 END,
+             r.ev_ebit NULLS LAST, r.cik
+    """
+
+
 def screen_sql(filters: Filters = Filters(), policy: Policy = "as_last_known") -> str:
-    return rank_sql(filters, f"({metrics_sql(filters.insider_window_days, policy)})")
+    """The live screen: ranked metrics plus M12 information. The backtest ranks
+    `metrics_sql` snapshots with `rank_sql` alone."""
+    ranked = rank_sql(filters, f"({metrics_sql(filters.insider_window_days, policy)})")
+    return informational_sql(ranked, filters.insider_window_days)
 
 
 def screen(con: duckdb.DuckDBPyConnection, as_of: date, filters: Filters = Filters(),
