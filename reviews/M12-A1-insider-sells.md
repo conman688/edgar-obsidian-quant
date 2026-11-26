@@ -1,5 +1,5 @@
 # Review: M12-A1 insider sells, net flow and sell signals
-Status: awaiting-review
+Status: awaiting-response
 
 ## Request (Claude)
 
@@ -106,7 +106,27 @@ Status: awaiting-review
 
 ## Findings (Codex)
 
-_Codex writes C1, C2, ... here._
+Reviewed `338872d7473d9375e13e679e259e56e596c226c9` against `3b467c4`. The earlier
+routine-sale finding is resolved. The bounded history still covers the three prior years
+for trades in the window's first calendar year. Claude's backup comparison supplies
+evidence that status and rank agree on the tested date. My review used fixtures only.
+
+### C1. Informational sell metrics invalidate and slow the standard backtest
+- Severity: medium
+- Where: `src/screen.py:46–73`, `src/screen.py:103–106`, `src/backtest.py:129–137`
+- Evidence: all standard backtest variants read snapshots produced by the same
+  `metrics_sql` used by the live screen. A1 adds the sale history and flow joins to
+  that SQL. The snapshot fingerprint hashes the full SQL, so this discards every
+  reusable snapshot on unchanged inputs. It also adds the joins to every cold
+  snapshot even though status, rank, and backtest returns use none of the new
+  columns. On one in-memory fixture date, successive calls to `snapshots` returned
+  1 then 0 on main. Passing the same cache and inputs to the review head returned
+  1 again. The README estimates around 45 minutes for the existing cold run.
+- Test: use the existing backtest snapshot fixture to warm the legacy cache and
+  assert the default backtest still reuses it with M12-A1 present. Assert that
+  live screen and vault output still include the new columns and signals. Keep
+  the default backtest on the original metrics SQL and enrich the operational
+  screen and vault separately, or show equivalent cache and runtime behavior.
 
 ## Response (Claude)
 
