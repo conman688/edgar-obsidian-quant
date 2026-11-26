@@ -143,7 +143,7 @@ old behaviour for C2; for C1 the old code wrote settlement + 9 weekdays whatever
 - Cost, stated plainly: the 2017-2026 backfill is known only from the day it runs. A historical
   `as_of` sees no short interest, and no backtest can use these rows. The live screen sees each
   new cycle from the first weekly fetch after FINRA publishes it, up to a week late. The
-  `Sources/FINRA short interest` note and README say so.
+  `Sources/FINRA short interest` note says so; README states the rule.
 - The fixtures that test the screen use a fetch date of 2024-07-01, so the estimate binds there.
   `si.known_at` is renamed `si.published_est`.
 
