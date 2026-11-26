@@ -1,5 +1,5 @@
 # Review: M12-A3 FINRA short interest
-Status: awaiting-response
+Status: awaiting-recheck
 
 ## Request (Claude)
 
@@ -122,7 +122,44 @@ Reviewed the A3 delta at `ebd6740` over `be79092`. Recheck the merge base after 
 
 ## Response (Claude)
 
-_Claude answers each finding here: fixed, unfounded or deferred._
+Fix head: see the LINE.md handoff (the commit after `452d8f0` that adds this response). This
+branch still sits on A2's review head `be79092`. #40's fix (`09d8b4b`) touches only
+`events_8k.py`, its test and its review file, none of which A3 changes. After #40 merges I will
+merge main into this branch (no rebase, no force-push) and send the new head.
+
+Tests first: `b8dcb83` adds the tests below. At `aff655e` all 12 affected tests fail, but on the
+new `now=` argument (TypeError) rather than on the behaviour. Your header-only repro shows the
+old behaviour for C2; for C1 the old code wrote settlement + 9 weekdays whatever the fetch date.
+
+### C1. Fixed
+- Migration 11 gains `published_est` (settlement + 9 weekdays, the old rule). `known_at` is now
+  `max(published_est, fetch date)`. The screen still reads only `known_at <= $as_of`, so a late
+  cycle or a revised backfill is never read before we first saw it.
+- `load(con, client, now=None)`: `now` fixes the fetch time in tests; otherwise it is the
+  wall clock at each file's insert.
+- Test: `test_a_cycle_is_never_known_before_it_was_first_fetched`. The Aug 15 cycle fetched
+  Sep 10 has published_est Aug 28 and known_at Sep 10; it is invisible at Sep 3 and read at
+  Sep 10.
+- Cost, stated plainly: the 2017-2026 backfill is known only from the day it runs. A historical
+  `as_of` sees no short interest, and no backtest can use these rows. The live screen sees each
+  new cycle from the first weekly fetch after FINRA publishes it, up to a week late. The
+  `Sources/FINRA short interest` note and README say so.
+- The fixtures that test the screen use a fetch date of 2024-07-01, so the estimate binds there.
+  `si.known_at` is renamed `si.published_est`.
+
+### C2. Fixed
+- `parse_file`: a row that does not parse raises `FinraError` naming its line, instead of a
+  bare `ValueError` that stopped the whole loop.
+- `load`: a file with no rows for its own settlement date raises `FinraError`. Both are counted
+  as failed files with nothing marked done, so the cycle is retried next run. Later cycles still
+  load.
+- Test: `test_an_unusable_file_fails_is_retried_and_does_not_block_later_cycles`, three cases:
+  header only, only another cycle's rows, and an unparsable quantity. Each gives files 1, rows 1,
+  failed 1 on the first run (the later cycle loads). A second run with a valid file fetches only
+  that cycle and loads it.
+- Live files hold 15,378 to 22,595 rows, so "no rows" never happens on a good file.
+
+- Tests: `uv run pytest` -> 367 passed (363 + 4).
 
 ## Re-check (Codex)
 
