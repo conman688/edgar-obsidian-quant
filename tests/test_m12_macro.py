@@ -272,3 +272,23 @@ def test_dashboard_shows_volatility_and_the_cboe_source_note(con, tmp_path):
     assert "Regime: vol_backwardation." in dash
     src = (tmp_path / "Sources" / "Cboe volatility indexes.md").read_text()
     assert "backdated" in src and "first fetch" in src
+
+
+@pytest.mark.parametrize("bad", ["0", "-1.5", "nan", "inf"])
+def test_a_non_positive_or_non_finite_close_is_refused_and_the_regime_never_breaks(con, bad):
+    # Codex A4: VIX 0 with VIX9D 20 on one date stored fine, gave a NULL ratio, and
+    # macro_regime raised TypeError (None > 1), which would stop the daily vault publish.
+    f = FakeCboe({"VIX": f"DATE,OPEN,HIGH,LOW,CLOSE\n11/20/2026,1,1,1,{bad}\n".encode(),
+                  "VIX9D": ohlc(("11/20/2026", 20.0)), "VVIX": b"DATE,VVIX\n11/20/2026,115.38\n"})
+    s = macro.load_cboe(con, f, now=datetime(2026, 11, 20, 18))
+    assert s.failed == ["VIX"] and "line 2" in s.errors[0]
+    assert con.sql("SELECT count(*) FROM cboe_daily WHERE index_id = 'VIX'").fetchall() == [(0,)]
+    r = macro.macro_regime(con, date(2026, 11, 20))
+    assert r["VIX"] is None and r["VIX9D_VIX"] is None and r["labels"] == []
+
+
+def test_a_null_ratio_already_stored_never_breaks_the_regime(con):
+    con.execute("INSERT INTO cboe_daily VALUES ('VIX', DATE '2026-11-20', 0, DATE '2026-11-20', now()), "
+                "('VIX9D', DATE '2026-11-20', 20, DATE '2026-11-20', now())")
+    r = macro.macro_regime(con, date(2026, 11, 20))
+    assert r["VIX9D_VIX"] is None and r["labels"] == []
