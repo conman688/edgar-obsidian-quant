@@ -394,7 +394,91 @@ Not in scope:
 - Also out: executive pay, 10-Q footnotes, 10-K/A, 20-F/40-F (IFRS) filers, other text blocks,
   classifying language automatically, and events after the latest balance sheet.
 
-### M11 Quarantine checks (size: M, planned; starts after M10)
+### M12 Data expansion (size: L, HIGH PRIORITY; next after M10's first live weekly run, ahead of M11)
+
+Request (user, 2026-11-25): add the findings of the data-source research as soon as possible.
+Source: [reviews/R2-data-sources.md](reviews/R2-data-sources.md) (deep-research report,
+2026-11-25). **Claude and Codex: read the full report before building or reviewing any M12 item.**
+It holds the sources, URLs, known-at dates, licence terms and the unverified items behind each
+line below. Value and effort are judgments from that report; no signal below has been backtested
+yet.
+
+Why first. The screen's likely weak spots are value traps and returns that are really factor
+exposure. Phase A targets exactly those, mostly from free SEC data the repo already knows how to
+fetch, so it makes the existing screen more trustworthy before it makes it broader.
+
+Ground rules (same discipline as M1-M11):
+- Every new source records its own **known-at date** at ingest time, and a screen reads a value only
+  when that date is `<= as_of`. The known-at date is never the period the value describes:
+  - Form 4, 8-K, 13F, 13D/13G, Form 144, NT 10-K: SEC filing/acceptance date (13F is *not* the
+    quarter end; using it leaks up to ~6 weeks).
+  - FINRA short interest: FINRA publication date (~7 business days after settlement), not the
+    settlement date.
+  - FRED revised series: ALFRED vintage (`realtime_start` / `vintage_dates`).
+  - Factor files (French, AQR, q-factors) and GDELT: dated snapshot taken at download, because the
+    full histories are recomputed or re-queried.
+- Informational first: a new signal shows in the vault and screen output before it may change status,
+  rank or shortlist. Changing the screen needs a backtest variant (M5 harness) that is positive in
+  both halves.
+- $0/month (G4) holds. Each source's licence, rate limit and key requirement is written into a
+  `Sources/` vault note. SEC calls stay on `SecClient` (8 req/s, User-Agent).
+- Verify before building: each item marked **unverified** below is checked against the primary source
+  and pinned in a test fixture before code depends on it.
+
+Phase A: high value, low effort (do first, in this order)
+1. **Insider sells, option exercises and 10b5-1 sell flags.** Rows with codes `S`, `M`, `F`, `G` and
+   `is_10b5_1` are already in `form4_transactions` but unused. Query only: cluster selling outside
+   10b5-1 plans, net insider dollar flow over 90 days, "buy while peers sell". Forms 3 and 5 from the
+   same SEC data sets. Caveat: no 10b5-1 flag before April 2023.
+2. **8-K red-flag events.** Item 4.01 auditor change, 4.02 non-reliance, 2.06 impairment, 3.01
+   delisting notice, 5.02 officer departure (2.02 results as context). Source: submissions JSON /
+   filing index. **Unverified:** the item list and whether submissions carries per-filing `items`
+   across full history; pull a sample first.
+3. **FINRA short interest and days-to-cover.** Twice-monthly CSVs; key to publication date. Files are
+   for non-commercial use. Do not hard-code the cadence: SR-FINRA-2026-012 proposes weekly reporting
+   (SEC approval **unverified**).
+4. **Macro-regime overlay.** FRED `T10Y2Y` (10y-2y spread) and `NFCI` (weekly), via the FRED REST API
+   directly (fredapi is unmaintained since 2024-05), ALFRED vintages for revised series; Cboe VIX,
+   VIX9D, VVIX CSVs (VIX9D/VIX as a free term-structure proxy). Do **not** store `BAMLH0A0HYM2` (HY
+   OAS) history: 3 years only on FRED since April 2026 and ICE prohibits reproduction; live display
+   only. Other FRED IDs **unverified** until checked.
+5. **Factor attribution in the backtest.** Fama-French 3/5-factor plus momentum, AQR QMJ and BAB,
+   q-factors (global-q.org). Regress M5 variant returns on factors and report alpha alongside raw
+   excess return. Snapshot every download with its date.
+
+Phase B: medium effort (after Phase A)
+6. 13F institutional holdings and quarterly changes (SEC 13F data sets, from 2013-07; table layout
+   **unread**; SEC refreshed all sets in March 2024).
+7. Schedule 13D/13G stakes and amendments (deadlines changed with the 2023 amendments; structured
+   XML from 2024-12-18, so pre/post filings have different lags).
+8. Form 144 notices of proposed insider sales, paired with the Phase A sell signal.
+9. NT 10-K / NT 10-Q late-filing flags (**not yet researched**).
+10. Financial Statement and Notes data sets (`txt` table: going-concern and default text at scale;
+    contents **inferred**).
+11. Faster facts refresh: SEC republishes the bulk zips nightly; the weekly refresh can be days stale.
+
+Phase C: optional, low value for this screener
+- FINRA Reg SHO daily short-sale volume (from 2018-08; volume, not open positions).
+- CFTC COT positioning (market-level, never revised).
+- SEC fails-to-deliver (noisy; not evidence of abusive shorting).
+- Wikipedia pageviews (CC0, from mid-2015), GDELT news tone (from 2017, snapshot required).
+- USAspending awards (government contractors only).
+
+Avoid: Reddit, StockTwits, pytrends (terms restrict use, access ending or archived, not reproducible).
+
+Decision (user, 2026-11-25): no paid price data. G4 ($0/month) stands. The price layer stays the
+biggest limit (57% of filers have no price history; yfinance data is personal-use only), so
+backtests keep reporting the survivorship gap and treating results as an upper bound.
+
+Checks:
+- Each Phase A item: a PIT test where a value whose known-at date is after `as_of` is never read.
+- Replay of an ingest inserts 0 rows; a second `sync-vault` writes 0 files.
+- Screen status, rank and shortlist are identical with and without M12 data until a backtest variant
+  is approved.
+- Factor regression on the M5 default variant reported in `reports/` with the factor file dates.
+- Every unverified item above is either confirmed with a fixture or dropped.
+
+### M11 Quarantine checks (size: M, planned; starts after M12 Phase A)
 
 Request (user, 2026-11-08): make the program check the issues that quarantine a company, so that
 fewer of them are left for manual reading. This is a plan only. No code is written before the M9
@@ -694,6 +778,14 @@ First step if revived: a read-only yield test, point-in-time.
 - Build only if that number is material, as its own milestone and with the user's yes. This idea
   approves no pilot or build.
 
+### Research R2: data sources and variables (2026-11-25)
+
+Deep-research report on data that could be added beyond XBRL facts and Form 4 purchases: more
+SEC filings, macro and factor data, short interest and positioning, sentiment and alternative
+data, and supporting libraries. Ranked by value against effort, with point-in-time, licence and
+rate-limit notes and every unverified claim flagged. Full report:
+[reviews/R2-data-sources.md](reviews/R2-data-sources.md). Its findings are scheduled as M12.
+
 ## Order
 
 ```
@@ -702,7 +794,9 @@ M1 ──> M2 ──> M4 ──> M5
                        └──> M8
 M9 after M6
 M10 after M7, once the M9 two-week check passes
-M11 after M10 (reuses its instance fetcher and ledger)
+M12 HIGH PRIORITY: Phase A right after M10's first live weekly run
+M11 after M12 Phase A (reuses M10's instance fetcher and ledger)
+M12 Phase B after M11, Phase C optional
 ```
 
 M1 and M3 can run in parallel. M5 (backtest) should finish before trusting M4's defaults.
@@ -717,3 +811,6 @@ M1 and M3 can run in parallel. M5 (backtest) should finish before trusting M4's 
 | Multi-class share counts unreliable in companyfacts | Wrong market cap | Flag multi-class filers; manual check for shortlisted ones |
 | Filer tagging errors | Silent bad ratios | Quarantine rules plus accession-level traceability |
 | SEC blocks traffic | Ingestion stops | Real contact in User-Agent, 8 req/s, backoff on 403 |
+| yfinance / Yahoo data is personal-use only | Licence limits sharing results | Keep personal; no paid prices (M12 decision) |
+| New sources leak future data (13F quarter end, FINRA settlement date, recomputed factor files) | Backtest looks better than reality | M12 known-at date rule; snapshots for recomputed files |
+| Licence-restricted series (ICE HY OAS, FINRA non-commercial) | Cannot store or redistribute | Live display only; licence recorded per source |

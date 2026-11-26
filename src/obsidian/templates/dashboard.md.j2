@@ -2,10 +2,12 @@
 
 Synced {{ as_of }}. Filters: {{ filters }}.
 
+Newest dated records stored in the database (all companies, not only those listed): close {{ data.price or "none" }}, Form 4 filed {{ data.form4 or "none" }}, XBRL fact filed {{ data.facts or "none" }}. Prices refresh on weekdays and Saturdays, fundamentals and 10-K text on Saturdays; each company note lists its own close date and sources.
+
 ## Shortlist
 
 ```dataview
-TABLE rank, ev_ebit AS "EV/EBIT", net_cash_to_mcap AS "Net cash/mcap", fcf_yield AS "FCF yield", drawdown_52w AS "Below high", insider_buy_90d_usd AS "Insider buys 90d", flags
+TABLE rank, price_date AS "Close date", ev_ebit AS "EV/EBIT", net_cash_to_mcap AS "Net cash/mcap", fcf_yield AS "FCF yield", drawdown_52w AS "Below high", insider_buy_90d_usd AS "Insider buys 90d", flags
 FROM "Companies"
 WHERE status = "shortlist"
 SORT rank ASC
@@ -14,7 +16,7 @@ SORT rank ASC
 ## Quarantined (passes the filters it can be checked on; data missing or suspect)
 
 ```dataview
-TABLE ev_ebit AS "EV/EBIT", insider_buy_90d_usd AS "Insider buys 90d", issues
+TABLE price_date AS "Close date", ev_ebit AS "EV/EBIT", insider_buy_90d_usd AS "Insider buys 90d", issues
 FROM "Companies"
 WHERE status = "quarantine"
 SORT insider_buy_90d_usd DESC
