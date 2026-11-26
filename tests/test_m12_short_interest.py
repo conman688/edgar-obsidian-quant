@@ -169,6 +169,28 @@ def test_unmatched_symbols_and_companies_without_files_are_null(con):
     assert r["short_interest_pct"] == 0 and r["signals"] == []
 
 
+def test_short_interest_is_not_a_share_of_an_untrusted_share_count():
+    # Live 11-21 backup at 2026-11-20: cover counts of 1, 100 or 1,000 shares, or years old,
+    # gave FOXA 49,095,101x and PLNT 81,494x. Rows flagged stale_shares, share_jump or
+    # foreign_filer had p99 9,420x; the others p99 0.27. Days to cover is FINRA's own figure.
+    from tests.test_m4_screen import DEI, inst
+    c = connect(":memory:")
+    tags = cheap_company()
+    tags[(DEI, "EntityCommonStockSharesOutstanding", "shares")] = [inst("2023-12-01", 1_000_000)]
+    add_company(c, CIK, "ACME", tags)
+    load_cycles(c, [(date(2024, 8, 15), 150_000, 3.0)])
+    r = row(c)
+    assert "stale_shares" in r["issues"]
+    assert r["short_interest_pct"] is None and r["days_to_cover"] == 3.0 and r["signals"] == []
+
+
+def test_short_interest_above_all_reported_shares_is_not_trusted(con):
+    # QVCG (1 share) and ACCV (1,000) carry no share flag on the backup but are 425,000x and 3,918x.
+    load_cycles(con, [(date(2024, 8, 15), 1_500_000, 4.0)])
+    r = row(con)
+    assert r["short_interest_pct"] is None and r["days_to_cover"] == 4.0 and r["signals"] == []
+
+
 def test_short_interest_never_changes_status_rank_or_shortlist():
     def build(with_si):
         c = connect(":memory:")
