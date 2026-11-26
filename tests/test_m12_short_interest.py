@@ -5,7 +5,7 @@ quotes every field, the 2018 file quotes none. Known-at is settlement + 9 weekda
 conservative stand-in for FINRA's publication date (settlement + 7 business days on its
 2026-27 schedule) that allows one holiday plus a day of cushion.
 """
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 import pytest
@@ -100,10 +100,10 @@ def test_known_at_is_nine_weekdays_after_settlement(settlement, known):
 def test_ingest_loads_each_file_once_and_a_replay_fetches_nothing(con):
     d1, d2 = date(2024, 7, 31), date(2024, 8, 15)
     fake = FakeFinra({d1: file_for(d1, [("ACME", 100_000, 2.0)]), d2: file_for(d2, [("ACME", 150_000, 3.0)])})
-    s = si.load(con, fake)
+    s = si.load(con, fake, now=EARLY)
     assert (s.files, s.rows, s.failed) == (2, 2, 0)
-    assert con.sql("SELECT known_at FROM short_interest WHERE settlement_date = DATE '2024-08-15'").fetchall() == \
-        [(date(2024, 8, 28),)]
+    assert con.sql("SELECT published_est, known_at FROM short_interest WHERE settlement_date = DATE '2024-08-15'"
+                   ).fetchall() == [(date(2024, 8, 28), date(2024, 8, 28))]
     fake.fetched.clear()
     s = si.load(con, fake)
     assert (s.files, s.rows, fake.fetched) == (0, 0, [])
@@ -120,6 +120,33 @@ def test_a_full_size_file_loads_in_seconds(con):
     assert time.perf_counter() - t < 5
     assert con.sql("SELECT short_shares, known_at FROM short_interest WHERE symbol = 'S7'").fetchall() == \
         [(7, date(2024, 8, 28))]
+
+
+def test_a_cycle_is_never_known_before_it_was_first_fetched(con):
+    # Codex A3 C1: a backfill holds revised values and a cycle can be late, so a row is known
+    # no earlier than our first fetch of it. The publication estimate is kept beside it.
+    load_cycles(con, [(date(2024, 8, 15), 150_000, 3.0)], fetched=datetime(2024, 9, 10, 9, 30))
+    assert con.sql("SELECT published_est, known_at FROM short_interest").fetchall() == \
+        [(date(2024, 8, 28), date(2024, 9, 10))]
+    assert row(con)["short_settlement_date"] is None                  # as_of Sep 3: not fetched yet
+    assert row(con, date(2024, 9, 10))["short_settlement_date"] == date(2024, 8, 15)
+
+
+@pytest.mark.parametrize("bad", [
+    HEAD_2018 + "\n",                                                                   # header only
+    HEAD_2018 + "\n20240731|ACME|ACME Corp|A|NYSE|1|1||1|1.0||0|0|2024-07-31\n",        # another cycle's rows
+    HEAD_2018 + "\n20240815|ACME|ACME Corp|A|NYSE|lots|1||1|1.0||0|0|2024-08-15\n",     # unparsable number
+])
+def test_an_unusable_file_fails_is_retried_and_does_not_block_later_cycles(con, bad):
+    # Codex A3 C2: a file with no rows for its own settlement date is never marked done.
+    d, later = date(2024, 8, 15), date(2024, 8, 30)
+    fake = FakeFinra({d: bad.encode(), later: file_for(later, [("ACME", 9, 1.0)])})
+    s = si.load(con, fake, now=EARLY)
+    assert (s.files, s.rows, s.failed) == (1, 1, 1)
+    fake.files[d] = file_for(d, [("ACME", 150_000, 3.0)])
+    fake.fetched.clear()
+    s = si.load(con, fake, now=EARLY)
+    assert (s.files, s.rows, s.failed, fake.fetched) == (1, 1, 0, [d])
 
 
 def test_a_missing_file_is_retried_next_run_and_does_not_stop_the_others(con):
@@ -141,8 +168,11 @@ def test_the_finra_client_never_sends_the_sec_user_agent(monkeypatch):
 
 # --- screen --------------------------------------------------------------------------
 
-def load_cycles(con, cycles):
-    si.load(con, FakeFinra({d: file_for(d, [("ACME", q, dtc)]) for d, q, dtc in cycles}))
+EARLY = datetime(2024, 7, 1)          # a fetch date before every estimate, so the estimate binds
+
+
+def load_cycles(con, cycles, fetched=EARLY):
+    si.load(con, FakeFinra({d: file_for(d, [("ACME", q, dtc)]) for d, q, dtc in cycles}), now=fetched)
 
 
 def test_latest_known_cycle_gives_short_interest_and_days_to_cover(con):
@@ -164,7 +194,7 @@ def test_a_cycle_not_yet_published_is_never_read(con):
 
 def test_unmatched_symbols_and_companies_without_files_are_null(con):
     load_cycles(con, [(date(2024, 8, 15), 0, 0.0)])
-    si.load(con, FakeFinra({date(2024, 7, 31): file_for(date(2024, 7, 31), [("OTHER", 1, 1.0)])}))
+    si.load(con, FakeFinra({date(2024, 7, 31): file_for(date(2024, 7, 31), [("OTHER", 1, 1.0)])}), now=EARLY)
     r = row(con)
     assert r["short_interest_pct"] == 0 and r["signals"] == []
 
