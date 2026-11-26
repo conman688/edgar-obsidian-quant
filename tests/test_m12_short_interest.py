@@ -71,6 +71,16 @@ def test_parses_quoted_2026_and_unquoted_2018_files():
     assert old[:3] == (date(2018, 1, 12), "A", "NYSE") and old[4] == 5_137_321 and old[7] == 2.75
 
 
+def test_an_unclosed_quote_in_a_name_does_not_swallow_the_rest_of_the_file():
+    # Live line 3882 of shrt20180329.csv: the name opens a quote and never closes it.
+    odd = '20180329|DOD|"ELEMENTS ""Dogs of the Dow""|E|ARCA|613|2318||4445|1.00||-73.55|-1705|2018-03-29'
+    after = "20180329|DODX|Next Corp|E|ARCA|10|10||10|1.00||0|0|2018-03-29"
+    rows = si.parse_file(f"{HEAD_2018}\n{odd}\n{after}\n".encode())
+    assert [r[1] for r in rows] == ["DOD", "DODX"] and rows[0][4] == 613
+    [q] = si.parse_file(f'{HEAD_2026}\n"20261113"|"X"|"Say ""Hi"" Inc"|"A"|"NYSE"|"1"|"1"||"1"|"1.00"||"0"|"0"|"2026-11-13"\n'.encode())
+    assert q[3] == 'Say "Hi" Inc'
+
+
 def test_a_file_with_an_unknown_header_is_refused():
     with pytest.raises(si.FinraError):
         si.parse_file(b"symbol|short\nA|1\n")
