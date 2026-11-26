@@ -356,7 +356,10 @@ def insider_sells_sql(window_days: int = 90) -> str:
     hist AS (        -- earlier sales by the same owners of the same issuers, known by as_of,
                      -- under the same row rules (any plan status): offerings never make a routine
         SELECT DISTINCT t.issuer_cik, t.owner_cik, year(t.txn_date) AS y, month(t.txn_date) AS m
-        FROM form4_effective($as_of) t
+        -- Bounded to filings from Jan 1, 3 years before the window's first year: the full
+        -- history is 25x slower (164 s against 7 s on the 2026-11-21 database).
+        FROM form4_effective($as_of, p_since := make_date(year($as_of - INTERVAL {int(window_days)} DAY) - 3, 1, 1)
+                                                 - INTERVAL 1 DAY) t
         SEMI JOIN (SELECT DISTINCT issuer_cik, owner_cik FROM s) o
              ON o.issuer_cik = t.issuer_cik AND o.owner_cik = t.owner_cik
         LEFT JOIN prices p ON p.cik = t.issuer_cik AND p.price_date = t.txn_date

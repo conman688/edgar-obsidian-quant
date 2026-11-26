@@ -86,6 +86,15 @@ def test_routine_seller_is_not_discretionary(con):
     assert s["routine"] and s["plan"] == "discretionary"
 
 
+def test_routine_history_reaches_three_years_before_the_window_start(con):
+    # The history scan is bounded for speed; a year-long window still sees all 3 prior years.
+    for y in (2021, 2022, 2023):
+        add_txn(con, f"r{y}", 501, f"{y}-01-05", plan=None if y < 2023 else 0)
+    add_txn(con, "s1", 501, "2024-01-20")
+    [s] = [s for s in sells(con, date(2025, 1, 10), window_days=365) if s["accn"] == "s1"]
+    assert s["routine"]
+
+
 def test_a_gap_year_breaks_the_routine(con):
     for y in (2021, 2023):
         add_txn(con, f"r{y}", 501, f"{y}-08-10", plan=None if y < 2023 else 0)
