@@ -16,8 +16,6 @@ fetched once and never refetched.
 """
 from __future__ import annotations
 
-import csv
-import io
 import time
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
@@ -53,6 +51,15 @@ def known_at(settlement: date) -> date:
     return d
 
 
+def _unquote(v: str) -> str:
+    """A field without its surrounding quotes and with "" as ". A field that opens a quote
+    and never closes it is kept as written."""
+    v = v.strip()
+    if len(v) >= 2 and v[0] == v[-1] == '"':
+        return v[1:-1].replace('""', '"')
+    return v
+
+
 def _int(v: str) -> int | None:
     return int(float(v)) if v.strip() else None
 
@@ -64,12 +71,15 @@ def _float(v: str) -> float | None:
 def parse_file(payload: bytes) -> list[tuple]:
     """(settlement, symbol, market, name, short, previous short, ADV, days to cover,
     revision flag, split flag) per row. Refuses a header it does not know."""
-    reader = csv.reader(io.StringIO(payload.decode("utf-8-sig")), delimiter="|")
-    header = next(reader, None)
-    if tuple(h.strip() for h in header or ()) != COLUMNS:
+    # Split each line on "|" rather than with csv quoting: FINRA fields never hold "|", but
+    # some names open a quote and never close it (2018-03-29, DOD), which would make a CSV
+    # reader swallow the rest of the file.
+    lines = payload.decode("utf-8-sig").splitlines()
+    header = [_unquote(h) for h in lines[0].split("|")] if lines else []
+    if tuple(header) != COLUMNS:
         raise FinraError(f"unexpected FINRA header: {header!r:.200}")
     out = []
-    for r in reader:
+    for r in ([_unquote(f) for f in line.split("|")] for line in lines[1:]):
         if len(r) != len(COLUMNS) or not r[1].strip():
             continue
         out.append((date.fromisoformat(r[13].strip()), r[1].strip(), r[4].strip() or None, r[2].strip() or None,
