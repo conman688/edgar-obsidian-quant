@@ -174,3 +174,16 @@ def test_company_note_and_dashboard_show_short_interest(con, tmp_path: Path):
     source = (tmp_path / "Sources" / "FINRA short interest.md").read_text()
     assert "non-commercial" in source and "2017-12-29" in source
     assert sum(sync_vault(con, tmp_path, AS_OF).written.values()) == 0
+
+
+def test_weekly_ingest_all_includes_short_interest_and_a_finra_failure_only_warns(con, monkeypatch, capsys):
+    from types import SimpleNamespace
+    from src import cli
+    d1, d2 = date(2024, 7, 31), date(2024, 8, 15)
+    fake = FakeFinra({d1: file_for(d1, [("ACME", 100_000, 2.0)])}, missing={d2})
+    monkeypatch.setattr(si, "FinraClient", lambda: fake)
+    cli.ingest_short_interest(con, SimpleNamespace())                # no SystemExit: weekly carries on
+    out = capsys.readouterr().out
+    assert "short interest: 1 files, 1 rows" in out and "1 failed (retried next run)" in out
+    assert cli.ingest_short_interest in cli.INGEST_JOBS["all"]
+    assert ["ingest", "short-interest"] not in cli.RUN_STEPS["daily"]

@@ -27,8 +27,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from src.db.pit import Policy
-from src.db.queries import (EVENT_ITEMS, cluster_buys_sql, events_8k_sql, insider_flow_sql, last_results_8k_sql,
-                             share_trend_sql, valuation_sql)
+from src.db.queries import (EVENT_ITEMS, HIGH_SHORT_INTEREST, cluster_buys_sql, events_8k_sql, insider_flow_sql,
+                             last_results_8k_sql, share_trend_sql, short_interest_sql, valuation_sql)
 
 
 @dataclass(frozen=True)
@@ -127,7 +127,16 @@ def informational_sql(ranked: str, insider_window_days: int = 90) -> str:
     fl AS ({insider_flow_sql(insider_window_days)}),
     ev AS (SELECT cik, list(DISTINCT item) AS items_8k, list_sort(list(DISTINCT accn)) AS accns
            FROM ({events_8k_sql()}) GROUP BY cik),
-    res AS ({last_results_8k_sql()})
+    res AS ({last_results_8k_sql()}),
+    si AS ({short_interest_sql()}),
+    x AS (
+        SELECT r.*,
+               -- FINRA counts shares at settlement: put them on the price date's split basis.
+               si.short_shares * split_factor(r.cik, si.settlement_date) / split_factor(r.cik, r.price_date)
+                   / nullif(r.mcap / nullif(r.close_raw, 0), 0) AS short_interest_pct,
+               si.days_to_cover, si.settlement_date AS short_settlement_date, si.known_at AS short_known_at
+        FROM r LEFT JOIN si ON si.cik = r.cik
+    )
     SELECT r.*,
            fl.usd_sold AS insider_sell_90d_usd, fl.n_sellers, fl.sellers,
            fl.usd_planned AS insider_sell_planned_90d_usd, fl.usd_unknown AS insider_sell_unknown_plan_90d_usd,
@@ -135,10 +144,11 @@ def informational_sql(ranked: str, insider_window_days: int = 90) -> str:
            fl.n_peer_sellers, fl.n_exercisers, fl.n_gifters, fl.accns AS form4_sell_accns,
            list_filter([CASE WHEN fl.n_sellers >= 2 THEN 'cluster_sell' END,
                         CASE WHEN r.n_insiders IS NOT NULL AND fl.n_peer_sellers > 0 THEN 'buy_while_peers_sell' END,
-                        {eight_k}],
+                        {eight_k},
+                        CASE WHEN r.short_interest_pct >= {HIGH_SHORT_INTEREST} THEN 'high_short_interest' END],
                        lambda x: x IS NOT NULL) AS signals,
            ev.accns AS form8k_accns, res.last_results_8k
-    FROM r LEFT JOIN fl ON fl.issuer_cik = r.cik
+    FROM x r LEFT JOIN fl ON fl.issuer_cik = r.cik
     LEFT JOIN ev ON ev.cik = r.cik
     LEFT JOIN res ON res.cik = r.cik
     ORDER BY r.as_of, CASE r.status WHEN 'shortlist' THEN 0 WHEN 'quarantine' THEN 1 ELSE 2 END,
