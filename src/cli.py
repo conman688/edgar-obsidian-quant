@@ -26,7 +26,7 @@ from typing import Callable
 from src import backtest, config, ops
 from src.db.pit import concept_sql
 from src.db.schema import connect
-from src.ingestion import companyfacts, events_8k, form4_sources, prices, reference, short_interest
+from src.ingestion import companyfacts, events_8k, form4_sources, macro, prices, reference, short_interest
 from src.ingestion.sec import SecClient, sha256_file
 from src.ingestion.filing_text import fetch_sections
 from src.ingestion.related_party import fetch_related_party
@@ -179,10 +179,23 @@ def ingest_short_interest(con, args) -> None:
           + (f"; {s.failed:,} failed (retried next run): {s.errors[0]}" if s.failed else ""))
 
 
+def ingest_macro(con, args) -> None:
+    """FRED/ALFRED macro series (M12-A4). A FRED failure, a missing key included, warns and is
+    retried next run: it never stops the weekly refresh, and the strict daily does not run it."""
+    try:
+        s = macro.load_fred(con, macro.FredClient())
+    except macro.FredError as e:
+        print(f"macro: failed (retried next run): {e}")
+        return
+    print(f"macro: {s.rows:,} rows" + (f"; {', '.join(s.failed)} failed (retried next run): {s.errors[0]}"
+                                       if s.failed else ""))
+
+
 INGEST_JOBS = {"tickers": [ingest_tickers], "companies": [ingest_companies], "facts": [ingest_facts],
                "prices": [ingest_prices], "form4": [ingest_form4], "short-interest": [ingest_short_interest],
+               "macro": [ingest_macro],
                "all": [ingest_tickers, ingest_companies, ingest_facts, ingest_prices, ingest_form4,
-                       ingest_short_interest]}
+                       ingest_short_interest, ingest_macro]}
 
 
 def cmd_ingest(args, con=None) -> None:
@@ -445,7 +458,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     ing = sub.add_parser("ingest", help="download and load SEC data")
-    ing.add_argument("what", choices=["tickers", "companies", "facts", "prices", "form4", "short-interest", "all"])
+    ing.add_argument("what", choices=["tickers", "companies", "facts", "prices", "form4", "short-interest", "macro", "all"])
     ing.add_argument("--zip", help="use an already-downloaded zip instead of fetching")
     ing.add_argument("--cik", type=int, action="append", help="load only these CIKs (repeatable)")
     ing.add_argument("--keep-raw", action="store_true", help="keep downloaded zips after loading")

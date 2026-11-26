@@ -4,6 +4,11 @@ Synced {{ as_of }}. Filters: {{ filters }}.
 
 Newest dated records stored in the database (all companies, not only those listed): close {{ data.price or "none" }}, Form 4 filed {{ data.form4 or "none" }}, XBRL fact filed {{ data.facts or "none" }}, 8-K filed {{ data.form8k or "none" }}, short interest settled {{ data.short or "none" }}. Prices refresh on weekdays and Saturdays, fundamentals, 8-Ks, short interest and 10-K text on Saturdays; each company note lists its own close date and sources.
 
+## Macro
+
+{% set t, n = macro.T10Y2Y, macro.NFCI %}{% if t or n %}As known on {{ as_of }} (informational; [[FRED macro series]]): {% if t %}10y-2y Treasury spread {{ "%.2f" | format(t[1]) }} pp ({{ t[0] }}, FRED vintage {{ t[2] }}){% else %}10y-2y spread none{% endif %}; {% if n %}NFCI {{ "%.2f" | format(n[1]) }} (week ending {{ n[0] }}, vintage {{ n[2] }}){% else %}NFCI none{% endif %}. Regime: {{ macro.labels | join(", ") if macro.labels else "no label" }}.
+{% else %}No macro series stored as of {{ as_of }} (`ingest macro`).
+{% endif %}
 ## Shortlist
 
 ```dataview
