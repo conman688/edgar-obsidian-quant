@@ -181,3 +181,23 @@ def test_company_note_lists_red_flag_8ks_and_a_second_sync_writes_nothing(con, t
     assert "Last results 8-K (Item 2.02): 2024-08-05" in body
     assert "8-K filed 2024-08-05" in (vault / "Dashboard.md").read_text()
     assert sum(sync_vault(con, vault, AS_OF).written.values()) == 0
+
+
+def test_a_declared_archive_page_missing_from_the_zip_fails_the_load_and_is_retried(con, tmp_path):
+    # Codex A2 C1. The 2026-11-25 SEC snapshot declares 5,435 archive pages and holds all of
+    # them, so a missing one means a broken download: fail loudly, mark nothing done.
+    import zipfile as zf
+    from src.ingestion.events_8k import IncompleteSnapshot
+    path = make_zip(tmp_path / "s.zip", {CIK: ([ev("a1", "2024-06-03", "4.02")], [[ev("a0", "2010-01-04", "4.01")]], "3571")})
+    broken = tmp_path / "broken.zip"
+    with zf.ZipFile(path) as src, zf.ZipFile(broken, "w") as dst:
+        for n in src.namelist():
+            if "-submissions-" not in n:
+                dst.writestr(n, src.read(n))
+    reference.load_companies_zip(con, broken, SHA)
+    with pytest.raises(IncompleteSnapshot, match=f"CIK{CIK:010d}-submissions-001.json"):
+        load_8k_zip(con, broken, SHA)
+    assert con.sql("SELECT count(*) FROM filings_8k").fetchall() == [(0,)]
+    assert not reference.is_loaded(con, SHA)                 # the next weekly run downloads again
+    assert load_8k_zip(con, path, SHA) == 2
+    assert reference.is_loaded(con, SHA)
