@@ -61,6 +61,11 @@ def rows_from(cik: int, cols: dict) -> list[tuple]:
     return out
 
 
+class IncompleteSnapshot(RuntimeError):
+    """A company file declares an archive page the zip does not hold. SEC's snapshots hold
+    every declared page (2026-11-25: 5,435 of 5,435), so this is a broken download."""
+
+
 def _profiled(doc: dict) -> bool:
     """The rule `reference.load_companies_zip` keeps a company profile by."""
     return str(doc.get("sic") or "").strip().isdigit() or any(doc.get("tickers") or [])
@@ -101,8 +106,9 @@ def load_8k_zip(con: duckdb.DuckDBPyConnection, path: Path, sha256: str) -> int:
                 filings = doc.get("filings") or {}
                 batch.extend(rows_from(cik, filings.get("recent") or {}))
                 for f in filings.get("files") or []:
-                    if f.get("name") in names:
-                        batch.extend(rows_from(cik, json.loads(z.read(f["name"]))))
+                    if f.get("name") not in names:
+                        raise IncompleteSnapshot(f"{name} declares {f.get('name')}, which is not in {path.name}")
+                    batch.extend(rows_from(cik, json.loads(z.read(f["name"]))))
                 if len(batch) >= BATCH:
                     flush()
         flush()

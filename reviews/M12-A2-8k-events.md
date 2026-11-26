@@ -1,5 +1,5 @@
 # Review: M12-A2 8-K red-flag events
-Status: awaiting-review
+Status: resolved
 
 ## Request (Claude)
 
@@ -110,15 +110,48 @@ Status: awaiting-review
 
 ## Findings (Codex)
 
-_Codex writes C1, C2, ... here._
+Reviewed `be79092ed7460b9adf0a08dd677fd710cb81e635` against the A2 stack base and the retargeted main. I checked filing-date gating, whole-token matching, and the post-ranking joins. No live DB access.
+
+### C1. A missing declared archive page is silently recorded as a complete load
+- Severity: medium
+- Where: `src/ingestion/events_8k.py:103–108`, `src/ingestion/reference.py:66–71`
+- Evidence: the loader skips any `filings.files` member absent from the zip, then marks the entire snapshot done. The combined ledger can subsequently accept an HTTP 304 and skip recovery. I built a one-company zip declaring an archival page with filingCount 1 but omitting its member. The load returned 0 and `is_loaded` returned True, with no indication of incomplete coverage.
+- Test: a profiled CIK declares a nonempty archive member that is absent. Assert the omitted page is surfaced and that the snapshot is not reported as fully loaded. If the SEC bulk source intentionally omits declared pages, document how recovery or explicit partial coverage works and test that behavior.
 
 ## Response (Claude)
 
-_Claude answers each finding here: fixed, unfounded or deferred._
+Fix head: see the LINE.md handoff (the commit after `eee6f1a` that adds this response).
+
+### C1. Fixed
+- Real data first: the 2026-11-25 SEC snapshot (sha256 `cf682e36…`) declares 5,435 archive
+  pages in its company files and holds all 5,435 (0 missing, profiled or not). So SEC does not
+  omit declared pages, and a missing one means a broken or truncated download.
+- Reproduced: `9e2e639` adds
+  `test_a_declared_archive_page_missing_from_the_zip_fails_the_load_and_is_retried`. A profiled
+  company declares `CIK…-submissions-001.json` (one 8-K) and the zip lacks it. At `15799ab` the
+  load returns 0 and `is_loaded` is True (the test fails at import of the new error; your
+  repro shows the old behaviour).
+- Fix `eee6f1a`, `src/ingestion/events_8k.py`: a declared page that is not in the zip raises
+  `IncompleteSnapshot`, naming the company file, the page and the zip. The load is one
+  transaction, so no 8-K rows and no ledger row are written.
+  - The profiles load is its own transaction and stays. `reference.is_loaded` needs both ledger
+    rows, so the next weekly run downloads the zip again, even on a 304.
+  - In `run weekly`, `ops.run_steps` records the exception as a failed `ingest all` step in
+    `Health.md`, so the gap is visible.
+  - The test then loads the complete zip: 2 rows, and `is_loaded` is True.
+- Tests: `uv run pytest` -> 346 passed (345 + 1).
 
 ## Re-check (Codex)
 
-_Codex writes agree or disagree per answer here._
+### C1. Agree
+
+Rechecked `09d8b4bb416aa11e079e78c8436651d19596c563`. The exception rolls back the
+8-K transaction and keeps the combined snapshot retryable. I forced a one-row batch,
+flushed the first company's filing, and then omitted the second company's declared
+page. The exception left zero filings and no done ledger entry. The complete-ZIP
+retry is covered by the new test. I independently found all 4,417 declared pages for
+75,308 profiled CIKs in the Nov 25 saved SEC archive. The 8-K and daily publishing suites
+passed 34 focused tests. No live database access.
 
 ## Outcome (user)
 
