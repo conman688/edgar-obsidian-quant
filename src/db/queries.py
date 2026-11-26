@@ -299,22 +299,24 @@ def conviction_buys_sql(window_days: int = 30, include_unknown_10b5_1: bool = Fa
                t.officer_title, t.txn_date, t.filed, t.shares, t.price, t.shares * t.price AS usd, t.is_10b5_1
         FROM form4_effective($as_of, p_since := $as_of - INTERVAL {int(window_days)} DAY) t
         LEFT JOIN prices p ON p.cik = t.issuer_cik AND p.price_date = t.txn_date
-        WHERE {_open_market_trade("P", "A", window_days)}
-          AND {plan_filter}
+        WHERE {_open_market_trade("P", "A", window_days, plan_filter)}
     """
 
 
-def _open_market_trade(code: str, acq_disp: str, window_days: int | None) -> str:
+def _open_market_trade(code: str, acq_disp: str, window_days: int | None, plan_filter: str | None = None) -> str:
     """WHERE clause shared by buys and sells over form4_effective t LEFT JOIN prices p: an
     officer's or director's common-stock trade with this code, dated in the window (None:
     any date) and not after its filing, priced within 0.5-2x that day's close when one is
-    stored, with no offering named in the footnotes."""
-    window = "" if window_days is None else f"AND t.txn_date > $as_of - INTERVAL {int(window_days)} DAY"
+    stored, with no offering named in the footnotes.
+
+    For the buys it renders main's text byte for byte: the backtest's snapshot fingerprint
+    hashes this SQL, and a changed text would discard every cached month (review M12-A1 C1)."""
+    window = "" if window_days is None else f"\n          AND t.txn_date > $as_of - INTERVAL {int(window_days)} DAY"
+    plan = "" if plan_filter is None else f"\n          AND {plan_filter}"
     return f"""NOT t.is_derivative AND NOT t.is_holding
           AND t.txn_code = '{code}' AND t.acq_disp = '{acq_disp}'
-          AND t.price > 0 AND t.shares > 0
-          {window}
-          AND t.txn_date <= t.filed          -- a later date is a typo (2033 in a 2022 filing)
+          AND t.price > 0 AND t.shares > 0{window}
+          AND t.txn_date <= t.filed          -- a later date is a typo (2033 in a 2022 filing){plan}
           AND (t.is_officer OR t.is_director)
           AND NOT regexp_matches(coalesce(t.security_title, ''),
                                  '(?i)preferred|warrant|note|debenture|unit|right|option')
