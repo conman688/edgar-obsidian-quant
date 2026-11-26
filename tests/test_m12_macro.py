@@ -123,3 +123,41 @@ def test_no_key_is_a_clear_error(monkeypatch):
     monkeypatch.delenv("FRED_API_KEY", raising=False)
     with pytest.raises(macro.FredError, match="FRED_API_KEY"):
         macro.FredClient()
+
+
+# --- vault and CLI -------------------------------------------------------------------
+
+def test_dashboard_shows_the_regime_as_known_on_as_of_and_a_second_sync_writes_nothing(con, tmp_path):
+    from src.obsidian.sync import sync_vault
+    macro.load_fred(con, FakeFred({"T10Y2Y": {W1: {F1: -0.4}}, **nfci()}))
+    sync_vault(con, tmp_path, W2)
+    dash = (tmp_path / "Dashboard.md").read_text()
+    assert "## Macro" in dash
+    assert "10y-2y Treasury spread -0.40 pp (2020-03-20, FRED vintage 2020-03-25)" in dash
+    assert "NFCI -0.10 (week ending 2020-03-27, vintage 2020-04-01)" in dash
+    assert "Regime: curve_inverted." in dash
+    source = (tmp_path / "Sources" / "FRED macro series.md").read_text()
+    assert "FRED_API_KEY" in source and "2011-05-25" in source and "BAMLH0A0HYM2" in source
+    assert sum(sync_vault(con, tmp_path, W2).written.values()) == 0
+
+
+def test_dashboard_without_macro_data_says_so(con, tmp_path):
+    from src.obsidian.sync import sync_vault
+    sync_vault(con, tmp_path, W2)
+    assert "No macro series stored" in (tmp_path / "Dashboard.md").read_text()
+
+
+def test_weekly_ingest_all_includes_macro_and_a_fred_failure_only_warns(con, monkeypatch, capsys):
+    from types import SimpleNamespace
+    from src import cli
+
+    def no_key():
+        raise macro.FredError("Set FRED_API_KEY in .env")
+    monkeypatch.setattr(macro, "FredClient", no_key)
+    cli.ingest_macro(con, SimpleNamespace())                     # no SystemExit: weekly carries on
+    assert "macro: failed (retried next run): Set FRED_API_KEY" in capsys.readouterr().out
+    monkeypatch.setattr(macro, "FredClient", lambda: FakeFred(nfci()))
+    cli.ingest_macro(con, SimpleNamespace())
+    assert "macro: 5 rows" in capsys.readouterr().out
+    assert cli.ingest_macro in cli.INGEST_JOBS["all"]
+    assert ["ingest", "macro"] not in cli.RUN_STEPS["daily"]
