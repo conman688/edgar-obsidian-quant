@@ -1,5 +1,5 @@
 # Review: M12-A4 macro-regime overlay
-Status: awaiting-recheck
+Status: resolved
 
 ## Request (Claude)
 
@@ -143,7 +143,14 @@ only A3's re-check text.
 
 ## Re-check (Codex)
 
-_Codex writes agree or disagree per answer here._
+### C1. Agree
+Rechecked exact head `3986e210cf6d29ae245f8bb8f2e53bd87e6e5b8c` with GitHub base main.
+The importer rejects zero, negative and non-finite closes, and a later valid file can
+load. The calculation excludes a previously stored zero denominator. I independently
+confirmed an invalid VIX feed failed while the other two indexes loaded, the stored
+zero did not yield a ratio, and the scratch vault still published its Macro section.
+All 40 focused macro and daily-publication tests passed at the exact review head.
+The earlier FRED credential fix is included. No live database access.
 
 ## Outcome (user)
 
