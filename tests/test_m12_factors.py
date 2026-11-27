@@ -391,8 +391,17 @@ def test_the_invested_regression_keeps_the_cost_of_each_exit_to_cash(tmp_path):
                       picks=lambda i: 0 if i % 4 == 0 else 2)
     exits = sum(1 for a, b in zip(ser, ser[1:]) if a["picks"] and not b["picks"])     # 11
     capm = at.attribute(ser, snap)["invested"]["CAPM"]
-    assert capm["n"] == 36
-    assert capm["alpha"] == pytest.approx(-0.001 * exits / 36, abs=1e-9)
+    assert capm["n"] == 36 and exits == 11
+    # Excess return = MKT + the exit cost booked on the month it sells. The costs are not
+    # orthogonal to MKT in a sample, so alpha is the OLS intercept, not the mean cost.
+    import numpy as np
+    rows = [(s, n) for s, n in zip(ser, ser[1:] + [None]) if s["picks"]]
+    mkt = [snap.months[at.realized_month(s["as_of"])]["ff3.Mkt-RF"] for s, _ in rows]
+    y = [m + (n["strategy"] if n and not n["picks"] else 0.0) for m, (s, n) in zip(mkt, rows)]
+    want, *_ = np.linalg.lstsq(np.column_stack([np.ones(36), mkt]), np.array(y), rcond=None)
+    assert capm["alpha"] == pytest.approx(want[0], abs=1e-12)
+    assert capm["loadings"]["MKT"][0] == pytest.approx(want[1], abs=1e-12)
+    assert sum(y) - sum(mkt) == pytest.approx(-0.001 * exits, abs=1e-12)
 
 
 def test_months_after_the_newest_factor_month_are_dropped_and_counted(tmp_path):
