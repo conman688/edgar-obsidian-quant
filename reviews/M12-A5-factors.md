@@ -1,5 +1,5 @@
 # Review: M12-A5 factor attribution of the backtest
-Status: awaiting-review
+Status: awaiting-response
 
 ## Request (Claude)
 
@@ -147,7 +147,60 @@ Status: awaiting-review
 
 ## Findings (Codex)
 
-_Codex writes C1, C2, ... here._
+Round 1 (reviewer, standing in for Codex), at exact head `5ba5edf28797ec006fc8576d783e7e864732cdef`.
+
+### C1. The invested-months regression keeps every entry cost but drops every exit-to-cash cost
+- Severity: medium (wrong number)
+- Where: src/attribution.py:100 (`if s["picks"]`) with src/backtest.py:313-314 (the selling cost is booked
+  on the cash month)
+- Evidence: `evaluate` charges a switch into stocks on the first invested month, but a switch back to
+  cash on the cash month that follows (`strategy = -cost`, `picks = 0`). `attribute` keeps only months
+  with picks, so the invested sample has each entry cost and none of the matching exit costs. The
+  report calls these "Monthly strategy returns after costs". Real data (my scratch copy of the
+  builder's 11-21 backup and cache, rerun at 5ba5edf, snapshot 2026-11-26), invested CAPM alpha
+  with each exit cost booked on the invested month it sells instead:
+  - drawdown_50: 14 exits, 7.00% of cost left out = 25.9 bp per invested month; alpha 2.34%/mo
+    -> 2.10%/mo (-2.9%/yr).
+  - default: 15 exits, 7.6 bp/mo; -0.30% -> -0.38%/mo.
+  - loose: 19 exits, 7.9 bp/mo; -1.78% -> -1.85%/mo.
+  - value, insider_fcf: never in cash, unchanged.
+  The active regression is not affected: it keeps the cash months.
+- Test (fails at 5ba5edf: `assert -1.7e-18 == -0.000305...`):
+  ```python
+  def test_the_invested_regression_keeps_the_cost_of_each_exit_to_cash(tmp_path):
+      """Every 4th month is cash; its -0.001 is the cost of selling the previous month's picks.
+      The invested sample keeps each entry cost, so it must keep each exit cost too."""
+      fac = factor_table(60, start=(2014, 12))
+      snap = fx.load(fx.fetch(web_for(fac), tmp_path, date(2026, 11, 26)))
+      ser = series_from(fac, lambda f: (f["RF"] + f["MKT"], f["RF"] + f["MKT"]),
+                        picks=lambda i: 0 if i % 4 == 0 else 2)
+      exits = sum(1 for a, b in zip(ser, ser[1:]) if a["picks"] and not b["picks"])     # 11
+      capm = at.attribute(ser, snap)["invested"]["CAPM"]
+      assert capm["n"] == 36
+      assert capm["alpha"] == pytest.approx(-0.001 * exits / 36, abs=1e-9)
+  ```
+  One fix: book a cash month's selling cost on the invested month whose holdings it sells, for the
+  invested regression only (keeping the cash month in it would pull the loadings toward 0). Or say
+  in the table title that exit-to-cash costs are left out, with the bp per month.
+
+### Checked without a finding (round 1)
+- Alignment, end to end on real data: the series' universe return for as_of M correlates 0.894
+  with French Mkt-RF+RF of month M+1, and -0.075 / -0.084 with months M and M+2 (177 months, every
+  variant). AQR QMJ vs FF5 RMW and BAB vs CMA peak at lag 0 too (since 2000), so AQR's month labels
+  match French's.
+- Units: every factor column has a decimal-scale mean and sd (e.g. ff3 Mkt-RF 0.694% / 5.30%, qmj
+  0.324% / 2.34%, bab 0.650% / 3.21%); no month gaps in any source.
+- RF: subtracted once in `_fit` for invested (French RF or q5 R_F), never for active; factor
+  columns are excess or long-short.
+- The series compounds to the reported CAGR exactly for all 5 variants; it stops at the first
+  unmeasured month (tested; 0 unmeasured on real data).
+- OLS: matches numpy (the builder's 20 of 20, and the unit test); singular and n <= p give None.
+- Snapshots: built in mkdtemp, renamed whole; same-date path runs `load` (hash, missing file);
+  failures remove the temp folder. Parsers fail loudly on layout changes, nan/inf, bad month ends.
+- `metrics_sql`/`rank_sql`: `src/screen.py` and `src/db` are not in the diff. The builder's main
+  report equals this branch's report with the Factor attribution section removed (5,127 bytes,
+  compared again here).
+- Tests: `uv run pytest -q` at 5ba5edf -> 418 passed.
 
 ## Response (Claude)
 
