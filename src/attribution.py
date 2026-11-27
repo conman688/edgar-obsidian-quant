@@ -3,6 +3,7 @@
 The strategy's return for as_of month end M is realized over month M+1 (an April 30 entry exits
 May 31), so it is regressed on month M+1's factor returns. Two responses:
 - strategy minus RF, over invested months only: cash months would pull every loading toward 0.
+  The selling cost a cash month carries is added to the invested month before it.
   RF is the model's own (French's for the French models, q5's for q5).
 - strategy minus universe, over every measured month: both legs are portfolios, so RF cancels
   and is not subtracted.
@@ -97,7 +98,11 @@ def _fit(rows: list[tuple[tuple[int, int], float]], snap: Snapshot, rf_key: str 
 def attribute(series: list[dict], snap: Snapshot) -> dict:
     """series: evaluate()["series"], measured months only. Returns
     {"invested": {model: fit}, "active": {model: fit}, "counts": {...}}."""
-    invested = [(realized_month(s["as_of"]), s["strategy"]) for s in series if s["picks"]]
+    # A cash month's return is the cost of selling the month before's picks (review C1): it is
+    # booked on that invested month, so the invested sample pays for its exits as for its entries.
+    invested = [(realized_month(s["as_of"]),
+                 s["strategy"] + (nxt["strategy"] if nxt is not None and not nxt["picks"] else 0.0))
+                for s, nxt in zip(series, series[1:] + [None]) if s["picks"]]
     active = [(realized_month(s["as_of"]), s["strategy"] - s["universe"]) for s in series]
     return {"invested": {m: _fit(invested, snap, rf, f) for m, (rf, f) in MODELS.items()},
             "active": {m: _fit(active, snap, None, f) for m, (rf, f) in MODELS.items()},
@@ -127,7 +132,7 @@ def render(snap: Snapshot | None, attribution: dict[str, dict] | None) -> list[s
     for name, f in snap.files.items():
         lines.append(f"- {name}: `{f['file']}`, sha256 {f['sha256'][:12]}, {f['first_month']} to "
                      f"newest factor month {f['newest_month']}")
-    for key, title in (("invested", "Strategy minus RF, invested months only"),
+    for key, title in (("invested", "Strategy minus RF, invested months only (each exit-to-cash cost on the month it sells)"),
                        ("active", "Strategy minus universe, all measured months (RF cancels)")):
         lines += ["", f"### {title}", "",
                   "| variant | model | months | alpha/mo | t | alpha/yr | R2 | loadings (t) | dropped |",
