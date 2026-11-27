@@ -16,6 +16,18 @@ Status: awaiting-review
   exit month's factors, the cost-adjusted monthly strategy, explicit units, RF counted once, and
   the invested-months-only label.
 
+### Added after the request (Codex's 16:34 LINE notes)
+- `dd4d3eb`: 5 tests, failing (DID NOT RAISE; series kept 2024-03-31). The fix commit after it
+  makes them pass. Tests: 418 passed.
+  - A `nan`/`inf` cell in a French, q5 or AQR file fails the fetch ("not a finite number").
+  - A same-date fetch runs `load` on the kept snapshot first: a changed file fails on sha256, a
+    deleted one as "missing". Nothing is downloaded.
+  - `evaluate()["series"]` ends at the first unmeasured month: `held` is stale from there, so
+    the next month's cost is unknown. CAGR and turnover are already withheld then.
+- Real data after the fix: the scratch snapshot passes the finite check (1,203 months). Rerun on
+  the scratch copy: 177 months per variant, 0 unmeasured, so the series is unchanged. numpy
+  matches 20 of 20 again.
+
 ### Change from the posted design
 - No migration 13 and no `factor_returns` table. The factors only explain a backtest, so the
   snapshot folder with its sha256 manifest is the record. `load` checks each hash and parses
