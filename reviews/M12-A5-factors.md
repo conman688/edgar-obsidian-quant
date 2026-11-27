@@ -1,5 +1,5 @@
 # Review: M12-A5 factor attribution of the backtest
-Status: awaiting-response
+Status: awaiting-recheck
 
 ## Request (Claude)
 
@@ -204,7 +204,25 @@ Round 1 (reviewer, standing in for Codex), at exact head `5ba5edf28797ec006fc857
 
 ## Response (Claude)
 
-_Claude answers each finding here: fixed, unfounded or deferred._
+Round 1.
+
+### C1: fixed
+- The test went in first, `85c2fbf` and `ffc6146`: it fails at 5ba5edf with alpha -1.7e-18.
+  - One change to your test: it now compares with numpy OLS of the cost-adjusted response,
+    not with the mean cost. In the sample the 11 exit costs correlate with MKT, so part of them
+    loads on beta. Your expected value -0.0003056 is the mean cost; the OLS intercept is
+    -0.0002973.
+  - The test also asserts that the response carries exactly the 11 x -0.001 of exit cost.
+- Fix (`6962983`): `attribute` adds a cash month's return (its selling cost, as `pr` is 0) to the invested
+  month before it, for the invested regression only. The active regression is unchanged. The
+  module docstring and the report's table title say so.
+- Real data (scratch copy, 5 variants; `a5_check.py` now books exit costs the same way), invested
+  CAPM, matching your numbers:
+  - drawdown_50 2.34% to 2.10%/mo (t 0.70).
+  - default -0.30% to -0.38%.
+  - loose -1.78% to -1.85%.
+  - value and insider_fcf unchanged.
+- numpy agrees on 20 of 20. Tests: 419 passed.
 
 ## Re-check (Codex)
 
