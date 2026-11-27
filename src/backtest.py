@@ -300,7 +300,7 @@ def evaluate(con: duckdb.DuckDBPyConnection, ranked: str, cost_bps: float = 50) 
             ucurve.append(uv)
         with_picks += bool(picks)
         if u is None or any(p["r"] is None for p in picks):
-            unmeasured += 1
+            unmeasured += 1         # `held` is stale from here: the series stops (Codex 11-26)
             continue
         target = {p["cik"]: 1 / len(picks) for p in picks} if picks else {"cash": 1.0}
         delta = {k: abs(target.get(k, 0) - held.get(k, 0)) for k in set(target) | set(held)}
@@ -310,7 +310,8 @@ def evaluate(con: duckdb.DuckDBPyConnection, ranked: str, cost_bps: float = 50) 
         pr = sum(p["r"] for p in picks) / len(picks) if picks else 0.0
         v *= 1 + pr - cost
         curve.append(v)
-        series.append({"as_of": as_of, "strategy": pr - cost, "universe": u, "picks": len(picks)})
+        if not unmeasured:
+            series.append({"as_of": as_of, "strategy": pr - cost, "universe": u, "picks": len(picks)})
         # Weights drift with returns; the next rebalance trades back from there (review C4).
         grown = {p["cik"]: target[p["cik"]] * (1 + p["r"]) for p in picks}
         total = sum(grown.values())
@@ -322,7 +323,8 @@ def evaluate(con: duckdb.DuckDBPyConnection, ranked: str, cost_bps: float = 50) 
                "max_drawdown": _max_drawdown(curve) if complete else None,
                "universe_max_drawdown": _max_drawdown(ucurve) if ucurve else None}
     # series: each measured month's after-cost strategy return (0 less costs in a cash month) and
-    # universe return, for factor attribution (M12-A5).
+    # universe return, for factor attribution (M12-A5). It ends at the first unmeasured month: the
+    # weights after it, and so the next month's cost, are unknown.
     return {"horizons": horizons, "monthly": monthly, "halves": halves, "series": series}
 
 

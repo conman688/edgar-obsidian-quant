@@ -18,6 +18,7 @@ import csv
 import hashlib
 import io
 import json
+import math
 import os
 import re
 import shutil
@@ -56,6 +57,14 @@ def _zip_text(data: bytes) -> str:
         return z.read(names[0]).decode("latin-1")
 
 
+def _num(text: str) -> float:
+    """A file's number; nan and inf are refused (Codex 11-26), never stored."""
+    v = float(text)
+    if not math.isfinite(v):
+        raise FactorError(f"{text.strip()!r} is not a finite number")
+    return v
+
+
 def parse_french(data: bytes, cols: list[str]) -> Rows:
     """The monthly block of a French CSV zip: the first header line (",Mkt-RF,..."), then rows
     "YYYYMM, v, ..." up to the first blank line. The annual block after it is ignored."""
@@ -76,7 +85,7 @@ def parse_french(data: bytes, cols: list[str]) -> Rows:
         ym = (int(parts[0][:4]), int(parts[0][4:]))
         if not 1 <= ym[1] <= 12 or len(parts) != len(header) + 1:
             raise FactorError(f"bad monthly row {ln!r}")
-        vals = {c: float(parts[i + 1]) for c, i in idx.items()}
+        vals = {c: _num(parts[i + 1]) for c, i in idx.items()}
         out[ym] = {c: v / 100 for c, v in vals.items() if v not in MISSING}
     return out
 
@@ -93,7 +102,7 @@ def parse_q5(data: bytes) -> Rows:
         ym = (int(r["year"]), int(r["month"]))
         if not 1 <= ym[1] <= 12:
             raise FactorError(f"bad month {r}")
-        out[ym] = {c: float(r[c]) / 100 for c in Q5_COLS if r[c].strip()}
+        out[ym] = {c: _num(r[c]) / 100 for c in Q5_COLS if r[c].strip()}
     return out
 
 
@@ -147,7 +156,7 @@ def parse_aqr(data: bytes, column: str = "USA") -> Rows:
         if dd != calendar.monthrange(yy, mm)[1]:
             raise FactorError(f"{cells['A']} is not a month end")
         if header[column] in cells:
-            out[(yy, mm)] = {column: float(cells[header[column]])}
+            out[(yy, mm)] = {column: _num(cells[header[column]])}
     if header is None:
         raise FactorError(f"first sheet {first.get('name')!r} has no DATE header")
     return out
@@ -211,9 +220,11 @@ def _parse(name: str, data: bytes) -> Rows:
 
 def fetch(client, root: Path, today: date) -> Path:
     """Download every source, check that it parses, and keep it as the snapshot of `today`.
-    An existing snapshot of that date is returned untouched and nothing is downloaded."""
+    An existing snapshot of that date is checked with `load` and returned untouched; nothing is
+    downloaded."""
     final = root / today.isoformat()
     if (final / "manifest.json").exists():
+        load(final)
         return final
     if final.exists():
         raise FactorError(f"{final} exists without a manifest.json; move it away and fetch again")
@@ -239,6 +250,7 @@ def fetch(client, root: Path, today: date) -> Path:
         except OSError:
             if (final / "manifest.json").exists():     # another fetch of the same date won
                 shutil.rmtree(tmp, ignore_errors=True)
+                load(final)
                 return final
             raise
     except BaseException:
@@ -271,6 +283,8 @@ def load(path: Path) -> Snapshot:
         raise FactorError(f"{path}: manifest lists {sorted(files)}, expected {sorted(SOURCES)}")
     months: dict[Month, dict[str, float]] = {}
     for name, f in files.items():
+        if not (path / f["file"]).is_file():
+            raise FactorError(f"{path / f['file']}: missing")
         data = (path / f["file"]).read_bytes()
         if hashlib.sha256(data).hexdigest() != f["sha256"]:
             raise FactorError(f"{path / f['file']}: sha256 differs from the manifest")

@@ -121,7 +121,8 @@ def render(snap: Snapshot | None, attribution: dict[str, dict] | None) -> list[s
     lines += [f"Monthly strategy returns after costs (as first reported), regressed on the factor returns of the "
               f"month in which they were realized: an April 30 entry is explained by May. OLS, t-statistics in "
               f"brackets; alpha is per month, and x12 per year. `short` marks fewer than {MIN_MONTHS} months. "
-              f"Months with no factor row (after the newest factor month) are dropped and counted.", "",
+              f"Months with no factor row (after the newest factor month) are dropped and counted. The series "
+              f"ends at the first month with an unknown holding return; the CAGR is withheld then too.", "",
               f"Factor snapshot {snap.snapshot_date.isoformat()} (`{snap.path}`):"]
     for name, f in snap.files.items():
         lines.append(f"- {name}: `{f['file']}`, sha256 {f['sha256'][:12]}, {f['first_month']} to "
