@@ -382,6 +382,19 @@ def test_cash_months_are_left_out_of_the_invested_regression_only(tmp_path):
     assert r["active"]["CAPM"]["n"] == 48
 
 
+def test_the_invested_regression_keeps_the_cost_of_each_exit_to_cash(tmp_path):
+    """Review C1 (M12-A5): every 4th month is cash; its -0.001 is the cost of selling the previous
+    month's picks. The invested sample keeps each entry cost, so it must keep each exit cost too."""
+    fac = factor_table(60, start=(2014, 12))
+    snap = fx.load(fx.fetch(web_for(fac), tmp_path, date(2026, 11, 26)))
+    ser = series_from(fac, lambda f: (f["RF"] + f["MKT"], f["RF"] + f["MKT"]),
+                      picks=lambda i: 0 if i % 4 == 0 else 2)
+    exits = sum(1 for a, b in zip(ser, ser[1:]) if a["picks"] and not b["picks"])     # 11
+    capm = at.attribute(ser, snap)["invested"]["CAPM"]
+    assert capm["n"] == 36
+    assert capm["alpha"] == pytest.approx(-0.001 * exits / 36, abs=1e-9)
+
+
 def test_months_after_the_newest_factor_month_are_dropped_and_counted(tmp_path):
     fac = factor_table(60, start=(2014, 12))
     snap = fx.load(fx.fetch(web_for(fac, q_end=(2016, 12)), tmp_path, date(2026, 11, 26)))
