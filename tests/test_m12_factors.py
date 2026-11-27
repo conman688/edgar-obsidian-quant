@@ -243,6 +243,37 @@ def test_a_changed_raw_file_is_refused_on_load(tmp_path):
         fx.load(snap)
 
 
+@pytest.mark.parametrize("source", ["ff3", "q5", "qmj"])
+def test_a_non_finite_value_fails_the_fetch(tmp_path, source):
+    """Codex 11-26: a "nan" cell parsed by float() must not reach the regression."""
+    web = web_for(factor_table(3, start=(2026, 7)))
+    url = fx.SOURCES[source].url
+    if source == "ff3":
+        text = french_csv(["Mkt-RF", "SMB", "HML", "RF"], {(2026, 8): [1, 1, 1, 0.3], (2026, 9): [1, 1, 1, 0.3]})
+        web.files[url] = zipped("F-F_Research_Data_Factors.csv", text.replace("    1.00", "     nan", 1))
+    elif source == "q5":
+        web.files[url] = b"year,month,R_F,R_MKT,R_ME,R_IA,R_ROE,R_EG\n2025,1,0.3,inf,1,1,1,1\n"
+    else:
+        web.files[url] = aqr_xlsx({(2026, 8): float("nan")})
+    with pytest.raises(fx.FactorError, match=f"{source}.*not a finite number"):
+        fx.fetch(web, tmp_path, date(2026, 11, 26))
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_same_date_retry_checks_the_existing_snapshot(tmp_path):
+    """Codex 11-26: a same-date fetch verifies the kept snapshot before reporting success."""
+    snap = fx.fetch(web_for(factor_table(3, start=(2026, 7))), tmp_path, date(2026, 11, 26))
+    files = json.loads((snap / "manifest.json").read_text())["files"]
+    (snap / files["mom"]["file"]).write_bytes(b"changed")
+    web = web_for(factor_table(3, start=(2026, 7)))
+    with pytest.raises(fx.FactorError, match="sha256"):
+        fx.fetch(web, tmp_path, date(2026, 11, 26))
+    (snap / files["mom"]["file"]).unlink()
+    with pytest.raises(fx.FactorError, match="missing"):
+        fx.fetch(web, tmp_path, date(2026, 11, 26))
+    assert web.calls == []
+
+
 # ---- the backtest's monthly series ---------------------------------------------------
 
 def panel(con, rows):
@@ -260,6 +291,19 @@ def test_evaluate_returns_the_after_cost_monthly_series_it_compounds():
     s = bt.evaluate(con, "ranked", cost_bps=50)["series"]
     assert s == [{"as_of": d1, "strategy": pytest.approx(0.10 - 0.005), "universe": pytest.approx(0.05), "picks": 1},
                  {"as_of": d2, "strategy": pytest.approx(-0.005), "universe": pytest.approx(0.03), "picks": 0}]
+
+
+def test_the_series_stops_at_the_first_unmeasured_month():
+    """Codex 11-26: after an unmeasured month the held weights are stale, so a later month's cost
+    would be a guess. The series ends there, as the CAGR is withheld."""
+    con = connect(":memory:")
+    d1, d2, d3 = date(2024, 1, 31), date(2024, 2, 29), date(2024, 3, 31)
+    panel(con, [(d1, 1, "shortlist", 0.10), (d1, 2, "fail", 0.00),
+                (d2, 1, "shortlist", None), (d2, 2, "fail", 0.01),       # unmeasured
+                (d3, 2, "shortlist", 0.03), (d3, 1, "fail", 0.02)])      # measured again
+    r = bt.evaluate(con, "ranked", cost_bps=50)
+    assert [s["as_of"] for s in r["series"]] == [d1]
+    assert r["monthly"]["months_unmeasured"] == 1
 
 
 # ---- attribution ---------------------------------------------------------------------
