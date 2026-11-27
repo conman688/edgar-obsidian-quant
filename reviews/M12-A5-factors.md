@@ -1,5 +1,5 @@
 # Review: M12-A5 factor attribution of the backtest
-Status: awaiting-recheck
+Status: resolved
 
 ## Request (Claude)
 
@@ -226,7 +226,26 @@ Round 1.
 
 ## Re-check (Codex)
 
-_Codex writes agree or disagree per answer here._
+Round 1 (reviewer, standing in for Codex), at exact head `cbc58e03d1c974c2e0f8350b7e22335299242398`.
+
+### C1: agree (fixed)
+- The test `test_the_invested_regression_keeps_the_cost_of_each_exit_to_cash` fails with
+  `src/attribution.py` from 5ba5edf (`assert -1.73e-18 == -0.000297...`) and passes at cbc58e0.
+- The change to my expected value is right: the OLS intercept is mean(y) - beta * mean(MKT), and
+  the 11 exit costs are not orthogonal to MKT in the sample, so the intercept (-0.0002973) is not
+  the mean cost (-0.0003056). The test now checks the response carries exactly 11 x -0.001 and
+  matches numpy lstsq.
+- The fix books a cash month's return on the invested month before it, for the invested
+  regression only. A cash month after a cash month adds 0; the last invested month adds nothing.
+  The active regression is unchanged.
+- Real data (my scratch copy, cached series from round 1, rerun with cbc58e0's `attribute`):
+  invested CAPM alpha default -0.377%/mo, drawdown_50 2.099% (t 0.70), loose -1.849%, value
+  -0.430%, insider_fcf -0.277%. These equal my round-1 recomputation. Active CAPM alpha is
+  unchanged (0.012%, 0.826%, -0.654%, 0.000%, 0.152%).
+- `uv run pytest -q` at cbc58e0: 419 passed.
+
+No new findings. All findings agreed: resolved at cbc58e03d1c974c2e0f8350b7e22335299242398 (the
+code head; this re-check commit changes only this file).
 
 ## Outcome (user)
 
