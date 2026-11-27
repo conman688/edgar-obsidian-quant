@@ -408,6 +408,56 @@ CREATE TABLE IF NOT EXISTS cboe_daily (
     PRIMARY KEY (index_id, trade_date)
 );
 """),
+    (13, """
+-- M12-B6: 13F institutional holdings, one row per quarter and CUSIP. A quarter counts only the
+-- reports filed by its deadline (quarter end + 45 days, next business day), so a row never
+-- changes and is known from that deadline. Shares on SH lines only: no options, no PRN.
+-- holders_new / holders_exited count only managers with a report in both this quarter and
+-- the one before; NULL when the quarter before was not loaded. A CUSIP every such manager left
+-- has a row with holders 0.
+CREATE TABLE IF NOT EXISTS form13f_quarters (
+    period          DATE    NOT NULL,
+    cusip           VARCHAR NOT NULL,
+    holders         INTEGER NOT NULL,
+    shares          BIGINT  NOT NULL,
+    holders_new     INTEGER,
+    holders_exited  INTEGER,
+    known_at        DATE    NOT NULL,
+    PRIMARY KEY (period, cusip)
+);
+-- One row per quarter: what its window held by the deadline.
+CREATE TABLE IF NOT EXISTS form13f_periods (
+    period        DATE      PRIMARY KEY,
+    deadline      DATE      NOT NULL,
+    source_file   VARCHAR   NOT NULL,
+    filers        INTEGER   NOT NULL,   -- managers with a holdings or combination report
+    notices       INTEGER   NOT NULL,   -- 13F-NT: holdings reported by another manager
+    restatements  INTEGER   NOT NULL,
+    new_holdings  INTEGER   NOT NULL,
+    other_amendments INTEGER NOT NULL,  -- no amendment type: not used
+    late          INTEGER   NOT NULL,   -- reports for the quarter filed after the deadline: not used
+    cusips        INTEGER   NOT NULL,
+    has_changes   BOOLEAN   NOT NULL,   -- the quarter before was loaded: new/exited are counted
+    loaded_at     TIMESTAMP NOT NULL
+);
+-- The last loaded quarter's positions per manager, for the next quarter's new/exited counts.
+-- cusip NULL marks a manager with a report and no SH lines.
+CREATE TABLE IF NOT EXISTS form13f_last_positions (
+    period     DATE    NOT NULL,
+    filer_cik  INTEGER NOT NULL,
+    cusip      VARCHAR
+);
+-- SEC fails-to-deliver files pair a CUSIP with the ticker it traded under (first and last
+-- settlement date seen). The only SEC source of CUSIP-ticker pairs.
+CREATE TABLE IF NOT EXISTS cusip_symbols (
+    cusip        VARCHAR NOT NULL,
+    symbol       VARCHAR NOT NULL,
+    first_seen   DATE    NOT NULL,
+    last_seen    DATE    NOT NULL,
+    description  VARCHAR,
+    PRIMARY KEY (cusip, symbol)
+);
+"""),
 ]
 
 # Macros and views are code, not data: recreated on every connect so edits take effect.

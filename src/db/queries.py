@@ -528,3 +528,33 @@ def short_interest_sql() -> str:
     WHERE s.known_at <= $as_of AND s.settlement_date > $as_of - INTERVAL {SHORT_INTEREST_MAX_AGE_DAYS} DAY
     QUALIFY row_number() OVER (PARTITION BY ps.cik ORDER BY s.settlement_date DESC) = 1
     """
+
+
+# M12-B6: 13F institutional holdings. A quarter is read once its filing deadline has passed.
+
+def cusip_cik_sql() -> str:
+    """One CUSIP per company: the CUSIP whose newest fails-to-deliver symbol is the company's
+    current ticker (price_status), taking only the newest CUSIP seen under each symbol. An old
+    CUSIP whose ticker later passed to another issuer therefore never maps to that issuer; the
+    cost is a company's history before a CUSIP change. Like FINRA short interest (M12-A3), it
+    is matched on the current ticker."""
+    return """
+    WITH latest AS (SELECT cusip, arg_max(symbol, (last_seen, symbol)) AS symbol, max(last_seen) AS last_seen
+                    FROM cusip_symbols GROUP BY cusip),
+         newest AS (SELECT symbol, arg_max(cusip, (last_seen, cusip)) AS cusip FROM latest GROUP BY symbol)
+    SELECT ps.cik, n.cusip FROM newest n JOIN price_status ps ON ps.ticker = n.symbol
+    """
+
+
+def institutional_sql() -> str:
+    """Per mapped company, the newest 13F quarter whose deadline is <= as_of (never the quarter
+    end). A company no manager reported has 0 holders. Binds $as_of."""
+    return f"""
+    WITH p AS (SELECT * FROM form13f_periods WHERE deadline <= $as_of ORDER BY period DESC LIMIT 1),
+         m AS ({cusip_cik_sql()})
+    SELECT m.cik, p.period AS inst_period, p.deadline AS inst_known_at,
+           coalesce(q.holders, 0) AS inst_holders, coalesce(q.shares, 0) AS inst_shares,
+           CASE WHEN p.has_changes THEN coalesce(q.holders_new, 0) END AS inst_holders_new,
+           CASE WHEN p.has_changes THEN coalesce(q.holders_exited, 0) END AS inst_holders_exited
+    FROM m CROSS JOIN p LEFT JOIN form13f_quarters q ON q.period = p.period AND q.cusip = m.cusip
+    """
