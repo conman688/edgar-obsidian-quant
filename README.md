@@ -89,6 +89,18 @@ Monthly snapshots are cached in `data/backtest/` with a fingerprint of the data 
 rerun recomputes only what changed. The report goes to `reports/backtest-<date>.md` and to the
 vault's `Reports/` folder.
 
+Factor attribution (M12):
+
+```bash
+uv run python -m src.cli fetch-factors        # French, q5 and AQR files to data/factors/<today>/
+```
+
+The report then regresses each variant's monthly strategy (after costs) on CAPM, FF3,
+FF5+momentum, q5 and FF5+momentum+QMJ+BAB, using the newest snapshot (`--factors` picks another).
+An April 30 entry is explained by May's factors. It shows alpha and loadings for strategy minus
+RF (invested months only) and for strategy minus universe. The factor files only explain past
+returns; they never feed the screen.
+
 Safeguards and limits:
 - Leak check: the whole run is repeated with numbers visible from their period end, weeks
   before filing. That version must score better, or the harness cannot tell look-ahead from skill.
@@ -319,6 +331,9 @@ Uncapped, a heavy query on an 8 GB machine with little free disk can crash the c
   value is read as it was published on or before `as_of`. The FRED key (`FRED_API_KEY`) goes only
   to api.stlouisfed.org, with redirects refused. Cboe closes (M12) are known at the later of the
   trade date and the first fetch, because Cboe backdated the modern VIX to 1990.
+- Factor files (M12) are recomputed in full by their publishers, so they are kept as dated
+  snapshots with a sha256 manifest; a report names the snapshot it used, and a same-date fetch
+  keeps the first one. They explain backtest returns only and never feed the screen.
 - Notes are written atomically. Only the `AUTO-GENERATED` block and auto frontmatter keys change.
 - A journal note is written once, on its decision date, and never rewritten; its snapshot is the
   screen as it was then.

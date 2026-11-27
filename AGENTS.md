@@ -39,10 +39,13 @@ locks the database.
   10-K text: a redline compares the latest two 10-Ks with `filed <= as_of`.
 - Prices are stored raw. Shares are multiplied by `split_factor`, prices divided.
 - Missing or stale inputs are named in `issues` and quarantined; they never pass as good values.
-- The SEC User-Agent (it names the user) goes only to SEC hosts. Other sources (FINRA, FRED) use a
-  generic User-Agent. The FRED API key goes only to api.stlouisfed.org and never into an error or log.
+- The SEC User-Agent (it names the user) goes only to SEC hosts. Other sources (FINRA, FRED, Cboe,
+  factor files) use a generic User-Agent. The FRED API key goes only to api.stlouisfed.org and never into an error or log.
 - M12 signals (`signals`, insider-sell columns) are informational: they never change a filter,
   status, rank or the shortlist until a backtest variant positive in both halves is approved.
+- Factor files (M12-A5) are dated snapshots checked against their sha256 manifest. They explain
+  backtest returns only. The strategy return for as_of M is matched to factor month M+1, and RF is
+  subtracted once (strategy minus RF) or not at all (strategy minus universe).
 - Schema changes are append-only migrations in `src/db/schema.py`; macros and `CONCEPT_SEED` are
   re-synced on every connect.
 - Loads are idempotent (ledgers: `loaded_filings`, `form4_filings`, `ledger`, `price_status`,
