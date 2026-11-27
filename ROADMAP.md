@@ -462,6 +462,11 @@ Phase A: high value, low effort (do first, in this order)
 5. **Factor attribution in the backtest.** Fama-French 3/5-factor plus momentum, AQR QMJ and BAB,
    q-factors (global-q.org). Regress M5 variant returns on factors and report alpha alongside raw
    excess return. Snapshot every download with its date.
+   Verified 2026-11-26: French files to 2026-09 (percent), q5 to 2025-12 (percent; `R_MKT` is an
+   excess return, mean 0.607% vs French 0.608% over 1967-2025), AQR QMJ and BAB USA to 2026-08
+   (decimals). All recompute full histories. Status: built on `feat/m12-factors`, review
+   `reviews/M12-A5-factors.md`. Snapshots in `data/factors/YYYY-MM-DD/` (sha256 manifest), no
+   database table; `fetch-factors` is manual.
 
 Phase B: medium effort (after Phase A)
 6. 13F institutional holdings and quarterly changes (SEC 13F data sets, from 2013-07; table layout
