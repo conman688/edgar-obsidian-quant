@@ -84,6 +84,29 @@ def test_ttm_ytd_bridge_june_fiscal_year(con):
     assert v[1] == 400.0 and v[3] == "fy"
 
 
+@pytest.mark.parametrize("restated_first", [True, False])
+def test_ttm_bridge_tie_follows_policy_not_row_order(con, restated_first):
+    # HOFT (CIK 1077688): the 2026 10-Q restates prior-year H1 as continuing operations and
+    # dates it from Feb 2, the 2025 10-Q dated it from Feb 3. Both end Aug 3 and both match
+    # the bridge window, so `period_end DESC` alone left the pick (value and same_tag) to
+    # row order. The policy must pick the filing, as it does in _resolve_sql.
+    co = ("us-gaap", "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations", "USD")
+    plain = ("us-gaap", "NetCashProvidedByUsedInOperatingActivities", "USD")
+    restated = fact("2025-02-02", "2025-08-03", 20924.0, "2026-09-11", "q26", "10-Q", fp="Q2")
+    original = fact("2025-02-03", "2025-08-03", 18107.0, "2025-09-12", "q25", "10-Q", fp="Q2")
+    fy_and_ytd = [fact("2025-02-03", "2026-02-01", 18302.0, "2026-04-17", "k26"),
+                  fact("2026-02-01", "2026-08-02", 24037.0, "2026-09-11", "q26", "10-Q", fp="Q2")]
+    docs = [doc({co: fy_and_ytd + [restated]}), doc({plain: [original]})]
+    load_docs(con, docs if restated_first else docs[::-1])
+    for threads in (1, 4):
+        con.execute(f"SET threads = {threads}")
+        for policy, value, same_tag, prior in [("as_last_known", 21415.0, True, "q26"),
+                                               ("as_first_reported", 24232.0, False, "q25")]:
+            sql = f"SELECT value, same_tag, accns FROM ({ttm_flow_sql(policy)})"
+            got = con.sql(sql, params={"as_of": date(2026, 11, 20), "concept": "cfo"}).fetchall()
+            assert got == [(value, same_tag, ["k26", "q26", prior])], (policy, threads)
+
+
 def test_reverse_split_not_a_buyback(con):
     tag = ("us-gaap", "WeightedAverageNumberOfDilutedSharesOutstanding", "shares")
     rows = [fact(f"{y}-01-01", f"{y}-12-31", v, f"{y+1}-02-15", f"a{y}")
