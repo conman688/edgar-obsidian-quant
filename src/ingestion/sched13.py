@@ -90,6 +90,12 @@ def _num(v: str | None) -> float | None:
     return float(v) if re.fullmatch(r"\d+(\.\d+)?", v) else None
 
 
+def _pct_ok(p: float | None) -> bool:
+    """A percent of class is 0-100; anything else is a filer or parse error (live: 862,190 shares
+    typed into classPercent), read as unknown."""
+    return p is not None and 0 <= p <= 100
+
+
 def _texts(root: ET.Element, *names: str) -> list[str]:
     want = {n.lower() for n in names}
     return [(e.text or "").strip() for e in root.iter() if e.tag.rsplit("}", 1)[-1].lower() in want]
@@ -102,7 +108,7 @@ def _parse_xml(doc: str) -> dict:
     event = (_texts(root, "dateOfEvent", "eventDateRequiresFilingThisStatement") or [""])[0]
     shares = [x for x in map(_num, _texts(root, "aggregateAmountOwned",
                                           "reportingPersonBeneficiallyOwnedAggregateNumberOfShares")) if x is not None]
-    pcts = [x for x in map(_num, _texts(root, "percentOfClass", "classPercent")) if x is not None]
+    pcts = [x for x in map(_num, _texts(root, "percentOfClass", "classPercent")) if _pct_ok(x)]
     issuer = (_texts(root, "issuerCik") or [""])[0]           # issuerCik (13G) and issuerCIK (13D)
     cusips = [c.upper() for c in _texts(root, "issuerCusipNumber", "issuerCUSIP") if c]
     rules = sorted({r.removeprefix("Rule ").strip() for r in _texts(root, "designateRulePursuantThisScheduleFiled") if r})
@@ -147,7 +153,7 @@ def _parse_text(doc: str) -> dict:
     cusips = [c.replace(" ", "") for c in _CUSIP.findall(t)]
     cusip = next((c for c in cusips if valid_cusip(c)), None)
     shares = [float(x.replace(",", "")) for x in _SHARES.findall(t)]
-    pcts = [float(x) for x in _PCT.findall(t)]
+    pcts = [p for p in map(float, _PCT.findall(t)) if _pct_ok(p)]
     return {"issuer_cik": None, "cusip": cusip, "event_date": _date(ev.group(1)) if ev else None, "rule": None,
             "persons": len(_PERSON.findall(t)), "shares": max(shares) if shares else None,
             "pct": max(pcts) if pcts else None}

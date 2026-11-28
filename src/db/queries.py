@@ -620,6 +620,7 @@ def institutional_sql() -> str:
 
 STAKE_MIN_PCT = 5.0
 NEW_13D_DAYS = 90
+STAKE_MAX_AGE_DAYS = 3 * 365
 
 
 def stakes_sql() -> str:
@@ -627,6 +628,8 @@ def stakes_sql() -> str:
     13G filed on or before as_of (never by event date) stands, so an amendment below 5% ends the
     stake and a filer moving from 13G to 13D counts once, under 13D. A filing listed under its
     subject only has no filer: it stands for itself. Unreadable percents count as no stake.
+    A stake whose latest filing is more than STAKE_MAX_AGE_DAYS old is not counted: filers often stop
+    filing without an exit (live JOB: 17 of 20 such 13D stakes were last filed 2005-2017).
     new_13d: a holder of a 13D stake whose initial 13D was filed in the last NEW_13D_DAYS."""
     return f"""
     WITH s AS (SELECT *, coalesce(CAST(filer_cik AS VARCHAR), accn) AS holder FROM sched13_stakes
@@ -638,7 +641,7 @@ def stakes_sql() -> str:
                  LEFT JOIN (SELECT DISTINCT issuer_cik, holder FROM s
                             WHERE form = '13D' AND NOT amendment AND filed > $as_of - INTERVAL {NEW_13D_DAYS} DAY) n
                    USING (issuer_cik, holder)
-                 WHERE l.pct >= {STAKE_MIN_PCT})
+                 WHERE l.pct >= {STAKE_MIN_PCT} AND l.filed > $as_of - INTERVAL {STAKE_MAX_AGE_DAYS} DAY)
     SELECT issuer_cik AS cik,
            count(*) FILTER (WHERE form = '13D') AS holders_13d,
            max(pct) FILTER (WHERE form = '13D') AS max_pct_13d,

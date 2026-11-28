@@ -406,4 +406,4 @@ def test_a_stake_last_filed_over_three_years_ago_is_not_counted(con):
                                                                   xml13d(persons=((80_000.0, 8.0),))))}
     load(con, docs)
     assert screen_rows(con)["ACME"]["holders_13d"] == 1                       # 2024-09-03: 3.3 years
-    assert screen_rows(con, date(2024, 5, 31))["ACME"]["holders_13d"] == 1    # 2.99 years: still counted
+    assert screen_rows(con, date(2024, 5, 30))["ACME"]["holders_13d"] == 1    # 1,094 days: still counted

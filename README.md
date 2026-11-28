@@ -340,7 +340,8 @@ Uncapped, a heavy query on an 8 GB machine with little free disk can crash the c
   ticker, using only the newest CUSIP seen under a symbol.
 - Schedule 13D/13G stakes (M12) are known from the filing date, never the event date (a quarter
   of sampled initial 13Ds came more than 20 business days after the event). Each filer's latest
-  filing stands; one below 5% ends the stake. Group members repeat the same shares, so a filing
+  filing stands; one below 5% ends the stake, and one last filed more than 3 years ago is not
+  counted (filers often stop filing without an exit). Group members repeat the same shares, so a filing
   counts its largest reporting person, never the sum.
 - FRED macro series (M12) are known at their ALFRED vintage date (`realtime_start`), so a revised
   value is read as it was published on or before `as_of`. The FRED key (`FRED_API_KEY`) goes only
