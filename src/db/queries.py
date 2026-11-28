@@ -540,8 +540,10 @@ CUSIP_SLACK_DAYS = 92
 def cusip_periods_sql() -> str:
     """When each CUSIP stands for a company: its fails-to-deliver symbol is the company's current
     ticker (price_status; a ticker two companies hold maps to neither). A CUSIP seen under another
-    symbol after its last sighting under this one only borrowed the ticker (live: the Roundhill
-    Metaverse ETF traded as META 2021-07..2022-01, then METV) and never stands for the company.
+    symbol more than CUSIP_SLACK_DAYS after its last sighting under this one only borrowed the
+    ticker (live: the Roundhill Metaverse ETF traded as META 2021-07..2022-01, then METV to
+    2026-10) and never stands for the company. Days under a temporary symbol at a CUSIP change
+    do not count (live: HON's old CUSIP under HONZZZZ for 15 days, LRCX's under LRCXXXXX).
     The others take turns in order of their first sighting under any symbol (live: Meta's
     30303M102 traded as FB until 2022-06): each is valid from that sighting (the first one from
     the start, so it covers years before its first fail) until the next one's, or until
@@ -554,7 +556,7 @@ def cusip_periods_sql() -> str:
          own AS (SELECT s.symbol, s.cusip, c.first_any, s.last_seen
                  FROM cusip_symbols s JOIN c USING (cusip)
                  WHERE NOT EXISTS (SELECT 1 FROM cusip_symbols o WHERE o.cusip = s.cusip AND o.symbol <> s.symbol
-                                   AND o.last_seen > s.last_seen)),
+                                   AND o.last_seen > s.last_seen + INTERVAL {CUSIP_SLACK_DAYS} DAY)),
          e AS (SELECT symbol, cusip, first_any, lag(last_seen) OVER w AS prev_last, row_number() OVER w AS k
                FROM own WINDOW w AS (PARTITION BY symbol ORDER BY first_any, cusip)),
          v AS (SELECT symbol, cusip, k,
