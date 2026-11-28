@@ -316,43 +316,52 @@ def load_window(con: duckdb.DuckDBPyConnection, zip_path: Path, name: str, work:
                       if not valid_cusip(c or ""))
             # Every filer prices at the same quarter end, so a line's price (value / shares) sits at
             # the CUSIP's median, or 1,000x off it when the filer reports value in thousands (the
-            # unit before 2023-01-03, or a filer that kept it). Each priced line gets its unit (0,
-            # -3 or +3 decades, within OUTLIER_DECADES) or none (an error in shares or value; live:
-            # 6.4B AAPL shares worth $22M). A filing has one unit, its most common: a line in
-            # another unit is dropped. When a filing has as many lines without a unit as in it, the
-            # whole filing is dropped (live: XXEC, 19 of 23 lines 1e-4..1e-6 of the median and 4
-            # in the 1,000x band from shares x1000). Lines without a value stay.
+            # unit before 2023-01-03, or a filer that kept it). Two passes:
+            # 1. Against the raw medians, each priced line gets a unit (0, -3 or +3 decades, within
+            #    OUTLIER_DECADES) or none, and each filing takes its most common unit.
+            # 2. Each filing's values are rescaled to dollars by its unit and the medians
+            #    recomputed, so a CUSIP whose raw median sat in thousands is judged in dollars
+            #    (review C4, live UPWK 2023-03-31). A line off its median in dollars is dropped
+            #    (live: 6.4B AAPL shares worth $22M). A filing with as many such lines as good ones
+            #    is dropped whole (live: XXEC, 19 of 23 lines 1e-4..1e-6 of the median, the other 4
+            #    shares x1000). Lines without a value stay.
             d = OUTLIER_DECADES
+            unit_of = f"""CASE WHEN l IS NULL THEN NULL WHEN abs(l) <= {d} THEN 0 WHEN abs(l + 3) <= {d} THEN -3
+                               WHEN abs(l - 3) <= {d} THEN 3 ELSE 99 END"""
             con.execute("""CREATE OR REPLACE TEMP TABLE f13_px AS SELECT cusip, median(value / shares) AS px
                            FROM f13_rows WHERE value > 0 AND shares > 0 GROUP BY cusip""")
             con.execute(f"""
-                CREATE OR REPLACE TEMP TABLE f13_u AS
-                WITH a AS (SELECT r.*, CASE WHEN r.value > 0 AND r.shares > 0 AND m.px > 0
-                                            THEN log10(r.value / r.shares / m.px) END AS l
-                           FROM f13_rows r LEFT JOIN f13_px m USING (cusip))
-                SELECT * EXCLUDE (l), CASE WHEN l IS NULL THEN NULL WHEN abs(l) <= {d} THEN 0
-                                           WHEN abs(l + 3) <= {d} THEN -3 WHEN abs(l - 3) <= {d} THEN 3
-                                           ELSE 99 END AS u
-                FROM a""")
-            con.execute("""
                 CREATE OR REPLACE TEMP TABLE f13_unit AS
-                WITH c AS (SELECT filer, u, count(*) AS n FROM f13_u WHERE u IS NOT NULL GROUP BY filer, u)
-                SELECT filer,
-                       arg_max(u, n * 4 + CASE u WHEN 0 THEN 2 WHEN -3 THEN 1 ELSE 0 END) FILTER (WHERE u <> 99) AS unit,
-                       coalesce(max(n) FILTER (WHERE u <> 99), 0) AS n_unit,
-                       coalesce(sum(n) FILTER (WHERE u = 99), 0) AS n_bad
+                WITH a AS (SELECT r.filer, CASE WHEN r.value > 0 AND r.shares > 0 AND m.px > 0
+                                                THEN log10(r.value / r.shares / m.px) END AS l
+                           FROM f13_rows r LEFT JOIN f13_px m USING (cusip)),
+                     c AS (SELECT filer, u, count(*) AS n FROM (SELECT filer, {unit_of} AS u FROM a)
+                           WHERE u IS NOT NULL AND u <> 99 GROUP BY filer, u)
+                SELECT filer, arg_max(u, n * 4 + CASE u WHEN 0 THEN 2 WHEN -3 THEN 1 ELSE 0 END) AS unit
                 FROM c GROUP BY filer""")
+            con.execute("""CREATE OR REPLACE TEMP TABLE f13_d AS
+                           SELECT r.*, r.value * power(10, -coalesce(f.unit, 0)) AS usd
+                           FROM f13_rows r LEFT JOIN f13_unit f USING (filer)""")
+            con.execute("""CREATE OR REPLACE TEMP TABLE f13_px AS SELECT cusip, median(usd / shares) AS px
+                           FROM f13_d WHERE usd > 0 AND shares > 0 GROUP BY cusip""")
+            con.execute(f"""
+                CREATE OR REPLACE TEMP TABLE f13_u AS
+                SELECT r.*, CASE WHEN r.usd > 0 AND r.shares > 0 AND m.px > 0
+                                 THEN abs(log10(r.usd / r.shares / m.px)) <= {d} END AS ok
+                FROM f13_d r LEFT JOIN f13_px m USING (cusip)""")
+            con.execute("""
+                CREATE OR REPLACE TEMP TABLE f13_drop AS
+                SELECT filer FROM f13_u GROUP BY filer
+                HAVING count(*) FILTER (WHERE NOT ok) > 0
+                   AND count(*) FILTER (WHERE NOT ok) >= count(*) FILTER (WHERE ok)""")
             n_lines = con.execute("SELECT count(*) FROM f13_rows").fetchall()[0][0]
-            dropped_filers = con.execute("SELECT count(*) FROM f13_unit WHERE n_bad > 0 AND n_bad >= n_unit"
-                                         ).fetchall()[0][0]
+            dropped_filers = con.execute("SELECT count(*) FROM f13_drop").fetchall()[0][0]
             con.execute("""
                 CREATE OR REPLACE TEMP TABLE f13_rows AS
-                SELECT r.filer, r.cusip, r.shares, r.title, r.value FROM f13_u r LEFT JOIN f13_unit f USING (filer)
-                WHERE coalesce(NOT (f.n_bad > 0 AND f.n_bad >= f.n_unit), true)
-                  AND (r.u IS NULL OR r.u = f.unit)""")
+                SELECT filer, cusip, shares, title, value FROM f13_u
+                WHERE filer NOT IN (SELECT filer FROM f13_drop) AND coalesce(ok, true)""")
             outliers = n_lines - con.execute("SELECT count(*) FROM f13_rows").fetchall()[0][0]
-            con.execute("DELETE FROM f13_eff WHERE filer IN (SELECT filer FROM f13_unit "
-                        "WHERE n_bad > 0 AND n_bad >= n_unit)")
+            con.execute("DELETE FROM f13_eff WHERE filer IN (SELECT filer FROM f13_drop)")
             con.execute("DELETE FROM form13f_positions WHERE period = ?", [home])
             con.execute("""
                 INSERT INTO form13f_positions
@@ -371,7 +380,7 @@ def load_window(con: duckdb.DuckDBPyConnection, zip_path: Path, name: str, work:
             con.execute("INSERT OR REPLACE INTO form13f_periods VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         [home, due, name, counts["filers"], notices, counts["restatements"], counts["new_holdings"],
                          counts["other"], late, elsewhere, bad, outliers, dropped_filers, n_cusips, loaded_at])
-            for t in ("f13_eff", "f13_rows", "f13_px", "f13_u", "f13_unit"):
+            for t in ("f13_eff", "f13_rows", "f13_px", "f13_u", "f13_unit", "f13_d", "f13_drop"):
                 con.execute(f"DROP TABLE IF EXISTS {t}")
             ledger.mark(con, f"13f@{name}", STAGE, SCHEMA_VERSION, "done", input_sha256=sha256,
                         output_ref=f"period={home};cusips={n_cusips};filers={counts['filers']};late={late};"
