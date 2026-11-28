@@ -621,6 +621,22 @@ def institutional_sql() -> str:
 STAKE_MIN_PCT = 5.0
 NEW_13D_DAYS = 90
 STAKE_MAX_AGE_DAYS = 3 * 365
+XML_13G_FROM = date(2024, 12, 18)       # structured 13D/13G required; legacy 13G is not loaded
+
+
+def stakes_coverage_sql() -> str:
+    """One row: whether 13D and 13G counts are known at $as_of (review C1). 13D is known inside the
+    indexed quarters; 13G only from XML_13G_FROM too. Outside, a count of 0 would pass a missing
+    input as a good value."""
+    return f"""
+    WITH q AS (SELECT DISTINCT make_date(CAST(left(quarter, 4) AS INTEGER),
+                                         3 * CAST(right(quarter, 1) AS INTEGER) - 2, 1) AS q_start
+               FROM sched13_quarters),
+         r AS (SELECT min(q_start) AS lo, max(q_start) + INTERVAL 3 MONTH AS hi FROM q)
+    SELECT coalesce($as_of >= lo AND $as_of < hi, false) AS has_13d,
+           coalesce($as_of >= lo AND $as_of < hi AND $as_of >= DATE '{XML_13G_FROM}', false) AS has_13g
+    FROM r
+    """
 
 
 def stakes_sql() -> str:

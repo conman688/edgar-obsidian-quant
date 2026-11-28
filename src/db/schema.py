@@ -472,6 +472,13 @@ CREATE TABLE IF NOT EXISTS sched13_index (
     path       VARCHAR NOT NULL,
     PRIMARY KEY (accn, cik)
 );
+-- Each quarter whose form.idx was read, even if it listed no 13D/13G line: counts are known
+-- (0 or more) only for dates inside the indexed quarters.
+CREATE TABLE IF NOT EXISTS sched13_quarters (
+    quarter     VARCHAR PRIMARY KEY,
+    lines       INTEGER   NOT NULL,
+    indexed_at  TIMESTAMP NOT NULL
+);
 CREATE TABLE IF NOT EXISTS sched13_filings (
     accn        VARCHAR PRIMARY KEY,
     status      VARCHAR   NOT NULL,     -- done, skipped (no schedule document) or failed (retried)

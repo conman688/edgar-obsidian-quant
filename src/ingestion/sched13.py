@@ -55,7 +55,9 @@ def load_index(con: duckdb.DuckDBPyConnection, quarter: str, text: str) -> int:
     con.begin()
     try:
         con.execute("DELETE FROM sched13_index WHERE quarter = ?", [quarter])
-        con.executemany("INSERT OR IGNORE INTO sched13_index VALUES (?, ?, ?, ?, ?, ?)", rows)
+        if rows:                        # a quarter can list none of FORMS
+            con.executemany("INSERT OR IGNORE INTO sched13_index VALUES (?, ?, ?, ?, ?, ?)", rows)
+        con.execute("INSERT OR REPLACE INTO sched13_quarters VALUES (?, ?, ?)", [quarter, len(rows), datetime.now()])
         con.commit()
     except BaseException:
         con.rollback()
@@ -64,7 +66,7 @@ def load_index(con: duckdb.DuckDBPyConnection, quarter: str, text: str) -> int:
 
 
 def indexed_quarters(con: duckdb.DuckDBPyConnection) -> set[str]:
-    return {r[0] for r in con.execute("SELECT DISTINCT quarter FROM sched13_index").fetchall()}
+    return {r[0] for r in con.execute("SELECT quarter FROM sched13_quarters").fetchall()}
 
 
 # --- parsing --------------------------------------------------------------------------
@@ -122,9 +124,14 @@ def _parse_xml(doc: str) -> dict:
 
 _DATE_FORMATS = ("%B %d, %Y", "%b %d, %Y", "%b. %d, %Y", "%m/%d/%Y", "%m/%d/%y")
 _EVENT = re.compile(r"([A-Za-z]+\.? \d{1,2}, \d{4}|\d{1,2}/\d{1,2}/\d{2,4})\s*\(\s*Date of Event", re.I)
-_PCT = re.compile(r"PERCENT OF CLASS REPRESENTED BY AMOUNT IN ROW\s*\(?\s*\d+\s*\)?\s*[:.]?\s*(\d+(?:\.\d+)?)\s*%", re.I)
-_SHARES = re.compile(r"AGGREGATE AMOUNT BENEFICIALLY OWNED BY EACH REPORTING PERSON\s*[:.]?\s*(\d[\d,]*(?:\.\d+)?)"
-                     r"(?!\s*(?:CHECK|%))", re.I)
+_PCT = re.compile(r"PERCENT OF CLASS REPRESENTED BY AMOUNT IN ROW\s*\(?\s*\d+\s*\)?\s*[:.]?\s*"
+                  r"(?:\(?13\)?[.:]?\s+(?=\d))?(\d+(?:\.\d+)?)\s*%", re.I)
+# The whole number, never a prefix of it, and never the next row's number ("12. CHECK BOX" when
+# row 11 is empty; review C2) or a percent. Some filings print the row number after the heading
+# ("... PERSON 11 2,466,421"; live: 128 filings read 11): it is skipped when a number follows.
+_SHARES = re.compile(r"AGGREGATE AMOUNT BENEFICIALLY OWNED BY EACH REPORTING PERSON\s*[:.]?\s*"
+                     r"(?:\(?11\)?[.:]?\s+(?=\d))?(\d[\d,]*(?:\.\d+)?)"
+                     r"(?![\d,])(?!\.?\s*(?:CHECK|%))", re.I)
 _CUSIP = re.compile(r"CUSIP\s*(?:No\.?|Number|#)?\s*[:.]?\s*([0-9A-Z]{6} ?[0-9A-Z]{2} ?[0-9A-Z])\b")
 _PERSON = re.compile(r"NAMES? OF REPORTING PERSONS?", re.I)
 
