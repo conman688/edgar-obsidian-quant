@@ -194,17 +194,22 @@ def test_a_quarter_counts_holders_and_shares_filed_by_its_deadline(con, tmp_path
 
 def test_a_line_whose_price_is_far_from_the_others_is_dropped_and_counted(con, tmp_path):
     """Live Jun-Aug 2026: one filer reports 6.4B AAPL shares worth $22M ($0.0035 a share against a
-    median of $289.36), another 89M MTD shares. A line off the CUSIP's median price by more than
-    10x is dropped, unless it is off by about 1,000x: value in thousands (before 2023-01-03, or
-    a filer that kept that unit)."""
+    median of $289.36), another 89M MTD shares. Every filer prices at the same quarter end, so a
+    line off the CUSIP's median price by more than half a decade (3.2x) is dropped, unless it is
+    that close to 1,000x off: value in thousands (before 2023-01-03, or a filer that kept the
+    unit)."""
     q = zip13f([hr("0000000001-24-000001", 1, date(2024, 5, 1), Q1, [(ACME_CUSIP, 100, "SH", "", "COM", 1200)]),
                 hr("0000000002-24-000001", 2, date(2024, 5, 1), Q1, [(ACME_CUSIP, 200, "SH", "", "COM", 2400)]),
                 hr("0000000003-24-000001", 3, date(2024, 5, 1), Q1, [(ACME_CUSIP, 300, "SH", "", "COM", 3)]),     # thousands
                 hr("0000000004-24-000001", 4, date(2024, 5, 1), Q1, [(ACME_CUSIP, 9_000_000, "SH", "", "COM", 1300)]),
-                hr("0000000005-24-000001", 5, date(2024, 5, 1), Q1, [(ACME_CUSIP, 50, "SH", "", "COM", 0)])])    # no value
+                hr("0000000005-24-000001", 5, date(2024, 5, 1), Q1, [(ACME_CUSIP, 50, "SH", "", "COM", 0)]),    # no value
+                hr("0000000006-24-000001", 6, date(2024, 5, 1), Q1, [(ACME_CUSIP, 10, "SH", "", "COM", 120)]),
+                hr("0000000007-24-000001", 7, date(2024, 5, 1), Q1, [(ACME_CUSIP, 10, "SH", "", "COM", 120)]),
+                # Live CTVA: 139.8M shares worth $1.65M, 1.4e-4 of the median price: not thousands.
+                hr("0000000008-24-000001", 8, date(2024, 5, 1), Q1, [(ACME_CUSIP, 1_000_000, "SH", "", "COM", 1680)])])
     load(con, tmp_path, {"01mar2024-31may2024_form13f.zip": q})
-    assert quarter(con, Q1)[:2] == (4, 650)
-    assert con.execute("SELECT outlier_rows FROM form13f_periods").fetchall()[0][0] == 1
+    assert quarter(con, Q1)[:2] == (6, 670)
+    assert con.execute("SELECT outlier_rows FROM form13f_periods").fetchall()[0][0] == 2
 
 
 def test_a_quarter_without_on_time_reports_is_never_read(con, tmp_path):
