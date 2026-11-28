@@ -754,6 +754,52 @@ backtesting, Obsidian). Claude and Codex assess each one for fit, invariants, li
 with numbers on a sample: `reviews/R1-repo-candidates.md`. Research only until the M9 two-week
 check ends; anything adopted becomes its own milestone.
 
+### Idea I1: congressional stock purchases (not planned; user, 2026-11-10; revised 2026-11-21 after review)
+
+An option for later, not scheduled: add members of Congress's disclosed stock purchases (STOCK
+Act periodic transaction reports, PTRs) as a separate signal next to Form 4.
+
+Not the same signal as Form 4:
+- Form 4 is filed by a company's own insiders (Section 16 officers, directors and 10% holders)
+  about that company's shares.
+- A PTR is filed by a member of Congress about trades by them, their spouse or a dependent, in
+  any company. It says nothing about the issuer's insiders and would never count toward the
+  screen's insider-buy rule. It would only ever be its own field.
+
+Why it is not planned yet:
+- Timing: a PTR is due within 30 days of the member learning of the trade, and in no case more
+  than 45 days after it ([House PTR guidance](https://ethics.house.gov/periodic-transaction-report-calculator/)).
+  For a trade on Oct 1 known that day, the deadline is Oct 31. Actual filing and publication can
+  be later. Form 4 is due within 2 business days ([SEC Form 4 instructions](https://www.sec.gov/files/form4.pdf)).
+- Amounts are ranges, not shares and prices.
+- Many trades are made by a spouse or an adviser.
+- Assumptions, not checked here:
+  - members' trades are thought to be mostly in large companies, while the screen finds small,
+    cheap ones (the yield test below measures the overlap);
+  - published results on returns after disclosure are said to be mixed. No study is cited here;
+    a revival must cite specific sources before relying on either point.
+
+Sources:
+- the House Clerk's yearly index and reports, free, partly scanned PDFs;
+- the Senate eFD search, which asks you to accept its terms first, so scraping it is harder;
+- third-party feeds, paid or restricted.
+
+First step if revived: a read-only yield test, point-in-time.
+- Keep three dates per report: trade date, filing date, and the **date the chosen public source
+  first had it** (a publication date the source states, or the first date we observed it there).
+  The filing date alone does not prove public availability: the House allows public inspection
+  within 30 days of receipt and website publication within 45 days of filing
+  ([House public access guidance](https://ethics.house.gov/manual/retention-of-and-public-access-to-reports/)).
+- Count the vault and shortlist tickers with a congressional purchase whose **public-availability
+  date is on or before the screen's `as_of`**, and whose trade date is in the 90 days before
+  `as_of`. Example: a trade on Oct 1, filed Oct 15, first in the source Oct 20, is not counted
+  on Oct 16 and is counted from Oct 20.
+- A report with no proved public-availability date (only a filing date) is never counted as
+  known. It is reported separately as unknown availability, with its trade and filing dates.
+- A trade made public after `as_of` is never counted: it was not knowable on that date.
+- Build only if that number is material, as its own milestone and with the user's yes. This idea
+  approves no pilot or build.
+
 ### Research R2: data sources and variables (2026-11-25)
 
 Deep-research report on data that could be added beyond XBRL facts and Form 4 purchases: more
