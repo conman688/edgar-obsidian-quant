@@ -345,6 +345,7 @@ Uncapped, a heavy query on an 8 GB machine with little free disk can crash the c
   filing stands; one below 5% ends the stake, and one last filed more than 3 years ago is not
   counted (filers often stop filing without an exit). Group members repeat the same shares, so a
   filing counts its largest reporting person, never the sum.
+  Counts are NULL (unknown) outside the indexed quarters, and 13G counts before 2024-12-18.
 - FRED macro series (M12) are known at their ALFRED vintage date (`realtime_start`), so a revised
   value is read as it was published on or before `as_of`. The FRED key (`FRED_API_KEY`) goes only
   to api.stlouisfed.org, with redirects refused. Cboe closes (M12) are known at the later of the
