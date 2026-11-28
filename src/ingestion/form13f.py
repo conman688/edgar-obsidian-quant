@@ -50,6 +50,7 @@ INFO_COLS = ["ACCESSION_NUMBER", "INFOTABLE_SK", "NAMEOFISSUER", "TITLEOFCLASS",
              "VOTING_AUTH_SOLE", "VOTING_AUTH_SHARED", "VOTING_AUTH_NONE"]
 MON = {m.upper(): i for i, m in enumerate(calendar.month_abbr) if m}
 ACCN = re.compile(r"\d{10}-\d{2}-\d{6}")
+OUTLIER_DECADES = 0.5           # 3.2x: rounding of small values in thousands stays inside it
 
 
 class Form13fError(RuntimeError):
@@ -354,12 +355,14 @@ def load_window(con: duckdb.DuckDBPyConnection, zip_path: Path, name: str, work:
                 WHERE upper(trim(i.SSHPRNAMTTYPE)) = 'SH' AND coalesce(trim(i.PUTCALL), '') = ''""")
             bad = sum(n for c, n in con.execute("SELECT cusip, count(*) FROM f13_rows GROUP BY cusip").fetchall()
                       if not valid_cusip(c or ""))
-            # A line whose price (value / shares) is off the CUSIP's median by more than 10x is a
-            # filer error in shares or value (live: 6.4B AAPL shares worth $22M). Off by about
-            # 1,000x is value in thousands (the unit before 2023-01-03), and is kept.
+            # Every filer prices at the same quarter end, so a line whose price (value / shares)
+            # is off the CUSIP's median by more than OUTLIER_DECADES is a filer error in shares
+            # or value (live: 6.4B AAPL shares worth $22M). That close to 1,000x off is value in
+            # thousands (the unit before 2023-01-03, or a filer that kept it), and is kept.
+            d = OUTLIER_DECADES
             outlier_where = f"""value > 0 AND shares > 0 AND m.px > 0 AND NOT (
-                abs(log10(value / shares / m.px)) <= 1 OR abs(log10(value / shares / m.px) + 3) <= 1
-                OR abs(log10(value / shares / m.px) - 3) <= 1)"""
+                abs(log10(value / shares / m.px)) <= {d} OR abs(log10(value / shares / m.px) + 3) <= {d}
+                OR abs(log10(value / shares / m.px) - 3) <= {d})"""
             con.execute("""CREATE OR REPLACE TEMP TABLE f13_px AS SELECT cusip, median(value / shares) AS px
                            FROM f13_rows WHERE value > 0 AND shares > 0 GROUP BY cusip""")
             outliers = con.execute(f"SELECT count(*) FROM f13_rows r JOIN f13_px m USING (cusip) WHERE {outlier_where}"
