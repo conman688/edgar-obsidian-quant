@@ -385,3 +385,25 @@ def test_an_xml_with_a_dtd_is_refused_and_retried(con):
     assert (s.done, s.failed) == (0, 1) and stake(con, A1) is None
     err = con.execute("SELECT status, error FROM sched13_filings WHERE accn = ?", [A1]).fetchall()[0]
     assert err[0] == "failed" and "DTD" in err[1]
+
+
+def test_a_percent_above_100_is_unreadable(con):
+    """Live: 7 of 76,339 filings parse above 100%, e.g. 0001420506-24-000071 (XML 13G, 862,190 in
+    classPercent: the share count) and 0001029574-02-000027 (legacy 13D/A, 723 %)."""
+    x = submission_xml(A1, "SCHEDULE 13G", F1, xml13g(persons=((862_190, 862_190),)))
+    t = legacy13d(A2, date(2023, 1, 4), covers=(("FUND A", "20,800", "723 %"),))
+    load(con, {A1: ("SCHEDULE 13G", F1, x), A2: ("SC 13D/A", date(2023, 1, 4), t)})
+    assert stake(con, A1)["pct"] is None and stake(con, A2)["pct"] is None
+    assert stake(con, A2)["shares"] == 20_800
+
+
+def test_a_stake_last_filed_over_three_years_ago_is_not_counted(con):
+    """Live JOB (2026-11-20): 20 "active" 13D holders, 17 of them last filed 2005-2017 and never
+    filed an exit. A stake counts only while its latest filing is at most 3 years old."""
+    old = "0000000001-21-000001"
+    docs = {old: ("SC 13D", date(2021, 6, 1), legacy13d(old, date(2021, 6, 1), filer=FILER2)),
+            A1: ("SCHEDULE 13D", date(2024, 7, 1), submission_xml(A1, "SCHEDULE 13D", date(2024, 7, 1),
+                                                                  xml13d(persons=((80_000.0, 8.0),))))}
+    load(con, docs)
+    assert screen_rows(con)["ACME"]["holders_13d"] == 1                       # 2024-09-03: 3.3 years
+    assert screen_rows(con, date(2024, 5, 31))["ACME"]["holders_13d"] == 1    # 2.99 years: still counted
