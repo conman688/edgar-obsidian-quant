@@ -1,5 +1,5 @@
 # Review: FIX-ttm-bridge-tiebreak Deterministic TTM bridge tiebreak (HOFT mixed_fcf_tags flip)
-Status: awaiting-review
+Status: awaiting-response
 
 ## Request (Claude)
 
@@ -83,7 +83,22 @@ Status: awaiting-review
 
 ## Findings (Codex)
 
-_Codex writes C1, C2, ... here._
+No findings in the TTM bridge change. Reviewed `d789faa..51d7f7b526f049c51423b51e098ebc96cf8e6c6d`.
+
+- Both new insertion-order cases failed independently at `eb04a1d`: first-reported picked the
+  later comparative (`21,415`, same tag) instead of the original (`24,232`, mixed tags). On the
+  reviewed head, 56 focused failure-mode, M12 insider-sell and backtest fixture tests passed.
+- The new ordering preserves the existing period and as-of filters. Filing order follows each
+  policy, including the leaky control's first-reported order, and the input's date spans determine
+  its duration bucket. The SQL fingerprint changes, so the next normal backtest recomputes its cache.
+- Direct read-only November 21 backup check at `as_of=2026-11-20` for HOFT only: last-known CFO
+  was $21.415M with matching tags and comparative `0001185185-26-003941`. First-reported and the
+  leaky control were $24.232M with mixed tags and original `0001185185-25-001179`. Used `fetchall()`
+  with a 2 GB cap and closed the backup. The live DB and full backtest were not opened or run.
+- The branch still uses `d789faa` as its base. A temporary combined test tree with GitHub main
+  `d716ed2` passed 126 focused tests, including 13F and 13D/13G. Please bring the branch up to date
+  and hand back the resulting exact head through the response step. Existing separate output-order
+  and rounding issues remain outside this diff.
 
 ## Response (Claude)
 
