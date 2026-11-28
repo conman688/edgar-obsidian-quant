@@ -38,7 +38,7 @@ import pyarrow as pa
 import requests
 
 from src.db import ledger
-from src.db.queries import cusip_cik_sql  # noqa: F401  (the CUSIP map lives with the screen SQL)
+from src.db.queries import cusip_periods_sql  # noqa: F401  (the CUSIP map lives with the screen SQL)
 
 STAGE, FTD_STAGE, SCHEMA_VERSION = "form13f", "ftd_cusips", 1
 SEC = "https://www.sec.gov"
@@ -222,14 +222,88 @@ def _extract(z: zipfile.ZipFile, table: str, dest: Path) -> Path:
     return out
 
 
+_CUSIP_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ*@#"
+
+
+def valid_cusip(c: str) -> bool:
+    """Nine characters with a correct check digit (the modulus 10 "double add double" rule)."""
+    if len(c) != 9 or any(ch not in _CUSIP_CHARS for ch in c) or not c[8].isdigit():
+        return False
+    total = 0
+    for i, ch in enumerate(c[:8]):
+        v = _CUSIP_CHARS.index(ch) * (2 if i % 2 else 1)
+        total += v // 10 + v % 10
+    return (10 - total % 10) % 10 == int(c[8])
+
+
+def _effective(ontime: list[tuple], cover: dict) -> tuple[list[tuple[str, int]], dict]:
+    """Per manager, the report standing by the deadline and the amendments that add to it.
+    An amendment is one the cover page marks (ISAMENDMENT Y; empty is N) or a 13F-HR/A. Order:
+    (filing date, amendment number, accession), so same-day amendments follow their numbers."""
+    counts = {"restatements": 0, "new_holdings": 0, "other": 0}
+    by_filer: dict[int, list] = {}
+    for accn, filed, typ, filer, _ in ontime:
+        if typ not in ("13F-HR", "13F-HR/A"):
+            continue
+        isamend, no, kind = cover.get(accn, ("", 0, ""))
+        if isamend == "Y" or typ == "13F-HR/A":
+            k = {"RESTATEMENT": "base", "NEW HOLDINGS": "add"}.get(kind, "other")
+            counts[{"base": "restatements", "add": "new_holdings", "other": "other"}[k]] += 1
+        else:
+            k, no = "base", 0
+        if k != "other":
+            by_filer.setdefault(filer, []).append(((filed, no, accn), k))
+    eff = []
+    for filer, fs in by_filer.items():
+        base = max((key for key, k in fs if k == "base"), default=None)
+        eff += [(key[2], filer) for key, k in fs if key == base or (k == "add" and (base is None or key > base))]
+    return eff, {**counts, "filers": len(by_filer)}
+
+
+def _apply_changes(con: duckdb.DuckDBPyConnection, period: date) -> None:
+    """holders_new / holders_exited for `period` from the stored positions of it and the quarter
+    before. Run whenever either quarter is (re)loaded, so the result is the same in any order."""
+    prev = _prev_quarter(period)
+    has_prev = con.execute("SELECT count(*) > 0 FROM form13f_positions WHERE period = ?", [prev]).fetchall()[0][0]
+    known = con.execute("SELECT deadline FROM form13f_periods WHERE period = ?", [period]).fetchall()[0][0]
+    con.execute("DELETE FROM form13f_quarters WHERE period = ? AND holders = 0", [period])
+    con.execute("UPDATE form13f_quarters SET holders_new = NULL, holders_exited = NULL WHERE period = ?", [period])
+    if has_prev:
+        con.execute("""
+            CREATE OR REPLACE TEMP TABLE f13_both AS
+            SELECT DISTINCT filer_cik FROM form13f_positions WHERE period = $p
+            INTERSECT SELECT DISTINCT filer_cik FROM form13f_positions WHERE period = $q""", {"p": period, "q": prev})
+        con.execute("""
+            CREATE OR REPLACE TEMP TABLE f13_chg AS
+            WITH cur AS (SELECT filer_cik, cusip FROM form13f_positions WHERE period = $p AND cusip IS NOT NULL
+                         AND filer_cik IN (SELECT filer_cik FROM f13_both)),
+                 old AS (SELECT filer_cik, cusip FROM form13f_positions WHERE period = $q AND cusip IS NOT NULL
+                         AND filer_cik IN (SELECT filer_cik FROM f13_both)),
+                 n AS (SELECT cusip, count(*) AS n FROM (SELECT * FROM cur EXCEPT SELECT * FROM old) GROUP BY cusip),
+                 g AS (SELECT cusip, count(*) AS n FROM (SELECT * FROM old EXCEPT SELECT * FROM cur) GROUP BY cusip)
+            SELECT cusip, coalesce(n.n, 0) AS new_, coalesce(g.n, 0) AS gone FROM n FULL JOIN g USING (cusip)""",
+                    {"p": period, "q": prev})
+        con.execute("""UPDATE form13f_quarters q SET holders_new = coalesce(c.new_, 0), holders_exited = coalesce(c.gone, 0)
+                       FROM (SELECT q2.cusip, c.new_, c.gone FROM form13f_quarters q2 LEFT JOIN f13_chg c USING (cusip)
+                             WHERE q2.period = $p) c
+                       WHERE q.period = $p AND q.cusip = c.cusip""", {"p": period})
+        con.execute("""INSERT INTO form13f_quarters
+                       SELECT $p, c.cusip, 0, 0, 0, c.gone, NULL, $k FROM f13_chg c
+                       WHERE c.gone > 0 AND c.cusip NOT IN (SELECT cusip FROM form13f_quarters WHERE period = $p)""",
+                    {"p": period, "k": known})
+        con.execute("DROP TABLE IF EXISTS f13_both; DROP TABLE IF EXISTS f13_chg")
+    n = con.execute("SELECT count(*) FROM form13f_quarters WHERE period = ?", [period]).fetchall()[0][0]
+    con.execute("UPDATE form13f_periods SET has_changes = ?, cusips = ? WHERE period = ?", [has_prev, n, period])
+
+
 def load_window(con: duckdb.DuckDBPyConnection, zip_path: Path, name: str, work: Path,
                 loaded_at: datetime, sha256: str | None = None) -> dict:
-    """Aggregate one data-set zip into its quarter's rows and mark it done, in one transaction.
-    Raises Form13fError (nothing written) on a layout the code does not know or a filing
-    outside the window."""
+    """Aggregate one data-set zip into its quarter's positions and rows and mark it done, in one
+    transaction. Raises Form13fError (nothing written) on a layout the code does not know or a
+    filing outside the window."""
     start, end = window_dates(name)
     home = home_period(start, end)
-    due, prev = deadline(home), _prev_quarter(home)
+    due = deadline(home)
     tmp = Path(tempfile.mkdtemp(prefix=".tsv-", dir=work))
     try:
         with zipfile.ZipFile(zip_path) as z:
@@ -239,9 +313,11 @@ def load_window(con: duckdb.DuckDBPyConnection, zip_path: Path, name: str, work:
             raise Form13fError(f"{name}: unexpected SUBMISSION columns")
         cov = _tsv_rows(cov_p, 16)
         ch = next(cov)
-        if ch[0] != "ACCESSION_NUMBER" or ch[4] != "AMENDMENTTYPE" or ch[15] != "REPORTTYPE":
+        if ch[:5] != ["ACCESSION_NUMBER", "REPORTCALENDARORQUARTER", "ISAMENDMENT", "AMENDMENTNO", "AMENDMENTTYPE"] \
+                or ch[15] != "REPORTTYPE":
             raise Form13fError(f"{name}: unexpected COVERPAGE columns")
-        amend = {p[0]: p[4].strip().upper() for p in cov}
+        cover = {p[0]: (p[2].strip().upper(), int(p[3]) if p[3].strip().isdigit() else 0, p[4].strip().upper())
+                 for p in cov}
         with open(info_p, encoding="utf-8", errors="replace") as f:
             if f.readline().rstrip("\r\n").split("\t") != INFO_COLS:
                 raise Form13fError(f"{name}: unexpected INFOTABLE columns")
@@ -254,89 +330,63 @@ def load_window(con: duckdb.DuckDBPyConnection, zip_path: Path, name: str, work:
             filings.append((p[0], filed, p[2].strip().upper(), int(p[3]), _dmy(p[4])))
         mine = [f for f in filings if f[4] == home]
         late = sum(1 for f in mine if f[1] > due)
+        elsewhere = sum(1 for f in filings if f[4] != home and f[1] <= deadline(f[4]))
         ontime = [f for f in mine if f[1] <= due]
         notices = len({f[3] for f in ontime if f[2].startswith("13F-NT")})
-        kind = {}
-        for accn, filed, typ, filer, _ in ontime:
-            if typ == "13F-HR":
-                kind[accn] = "base"
-            elif typ == "13F-HR/A":
-                kind[accn] = {"RESTATEMENT": "base", "NEW HOLDINGS": "add"}.get(amend.get(accn, ""), "other")
-        restatements = sum(1 for f in ontime if f[2] == "13F-HR/A" and kind[f[0]] == "base")
-        new_holdings = sum(1 for v in kind.values() if v == "add")
-        other = sum(1 for v in kind.values() if v == "other")
-        eff = []
-        by_filer: dict[int, list] = {}
-        for accn, filed, typ, filer, _ in ontime:
-            if accn in kind and kind[accn] != "other":
-                by_filer.setdefault(filer, []).append((filed, accn, kind[accn]))
-        for filer, fs in by_filer.items():
-            bases = [(fd, a) for fd, a, k in fs if k == "base"]
-            base = max(bases) if bases else None
-            eff += [(a, filer) for fd, a, k in fs
-                    if (k == "base" and (fd, a) == base) or (k == "add" and (base is None or (fd, a) > base))]
+        eff, counts = _effective(ontime, cover)
 
         con.begin()
         try:
-            con.register("eff_rows", pa.table({"accn": [e[0] for e in eff], "filer": [e[1] for e in eff]}))
+            con.register("eff_rows", pa.table({"accn": pa.array([e[0] for e in eff], pa.string()),
+                                               "filer": pa.array([e[1] for e in eff], pa.int64())}))
             try:
                 con.execute("CREATE OR REPLACE TEMP TABLE f13_eff AS SELECT * FROM eff_rows")
             finally:
                 con.unregister("eff_rows")
             cols = ", ".join(f"'{c}': 'VARCHAR'" for c in INFO_COLS)
             con.execute(f"""
-                CREATE OR REPLACE TEMP TABLE f13_pos AS
-                SELECT e.filer, upper(trim(i.CUSIP)) AS cusip,
-                       sum(CAST(round(CAST(i.SSHPRNAMT AS DOUBLE)) AS BIGINT)) AS shares
+                CREATE OR REPLACE TEMP TABLE f13_rows AS
+                SELECT e.filer, upper(trim(i.CUSIP)) AS cusip, CAST(round(CAST(i.SSHPRNAMT AS DOUBLE)) AS BIGINT) AS shares,
+                       upper(trim(i.TITLEOFCLASS)) AS title
                 FROM read_csv('{info_p}', delim='\t', header=true, quote='', escape='', auto_detect=false,
                               columns={{{cols}}}) i
                 JOIN f13_eff e ON e.accn = i.ACCESSION_NUMBER
-                WHERE upper(trim(i.SSHPRNAMTTYPE)) = 'SH' AND coalesce(trim(i.PUTCALL), '') = ''
-                GROUP BY ALL HAVING sum(CAST(round(CAST(i.SSHPRNAMT AS DOUBLE)) AS BIGINT)) > 0""")
-            has_prev = con.execute("SELECT count(*) FROM form13f_last_positions WHERE period = ?",
-                                   [prev]).fetchall()[0][0] > 0
+                WHERE upper(trim(i.SSHPRNAMTTYPE)) = 'SH' AND coalesce(trim(i.PUTCALL), '') = ''""")
+            bad = sum(n for c, n in con.execute("SELECT cusip, count(*) FROM f13_rows GROUP BY cusip").fetchall()
+                      if not valid_cusip(c or ""))
+            con.execute("DELETE FROM form13f_positions WHERE period = ?", [home])
             con.execute("""
-                CREATE OR REPLACE TEMP TABLE f13_prev AS
-                SELECT filer_cik AS filer, cusip FROM form13f_last_positions WHERE period = ?""", [prev])
-            con.execute("""
-                CREATE OR REPLACE TEMP TABLE f13_both AS
-                SELECT DISTINCT filer FROM f13_eff INTERSECT SELECT DISTINCT filer FROM f13_prev""")
+                INSERT INTO form13f_positions
+                SELECT $p, filer, cusip, sum(shares) FROM f13_rows GROUP BY filer, cusip HAVING sum(shares) > 0
+                UNION ALL
+                SELECT $p, filer, NULL, NULL FROM (SELECT DISTINCT filer FROM f13_eff
+                    EXCEPT SELECT filer FROM f13_rows GROUP BY filer, cusip HAVING sum(shares) > 0)""", {"p": home})
             con.execute("DELETE FROM form13f_quarters WHERE period = ?", [home])
             con.execute("""
                 INSERT INTO form13f_quarters
-                WITH now_ AS (SELECT cusip, count(*) AS holders, sum(shares) AS shares FROM f13_pos GROUP BY cusip),
-                     new_ AS (SELECT p.cusip, count(*) AS n FROM f13_pos p SEMI JOIN f13_both b USING (filer)
-                              ANTI JOIN f13_prev q ON q.filer = p.filer AND q.cusip = p.cusip GROUP BY p.cusip),
-                     gone AS (SELECT q.cusip, count(*) AS n FROM f13_prev q SEMI JOIN f13_both b USING (filer)
-                              ANTI JOIN f13_pos p ON p.filer = q.filer AND p.cusip = q.cusip
-                              WHERE q.cusip IS NOT NULL GROUP BY q.cusip),
-                     cusips AS (SELECT cusip FROM now_ UNION SELECT cusip FROM gone)
-                SELECT ?, c.cusip, coalesce(now_.holders, 0), coalesce(now_.shares, 0),
-                       CASE WHEN ? THEN coalesce(new_.n, 0) END, CASE WHEN ? THEN coalesce(gone.n, 0) END, ?
-                FROM cusips c LEFT JOIN now_ USING (cusip) LEFT JOIN new_ USING (cusip) LEFT JOIN gone USING (cusip)
-            """, [home, has_prev, has_prev, due])
-            n_cusips = con.execute("SELECT count(*) FROM form13f_quarters WHERE period = ?", [home]).fetchall()[0][0]
-            con.execute("INSERT OR REPLACE INTO form13f_periods VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                        [home, due, name, len(by_filer), notices, restatements, new_holdings, other, late,
-                         n_cusips, has_prev, loaded_at])
-            newest = con.execute("SELECT max(period) FROM form13f_last_positions").fetchall()[0][0]
-            if newest is None or home >= newest:       # keep the newest quarter's positions only
-                con.execute("DELETE FROM form13f_last_positions")
-                con.execute("""
-                    INSERT INTO form13f_last_positions
-                    SELECT ?, filer, cusip FROM f13_pos
-                    UNION ALL
-                    SELECT ?, filer, NULL FROM (SELECT DISTINCT filer FROM f13_eff EXCEPT SELECT filer FROM f13_pos)
-                """, [home, home])
-            for t in ("f13_eff", "f13_pos", "f13_prev", "f13_both"):
+                WITH t AS (SELECT cusip, mode(title ORDER BY title) AS title FROM f13_rows GROUP BY cusip)
+                SELECT $p, cusip, count(*), sum(shares), NULL, NULL, t.title, $k
+                FROM form13f_positions LEFT JOIN t USING (cusip)
+                WHERE period = $p AND cusip IS NOT NULL GROUP BY cusip, t.title""", {"p": home, "k": due})
+            con.execute("INSERT OR REPLACE INTO form13f_periods VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        [home, due, name, counts["filers"], notices, counts["restatements"], counts["new_holdings"],
+                         counts["other"], late, elsewhere, bad, 0, False, loaded_at])
+            _apply_changes(con, home)
+            nxt = _quarter_end(home.year + 1, 1) if home.month == 12 else _quarter_end(home.year, home.month // 3 + 1)
+            if con.execute("SELECT count(*) > 0 FROM form13f_periods WHERE period = ?", [nxt]).fetchall()[0][0]:
+                _apply_changes(con, nxt)
+            n_cusips = con.execute("SELECT cusips FROM form13f_periods WHERE period = ?", [home]).fetchall()[0][0]
+            for t in ("f13_eff", "f13_rows"):
                 con.execute(f"DROP TABLE IF EXISTS {t}")
             ledger.mark(con, f"13f@{name}", STAGE, SCHEMA_VERSION, "done", input_sha256=sha256,
-                        output_ref=f"period={home};cusips={n_cusips};filers={len(by_filer)};late={late}")
+                        output_ref=f"period={home};cusips={n_cusips};filers={counts['filers']};late={late};"
+                                   f"elsewhere={elsewhere};bad_cusip_rows={bad}")
             con.commit()
         except BaseException:
             con.rollback()
             raise
-        return {"period": home, "cusips": n_cusips, "filers": len(by_filer), "late": late}
+        return {"period": home, "cusips": n_cusips, "filers": counts["filers"], "late": late,
+                "elsewhere": elsewhere, "bad_cusip_rows": bad}
     except (duckdb.Error, ValueError, KeyError, zipfile.BadZipFile) as e:
         raise Form13fError(f"{name}: {type(e).__name__}: {e}"[:500]) from None
     finally:

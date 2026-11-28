@@ -369,8 +369,8 @@ def test_an_old_issuer_under_a_reused_ticker_never_maps_to_the_new_company(con, 
     ftd = {"cnsfails201501a.zip": zipftd([(date(2015, 1, 5), "594918104", "ACME", "OLD ACME MINING")]),
            "cnsfails202407a.zip": zipftd([(date(2024, 7, 1), ACME_CUSIP, "ACME", "ACME CORP")])}
     load(con, tmp_path, w, ftd)
-    r = screen_rows(con, date(2024, 6, 3))["ACME"]
-    assert r["inst_holders"] == 1 and r["inst_pct"] == pytest.approx(70 / 1_000_000)
+    r = screen_rows(con)["ACME"]          # Q1 is the newest quarter loaded; shares are known by AS_OF
+    assert r["inst_period"] == Q1 and r["inst_holders"] == 1 and r["inst_pct"] == pytest.approx(70 / 1_000_000)
 
 
 def test_a_ticker_two_companies_hold_maps_to_neither(con, tmp_path):

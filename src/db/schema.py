@@ -422,6 +422,7 @@ CREATE TABLE IF NOT EXISTS form13f_quarters (
     shares          BIGINT  NOT NULL,
     holders_new     INTEGER,
     holders_exited  INTEGER,
+    title           VARCHAR,            -- the most common title of class (ADR, CL A, COM, ...)
     known_at        DATE    NOT NULL,
     PRIMARY KEY (period, cusip)
 );
@@ -436,16 +437,20 @@ CREATE TABLE IF NOT EXISTS form13f_periods (
     new_holdings  INTEGER   NOT NULL,
     other_amendments INTEGER NOT NULL,  -- no amendment type: not used
     late          INTEGER   NOT NULL,   -- reports for the quarter filed after the deadline: not used
+    elsewhere     INTEGER   NOT NULL,   -- on-time reports for another quarter found in this window
+    bad_cusip_rows INTEGER  NOT NULL,   -- SH lines whose CUSIP is not 9 characters or fails its check digit
     cusips        INTEGER   NOT NULL,
     has_changes   BOOLEAN   NOT NULL,   -- the quarter before was loaded: new/exited are counted
     loaded_at     TIMESTAMP NOT NULL
 );
--- The last loaded quarter's positions per manager, for the next quarter's new/exited counts.
--- cusip NULL marks a manager with a report and no SH lines.
-CREATE TABLE IF NOT EXISTS form13f_last_positions (
+-- Every loaded quarter's positions per manager, so a quarter's new/exited counts depend only on
+-- its own zip and the one before, in any load order. cusip NULL marks a manager with a report
+-- and no SH lines.
+CREATE TABLE IF NOT EXISTS form13f_positions (
     period     DATE    NOT NULL,
     filer_cik  INTEGER NOT NULL,
-    cusip      VARCHAR
+    cusip      VARCHAR,
+    shares     BIGINT
 );
 -- SEC fails-to-deliver files pair a CUSIP with the ticker it traded under (first and last
 -- settlement date seen). The only SEC source of CUSIP-ticker pairs.

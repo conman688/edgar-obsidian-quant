@@ -532,27 +532,46 @@ def short_interest_sql() -> str:
 
 # M12-B6: 13F institutional holdings. A quarter is read once its filing deadline has passed.
 
-def cusip_cik_sql() -> str:
-    """One CUSIP per company: the CUSIP whose newest fails-to-deliver symbol is the company's
-    current ticker (price_status), taking only the newest CUSIP seen under each symbol. An old
-    CUSIP whose ticker later passed to another issuer therefore never maps to that issuer; the
-    cost is a company's history before a CUSIP change. Like FINRA short interest (M12-A3), it
-    is matched on the current ticker."""
-    return """
-    WITH latest AS (SELECT cusip, arg_max(symbol, (last_seen, symbol)) AS symbol, max(last_seen) AS last_seen
-                    FROM cusip_symbols GROUP BY cusip),
-         newest AS (SELECT symbol, arg_max(cusip, (last_seen, cusip)) AS cusip FROM latest GROUP BY symbol)
-    SELECT ps.cik, n.cusip FROM newest n JOIN price_status ps ON ps.ticker = n.symbol
+# A CUSIP's validity under its symbol ends this long after its last fails-to-deliver sighting
+# when the next CUSIP under that symbol was first seen much later (a reused ticker).
+CUSIP_SLACK_DAYS = 92
+
+
+def cusip_periods_sql() -> str:
+    """When each CUSIP stands for a company: its fails-to-deliver symbol is the company's current
+    ticker (price_status; a ticker two companies hold maps to neither). Under one symbol, CUSIPs
+    take turns in order of first sighting: each is valid from its first sighting (the first one
+    from the start, so it covers years before its first fail) until the next one's, or until
+    CUSIP_SLACK_DAYS after its own last sighting if that is earlier. A same-ticker CUSIP change
+    (reverse split, reorganisation) keeps the company's history; an old issuer's CUSIP under a
+    reused ticker stays with the years it traded. Callers also require the quarter to fall in
+    the company's own price history."""
+    return f"""
+    WITH e AS (SELECT symbol, cusip, first_seen, lag(last_seen) OVER w AS prev_last, row_number() OVER w AS k
+               FROM cusip_symbols WINDOW w AS (PARTITION BY symbol ORDER BY first_seen, cusip)),
+         v AS (SELECT symbol, cusip, k,
+                      CASE WHEN k = 1 THEN DATE '0001-01-01'
+                           ELSE least(first_seen, CAST(prev_last + INTERVAL {CUSIP_SLACK_DAYS} DAY AS DATE)) END AS valid_from
+               FROM e),
+         iv AS (SELECT *, coalesce(lead(valid_from) OVER (PARTITION BY symbol ORDER BY k), DATE '9999-12-31') AS valid_to
+                FROM v),
+         t AS (SELECT ticker, min(cik) AS cik, min(first_date) AS price_from, max(last_date) AS price_to
+               FROM price_status GROUP BY ticker HAVING count(*) = 1)
+    SELECT t.cik, iv.cusip, iv.valid_from, iv.valid_to, t.price_from, t.price_to
+    FROM iv JOIN t ON t.ticker = iv.symbol
     """
 
 
 def institutional_sql() -> str:
     """Per mapped company, the newest 13F quarter whose deadline is <= as_of (never the quarter
-    end). A company no manager reported has 0 holders. Binds $as_of."""
+    end), read under the CUSIP valid at that quarter's end. A company no manager reported has 0
+    holders. Binds $as_of."""
     return f"""
     WITH p AS (SELECT * FROM form13f_periods WHERE deadline <= $as_of ORDER BY period DESC LIMIT 1),
-         m AS ({cusip_cik_sql()})
-    SELECT m.cik, p.period AS inst_period, p.deadline AS inst_known_at,
+         m AS (SELECT c.cik, c.cusip FROM ({cusip_periods_sql()}) c CROSS JOIN p
+               WHERE c.valid_from <= p.period AND p.period < c.valid_to AND c.price_from <= p.period
+                 AND p.period <= c.price_to + INTERVAL {CUSIP_SLACK_DAYS} DAY)
+    SELECT m.cik, p.period AS inst_period, p.deadline AS inst_known_at, q.title AS inst_title,
            coalesce(q.holders, 0) AS inst_holders, coalesce(q.shares, 0) AS inst_shares,
            CASE WHEN p.has_changes THEN coalesce(q.holders_new, 0) END AS inst_holders_new,
            CASE WHEN p.has_changes THEN coalesce(q.holders_exited, 0) END AS inst_holders_exited

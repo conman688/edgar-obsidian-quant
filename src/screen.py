@@ -116,6 +116,11 @@ def rank_sql(filters: Filters, source: str) -> str:
     """
 
 
+# M12-B6: 13F titles of class that are not the ordinary shares the cover page counts.
+INST_ADR_RE = r"\bADRS?\b|\bADS\b|SPON|DEPOSITAR"
+INST_CLASS_RE = r"\bCL(ASS)?\.?\s*[A-Z]\b"
+
+
 def informational_sql(ranked: str, insider_window_days: int = 90) -> str:
     """Ranked rows (one as_of) plus M12 information: insider selling and `signals`. Joined
     after ranking, so status, rank and order are exactly `ranked`'s. Binds $as_of.
@@ -139,20 +144,31 @@ def informational_sql(ranked: str, insider_window_days: int = 90) -> str:
                -- 13F shares at the quarter end, on the price date's split basis (M12-B6).
                inst.inst_shares * split_factor(r.cik, inst.inst_period) / split_factor(r.cik, r.price_date)
                    / nullif(r.mcap / nullif(r.close_raw, 0), 0) AS inst_ratio,
-               inst.inst_period, inst.inst_known_at, inst.inst_holders, inst.inst_holders_new, inst.inst_holders_exited
+               inst.inst_period, inst.inst_known_at, inst.inst_title, inst.inst_holders, inst.inst_holders_new,
+               inst.inst_holders_exited
         FROM r LEFT JOIN si ON si.cik = r.cik LEFT JOIN inst ON inst.cik = r.cik
     ),
     -- A share of shares outstanding only where the count can be trusted: not stale, jumped or
     -- a 20-F/40-F count, and not below the short position itself (cover counts of 1 or 1,000
     -- shares). Days to cover is FINRA's own figure and is kept.
-    x AS (
-        SELECT * EXCLUDE (si_ratio, inst_ratio),
+    x1 AS (
+        SELECT * EXCLUDE (si_ratio, inst_title),
                CASE WHEN NOT list_has_any(issues, {list(UNTRUSTED_SHARE_ISSUES)}) AND si_ratio <= 1
                     THEN si_ratio END AS short_interest_pct,
-               -- Several managers can report the same shares (shared discretion), so a share
-               -- above 1 is kept, not hidden; only an untrusted share count blanks it.
-               CASE WHEN NOT list_has_any(issues, {list(UNTRUSTED_SHARE_ISSUES)}) THEN inst_ratio END AS inst_pct
+               -- Why 13F shares are not a share of shares outstanding: 13F counts depositary
+               -- shares or one class, or the count is untrusted. Above 100% is shown and flagged
+               -- (managers sharing discretion can report the same shares).
+               CASE WHEN inst_holders IS NULL THEN NULL
+                    WHEN regexp_matches(coalesce(inst_title, ''), '{INST_ADR_RE}') THEN 'adr'
+                    WHEN regexp_matches(coalesce(inst_title, ''), '{INST_CLASS_RE}') THEN 'share_class'
+                    WHEN list_has_any(issues, {list(UNTRUSTED_SHARE_ISSUES)}) THEN 'untrusted_shares'
+                    WHEN inst_ratio > 1 THEN 'above_100pct' END AS inst_pct_note
         FROM x0
+    ),
+    x AS (
+        SELECT * EXCLUDE (inst_ratio),
+               CASE WHEN inst_pct_note IS NULL OR inst_pct_note = 'above_100pct' THEN inst_ratio END AS inst_pct
+        FROM x1
     )
     SELECT r.*,
            fl.usd_sold AS insider_sell_90d_usd, fl.n_sellers, fl.sellers,
