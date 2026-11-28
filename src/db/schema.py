@@ -459,6 +459,52 @@ CREATE TABLE IF NOT EXISTS cusip_symbols (
     PRIMARY KEY (cusip, symbol)
 );
 """),
+    (14, """
+-- M12-B7: Schedule 13D/13G stakes of 5% or more. Filings come one by one from the quarterly
+-- form.idx (each is listed under the subject and under the filer). XML from 2024-12-18 (13D and
+-- 13G); legacy SC 13D and SC 13D/A text before. Known at the filing date, never the event date.
+CREATE TABLE IF NOT EXISTS sched13_index (
+    quarter    VARCHAR NOT NULL,
+    accn       VARCHAR NOT NULL,
+    cik        INTEGER NOT NULL,
+    form_type  VARCHAR NOT NULL,
+    filed      DATE    NOT NULL,
+    path       VARCHAR NOT NULL,
+    PRIMARY KEY (accn, cik)
+);
+-- Each quarter whose form.idx was read, even if it listed no 13D/13G line: counts are known
+-- (0 or more) only for dates inside the indexed quarters.
+CREATE TABLE IF NOT EXISTS sched13_quarters (
+    quarter     VARCHAR PRIMARY KEY,
+    lines       INTEGER   NOT NULL,
+    indexed_at  TIMESTAMP NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sched13_filings (
+    accn        VARCHAR PRIMARY KEY,
+    status      VARCHAR   NOT NULL,     -- done, skipped (no schedule document) or failed (retried)
+    error       VARCHAR,
+    fetched_at  TIMESTAMP NOT NULL
+);
+-- One row per filing. The stake is the largest reporting person's: group members repeat it.
+CREATE TABLE IF NOT EXISTS sched13_stakes (
+    accn        VARCHAR PRIMARY KEY,
+    form        VARCHAR NOT NULL,       -- 13D or 13G
+    amendment   BOOLEAN NOT NULL,
+    form_type   VARCHAR NOT NULL,       -- as indexed: SCHEDULE 13D/A, SC 13D, ...
+    source      VARCHAR NOT NULL,       -- xml or text (legacy cover page)
+    issuer_cik  INTEGER,                -- XML issuer, else the header's subject company
+    filer_cik   INTEGER,                -- the header's FILED BY; NULL when only the subject is listed
+    filer_name  VARCHAR,
+    cusip       VARCHAR,
+    event_date  DATE,                   -- the event that required the filing
+    filed       DATE    NOT NULL,       -- the known-at date
+    accepted    TIMESTAMP,
+    rule        VARCHAR,                -- 13G only: 13d-1(b), (c) or (d)
+    persons     INTEGER NOT NULL,
+    shares      DOUBLE,                 -- NULL when the cover page could not be read
+    pct         DOUBLE                  -- percent of class, NULL when the cover page could not be read
+);
+"""),
 ]
 
 # Macros and views are code, not data: recreated on every connect so edits take effect.

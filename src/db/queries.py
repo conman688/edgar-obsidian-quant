@@ -616,3 +616,61 @@ def institutional_sql() -> str:
     FROM m CROSS JOIN p LEFT JOIN form13f_quarters q ON q.period = p.period AND q.cusip = m.cusip
     LEFT JOIN chg ON chg.cik = m.cik LEFT JOIN n ON n.cik = m.cik
     """
+
+
+STAKE_MIN_PCT = 5.0
+NEW_13D_DAYS = 90
+STAKE_MAX_AGE_DAYS = 3 * 365
+XML_13G_FROM = date(2024, 12, 18)       # structured 13D/13G required; legacy 13G is not loaded
+
+
+def stakes_coverage_sql() -> str:
+    """One row: whether 13D and 13G counts are known at $as_of (review C1, C3). 13D is known from
+    the first indexed quarter, inside an indexed quarter, before the day that quarter's form.idx
+    was read (later filings are not in it), and before the oldest indexed filing naming a priced
+    company that is not loaded yet (a failed fetch, --limit or a stopped run). 13G also needs
+    XML_13G_FROM. Outside, a count of 0 would pass a missing input as a good value."""
+    return f"""
+    WITH q AS (SELECT make_date(CAST(left(quarter, 4) AS INTEGER), 3 * CAST(right(quarter, 1) AS INTEGER) - 2, 1)
+                          AS q_start, CAST(indexed_at AS DATE) AS read_on
+               FROM sched13_quarters),
+         missing AS (SELECT min(filed) AS first_missing FROM sched13_index
+                     WHERE accn IN (SELECT accn FROM sched13_index WHERE cik IN (SELECT cik FROM price_status))
+                       AND accn NOT IN (SELECT accn FROM sched13_filings WHERE status IN ('done', 'skipped'))),
+         k AS (SELECT coalesce($as_of >= (SELECT min(q_start) FROM q)
+                               AND EXISTS (SELECT 1 FROM q WHERE q_start <= $as_of AND $as_of < q_start + INTERVAL 3 MONTH
+                                                             AND $as_of < read_on)
+                               AND coalesce($as_of < (SELECT first_missing FROM missing), true), false) AS known)
+    SELECT known AS has_13d, known AND $as_of >= DATE '{XML_13G_FROM}' AS has_13g FROM k
+    """
+
+
+def stakes_sql() -> str:
+    """Per issuer, the stakes of 5% or more at $as_of (M12-B7): each filer's latest Schedule 13D or
+    13G filed on or before as_of (never by event date) stands, so an amendment below 5% ends the
+    stake and a filer moving from 13G to 13D counts once, under 13D. A filing listed under its
+    subject only has no filer: it stands for itself. Unreadable percents count as no stake.
+    A stake whose latest filing is more than STAKE_MAX_AGE_DAYS old is not counted: filers often stop
+    filing without an exit (live JOB: 17 of 20 such 13D stakes were last filed 2005-2017).
+    new_13d: a holder of a 13D stake whose initial 13D was filed in the last NEW_13D_DAYS."""
+    return f"""
+    WITH s AS (SELECT *, coalesce(CAST(filer_cik AS VARCHAR), accn) AS holder FROM sched13_stakes
+               WHERE filed <= $as_of AND issuer_cik IS NOT NULL),
+         last AS (SELECT * FROM s
+                  QUALIFY row_number() OVER (PARTITION BY issuer_cik, holder
+                                             ORDER BY filed DESC, accepted DESC NULLS LAST, accn DESC) = 1),
+         on_ AS (SELECT l.*, n.holder IS NOT NULL AS new_ FROM last l
+                 LEFT JOIN (SELECT DISTINCT issuer_cik, holder FROM s
+                            WHERE form = '13D' AND NOT amendment AND filed > $as_of - INTERVAL {NEW_13D_DAYS} DAY) n
+                   USING (issuer_cik, holder)
+                 WHERE l.pct >= {STAKE_MIN_PCT} AND l.filed > $as_of - INTERVAL {STAKE_MAX_AGE_DAYS} DAY)
+    SELECT issuer_cik AS cik,
+           count(*) FILTER (WHERE form = '13D') AS holders_13d,
+           max(pct) FILTER (WHERE form = '13D') AS max_pct_13d,
+           max(filed) FILTER (WHERE form = '13D') AS last_filed_13d,
+           arg_max(filer_name, pct) FILTER (WHERE form = '13D') AS top_filer_13d,
+           count(*) FILTER (WHERE form = '13G') AS holders_13g,
+           max(pct) FILTER (WHERE form = '13G') AS max_pct_13g,
+           bool_or(form = '13D' AND new_) AS new_13d
+    FROM on_ GROUP BY issuer_cik
+    """

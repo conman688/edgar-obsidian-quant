@@ -26,7 +26,7 @@ from typing import Callable
 from src import backtest, config, ops
 from src.db.pit import concept_sql
 from src.db.schema import connect
-from src.ingestion import (companyfacts, events_8k, factors, form4_sources, form13f, macro, prices, reference,
+from src.ingestion import (companyfacts, events_8k, factors, form4_sources, sched13, form13f, macro, prices, reference,
                            short_interest)
 from src.ingestion.sec import SecClient, sha256_file
 from src.ingestion.filing_text import fetch_sections
@@ -203,9 +203,31 @@ def ingest_13f(con, args) -> None:
           + (f"; {s.failed:,} failed (retried next run): {s.errors[0]}" if s.failed else ""))
 
 
+def ingest_13dg(con, args) -> None:
+    """Schedule 13D/13G stakes (M12-B7): the form.idx of each quarter not indexed yet (the last
+    two quarters every run, as they still grow), then every listed filing naming a priced
+    company. Manual: not part of `ingest all` or any schedule."""
+    today = date.today()
+    current = form4_sources.quarter_of(today)
+    recent = set(form4_sources.quarters(form4_sources.quarter_of(today - timedelta(days=95)), current))
+    have = sched13.indexed_quarters(con)
+    client = _client()
+    for q in form4_sources.quarters(args.since or "2001q1", args.until or current):
+        if q in have and q not in recent:
+            continue
+        text = client.get(sched13.INDEX_URL.format(year=q[:4], n=q[-1])).decode("latin-1")
+        print(f"13dg {q}: index, {sched13.load_index(con, q, text):,} lines")
+
+    def progress(s: sched13.FetchStats) -> None:
+        print(f"  {s.done + s.skipped + s.failed:,}/{s.pending:,} filings", flush=True)
+
+    s = sched13.fetch_filings(con, client.get, args.limit, progress=progress)
+    print(f"13dg: {s.done:,} filings loaded, {s.skipped:,} skipped, {s.failed:,} failed in {s.seconds:,.0f}s")
+
+
 INGEST_JOBS = {"tickers": [ingest_tickers], "companies": [ingest_companies], "facts": [ingest_facts],
                "prices": [ingest_prices], "form4": [ingest_form4], "short-interest": [ingest_short_interest],
-               "macro": [ingest_macro], "13f": [ingest_13f],
+               "macro": [ingest_macro], "13f": [ingest_13f], "13dg": [ingest_13dg],
                "all": [ingest_tickers, ingest_companies, ingest_facts, ingest_prices, ingest_form4,
                        ingest_short_interest, ingest_macro]}
 
@@ -483,13 +505,16 @@ def build_parser() -> argparse.ArgumentParser:
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     ing = sub.add_parser("ingest", help="download and load SEC data")
-    ing.add_argument("what", choices=["tickers", "companies", "facts", "prices", "form4", "short-interest", "macro", "13f", "all"])
+    ing.add_argument("what", choices=["tickers", "companies", "facts", "prices", "form4", "short-interest", "macro", "13f", "13dg", "all"])
     ing.add_argument("--zip", help="use an already-downloaded zip instead of fetching")
     ing.add_argument("--cik", type=int, action="append", help="load only these CIKs (repeatable)")
     ing.add_argument("--keep-raw", action="store_true", help="keep downloaded zips after loading")
     ing.add_argument("--ticker", action="append", help="prices: only these tickers (repeatable)")
     ing.add_argument("--include-otc", action="store_true", help="prices: also OTC-traded companies")
-    ing.add_argument("--since", help="form4: first quarter to load, e.g. 2024q4 (default: 2 years back)")
+    ing.add_argument("--since", help="form4: first quarter to load, e.g. 2024q4 (default: 2 years back); "
+                                     "13dg: first quarter to index (default 2001q1)")
+    ing.add_argument("--until", help="13dg: last quarter to index (default: the current one)")
+    ing.add_argument("--limit", type=int, help="13dg: fetch at most this many filings")
     ing.add_argument("--xml-limit", type=int, help="form4: fetch at most this many filings as XML")
     ing.add_argument("--strict", action="store_true",
                      help="form4, prices: exit 1 if any filing or company failed (retried next run)")

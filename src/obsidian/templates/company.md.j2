@@ -57,6 +57,14 @@ Shown for reading only: it never changes status or rank. See [[FINRA short inter
 {% endif %}
 Shown for reading only: it never changes status or rank. 13F lists long positions of managers with $100M or more, so no position reported does not mean not held. See [[SEC Form 13F data sets]].
 
+## 5% holders (13D/13G)
+
+{% if c.holders_13d is none %}No Schedule 13D or 13G filings are loaded for {{ c.as_of }}.
+{% else %}Holders of 5% or more, by their latest filing on or before {{ c.as_of }}: {{ c.holders_13d }} on Schedule 13D{% if c.holders_13d %} (largest {{ c.top_filer_13d or "an unnamed filer" }}, {{ "%.1f" | format(c.max_pct_13d) }}%, filed {{ c.last_filed_13d }}){% endif %}{% if c.holders_13g is none %}; Schedule 13G is loaded only from 2024-12-18{% else %} and {{ c.holders_13g }} on Schedule 13G{% if c.holders_13g %} (largest {{ "%.1f" | format(c.max_pct_13g) }}%){% endif %}{% endif %}.
+{% endif %}
+
+Shown for reading only: it never changes status or rank. 13D holders may seek control; 13G holders are passive. Members of a group can each file, so one block of shares can count more than once. See [[SEC Schedules 13D and 13G]].
+
 ## 8-K events
 
 Red-flag items from Forms 8-K and 8-K/A filed by {{ c.as_of }}: 4.02, 4.01, 2.06 and 3.01 over the last year, 5.02 (any director or officer change, including appointments) over the last 90 days. Shown for reading only: they never change status or rank. SEC's item list is refreshed on Saturdays.

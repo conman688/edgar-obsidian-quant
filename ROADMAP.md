@@ -479,6 +479,56 @@ Phase B: medium effort (after Phase A)
    - Informational only; manual `ingest 13f`, not scheduled.
 7. Schedule 13D/13G stakes and amendments (deadlines changed with the 2023 amendments; structured
    XML from 2024-12-18, so pre/post filings have different lags).
+   Verified 2026-11-27 (Claude; 22 quarterly `form.gz` indexes, 893 sampled submissions, SEC
+   press release 2023-219, fact sheet 33-11253, XML technical specification v2.3):
+   - **Rules.** Initial 13D: 5 business days (was 10 days); 13D amendments: 2 business days.
+     13G for qualified institutions and exempt investors: 45 days after the quarter end (was 45
+     days after the year end). 13G for passive investors: 5 business days (was 10 days). 13G
+     amendments: 45 days after the quarter of a material change. The new 13G deadlines apply from
+     2024-09-30. The filing cut-off is 10 p.m. ET.
+   - **Form types.** Legacy `SC 13D`, `SC 13D/A`, `SC 13G` and `SC 13G/A`. XML `SCHEDULE 13D`,
+     `SCHEDULE 13D/A`, `SCHEDULE 13G` and `SCHEDULE 13G/A`: first seen 2023Q4 (2 filings), the
+     main form from 2025Q1.
+     - A few `SC 13D/A` rows continue after 2025 (7 in 2025Q1, 19 in 2026Q2). These are combined
+       filings, for example `SC TO-T/A`.
+     - No SEC bulk data set for 13D/13G was found on the data-research pages, so filings are
+       fetched one by one through `form.idx`.
+   - **Volume.**
+     - 13D plus 13D/A: about 1,250-1,650 a quarter in 2023-2026, and 2,271 in 2001Q1.
+     - 13G plus 13G/A: 17,000-20,000 each Q1 (the year-end deadline), 1,300-1,600 in other
+       quarters before the rule change, and 5,600-8,600 a quarter in 2025-2026.
+     - `form.idx` lists each filing twice, once under the subject company and once under the
+       filer. Only the submission header (`SUBJECT COMPANY` / `FILED BY`) says which is which.
+   - **XML fields** (namespaced; `issuerCik` in 13G, `issuerCIK` in 13D; some 13D files use
+     `issuerCUSIP`). Each file carries the issuer CIK and CUSIPs, the event date and
+     `amendmentNo`, with `previousAccessionNumber` on some amendments. Each reporting person has
+     aggregate shares and percent of class. 13G also gives the rule: 13d-1(b), (c) or (d).
+     - Parsed with an XML parser, 399 of 399 sampled XML filings gave an event date, percent and
+       CUSIP. The issuer CIK equals the header subject CIK in 399 of 399.
+     - Group members repeat the same shares: 141 of 399 filings have 2 persons, and 111 have 5 or
+       more. A filing's stake is the largest person's, never the sum.
+   - **Legacy text parsing** (cover page, 2023 sample): event date 61-94%, percent 89-95%,
+     CUSIP 79-90%. It is worse for older filings: in 2001 13D, the event date parsed for 14 of 33.
+   - **Lags** (business days from event to filing; median):
+     - Initial 13D: 6 in legacy 2023 and 5 in XML.
+     - 13D/A: 2 in both.
+     - 13G/A: 29-30 (quarter-end events).
+     - Late filings are common. 23 of 99 initial XML 13Ds and 12 of 122 legacy ones came more than
+       20 business days after the event. So the known-at date is the filing date, never the event
+       date.
+     - 91 of 399 XML-era filings were accepted after 17:30 ET but still dated that day.
+   - **Exits.** An amendment below 5% ends a stake: 14 of 100 XML 13D/A, 49 of 100 XML 13G/A.
+   - **Coverage.** In the last four quarters, 1,336 of 4,203 priced CIKs appear on a 13D row and
+     3,402 on a 13G row. This is an upper bound, because a row's CIK may be the filer.
+   - **Fetch cost** at 8 req/s:
+     - XML era (2024-12-18 on): about 60,000 filings, about 2 hours once, then about 100 a day.
+     - Legacy 13D and 13D/A for 2001-2024: about 150,000 filings, about 5 hours.
+     - Legacy 13G: about 550,000 filings for 2001-2024, about 19 hours. Not planned. Most 13G(b) stakes repeat
+       13F.
+   - **Scope (user, 2026-11-27):** the XML era plus legacy 13D and 13D/A text. Legacy 13G is not
+     loaded.
+   - Status: built on `feat/m12-13dg` (stacked on B6), review `reviews/M12-B7-13dg.md`.
+     Informational only; manual `ingest 13dg`, not scheduled.
 8. Form 144 notices of proposed insider sales, paired with the Phase A sell signal.
 9. NT 10-K / NT 10-Q late-filing flags (**not yet researched**).
 10. Financial Statement and Notes data sets (`txt` table: going-concern and default text at scale;

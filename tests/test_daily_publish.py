@@ -300,7 +300,7 @@ def test_dashboard_dates_are_database_wide_and_not_coverage(env):               
     con.close()
     dash = (env["vault"] / "Dashboard.md").read_text()
     assert ("Newest dated records stored in the database (all companies, not only those listed): "
-            "close 2024-08-30, Form 4 filed 2024-08-16, XBRL fact filed 2024-09-02, 8-K filed none, short interest settled none, 13F quarter none.") in dash
+            "close 2024-08-30, Form 4 filed 2024-08-16, XBRL fact filed 2024-09-02, 8-K filed none, short interest settled none, 13F quarter none, 13D/13G filed none.") in dash
     assert "Prices refresh on weekdays" in dash
     assert "through" not in dash.split("## Shortlist")[0]
     assert "each company note lists its own close date and sources" in dash
