@@ -134,7 +134,11 @@ FINRA's newest known cycle: short shares as a share of shares outstanding (signa
 `high_short_interest` at 10% or more) and days to cover. An "Institutional holders (13F)" line
 gives the newest quarter past its filing deadline: managers reporting a position, their shares as
 a share of shares outstanding, and how many managers that filed both quarters started or stopped
-reporting one. `ingest 13f` loads it by hand; it is not scheduled. `Sources/` holds one note per added
+reporting one. `ingest 13f` loads it by hand; it is not scheduled. A "5% holders (13D/13G)" line
+counts the filers whose latest Schedule 13D or 13G, filed by the sync date, reports 5% or more,
+with the largest 13D holder (signal `new_13d` for an initial 13D in the last 90 days). `ingest 13dg`
+loads it by hand (XML schedules from 2024-12-18, legacy 13D text from 2001); it is not scheduled.
+`Sources/` holds one note per added
 data source with its terms and known-at rule. The dashboard's "Macro" line gives the 10y-2y
 Treasury spread, NFCI, VIX, VIX9D/VIX and VVIX as known on the sync date, with regime labels
 `curve_inverted` (spread < 0), `tight_financial_conditions` (NFCI > 0) and `vol_backwardation`
@@ -334,6 +338,10 @@ Uncapped, a heavy query on an 8 GB machine with little free disk can crash the c
   business day). A quarter counts only reports filed by then, so it never changes; it is never
   dated by the quarter end. CUSIPs are matched by SEC fails-to-deliver symbols to the current
   ticker, using only the newest CUSIP seen under a symbol.
+- Schedule 13D/13G stakes (M12) are known from the filing date, never the event date (a quarter
+  of sampled initial 13Ds came more than 20 business days after the event). Each filer's latest
+  filing stands; one below 5% ends the stake. Group members repeat the same shares, so a filing
+  counts its largest reporting person, never the sum.
 - FRED macro series (M12) are known at their ALFRED vintage date (`realtime_start`), so a revised
   value is read as it was published on or before `as_of`. The FRED key (`FRED_API_KEY`) goes only
   to api.stlouisfed.org, with redirects refused. Cboe closes (M12) are known at the later of the

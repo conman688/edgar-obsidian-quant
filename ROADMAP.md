@@ -527,6 +527,8 @@ Phase B: medium effort (after Phase A)
        13F.
    - **Scope (user, 2026-11-27):** the XML era plus legacy 13D and 13D/A text. Legacy 13G is not
      loaded.
+   - Status: built on `feat/m12-13dg` (stacked on B6), review `reviews/M12-B7-13dg.md`.
+     Informational only; manual `ingest 13dg`, not scheduled.
 8. Form 144 notices of proposed insider sales, paired with the Phase A sell signal.
 9. NT 10-K / NT 10-Q late-filing flags (**not yet researched**).
 10. Financial Statement and Notes data sets (`txt` table: going-concern and default text at scale;
