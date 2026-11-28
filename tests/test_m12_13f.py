@@ -231,6 +231,24 @@ def test_a_line_kept_as_thousands_from_a_filing_whose_other_lines_are_outliers_i
     assert con.execute("SELECT outlier_rows, outlier_filers FROM form13f_periods").fetchall()[0] == (2, 1)
 
 
+def test_a_cusip_whose_median_is_in_thousands_keeps_its_dollar_and_thousands_holders(con, tmp_path):
+    """Review C4. Live UPWK (91688F104) 2023-03-31: many managers still reported value in thousands,
+    so the CUSIP's raw median sat in thousands. Dollar filers' lines were +3 off it and thousands
+    filers' 0, against their own units: 210 managers fell to 4. Each filing's unit is set first,
+    its values rescaled to dollars, then the medians recomputed."""
+    x, y, z = ACME_CUSIP, "594918104", "02079K305"
+    def f(i, unit):           # unit 1: dollars, 1000: thousands; price 12 for X, 40 for Y, 90 for Z
+        return hr(f"00000000{i:02d}-24-000001", i, date(2024, 5, 1), Q1,
+                  [(x, 100, "SH", "", "COM", 100 * 12 // unit), (y, 100, "SH", "", "COM", 100 * 40 // unit),
+                   (z, 100, "SH", "", "COM", 100 * 90 // unit)])
+    rows = [f(i, 1000) for i in (1, 2, 3)] + [f(i, 1) for i in (4, 5)]
+    rows += [hr(f"00000000{i:02d}-24-000001", i, date(2024, 5, 1), Q1,
+                [(y, 100, "SH", "", "COM", 4000), (z, 100, "SH", "", "COM", 9000)]) for i in range(6, 11)]
+    load(con, tmp_path, {"01mar2024-31may2024_form13f.zip": zip13f(rows)})
+    assert quarter(con, Q1)[:2] == (5, 500)
+    assert con.execute("SELECT outlier_rows, outlier_filers FROM form13f_periods").fetchall()[0] == (0, 0)
+
+
 def test_a_report_dropped_whole_is_absent_not_a_manager_that_sold_out(con, tmp_path):
     """Review C1 fix: a report dropped whole is unknown, so its manager is neither in the quarter
     nor among the managers that left."""
