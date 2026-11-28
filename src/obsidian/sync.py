@@ -417,7 +417,7 @@ def _data_dates(con: duckdb.DuckDBPyConnection, as_of: date) -> dict:
                (SELECT max(filed) FROM xbrl_facts WHERE filed <= $as_of),
                (SELECT max(filed) FROM filings_8k WHERE filed <= $as_of),
                (SELECT max(settlement_date) FROM short_interest WHERE known_at <= $as_of),
-               (SELECT max(period) FROM form13f_periods WHERE deadline <= $as_of)""",
+               (SELECT max(period) FROM form13f_periods WHERE deadline <= $as_of AND filers > 0)""",
                               {"as_of": as_of}).fetchall()
     return {"price": px, "form4": f4, "facts": xf, "form8k": e8, "short": si, "form13f": q13}
 

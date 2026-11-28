@@ -347,13 +347,24 @@ def load_window(con: duckdb.DuckDBPyConnection, zip_path: Path, name: str, work:
             con.execute(f"""
                 CREATE OR REPLACE TEMP TABLE f13_rows AS
                 SELECT e.filer, upper(trim(i.CUSIP)) AS cusip, CAST(round(CAST(i.SSHPRNAMT AS DOUBLE)) AS BIGINT) AS shares,
-                       upper(trim(i.TITLEOFCLASS)) AS title
+                       upper(trim(i.TITLEOFCLASS)) AS title, TRY_CAST(i.VALUE AS DOUBLE) AS value
                 FROM read_csv('{info_p}', delim='\t', header=true, quote='', escape='', auto_detect=false,
                               columns={{{cols}}}) i
                 JOIN f13_eff e ON e.accn = i.ACCESSION_NUMBER
                 WHERE upper(trim(i.SSHPRNAMTTYPE)) = 'SH' AND coalesce(trim(i.PUTCALL), '') = ''""")
             bad = sum(n for c, n in con.execute("SELECT cusip, count(*) FROM f13_rows GROUP BY cusip").fetchall()
                       if not valid_cusip(c or ""))
+            # A line whose price (value / shares) is off the CUSIP's median by more than 10x is a
+            # filer error in shares or value (live: 6.4B AAPL shares worth $22M). Off by about
+            # 1,000x is value in thousands (the unit before 2023-01-03), and is kept.
+            outlier_where = f"""value > 0 AND shares > 0 AND m.px > 0 AND NOT (
+                abs(log10(value / shares / m.px)) <= 1 OR abs(log10(value / shares / m.px) + 3) <= 1
+                OR abs(log10(value / shares / m.px) - 3) <= 1)"""
+            con.execute("""CREATE OR REPLACE TEMP TABLE f13_px AS SELECT cusip, median(value / shares) AS px
+                           FROM f13_rows WHERE value > 0 AND shares > 0 GROUP BY cusip""")
+            outliers = con.execute(f"SELECT count(*) FROM f13_rows r JOIN f13_px m USING (cusip) WHERE {outlier_where}"
+                                   ).fetchall()[0][0]
+            con.execute(f"DELETE FROM f13_rows r USING f13_px m WHERE m.cusip = r.cusip AND {outlier_where}")
             con.execute("DELETE FROM form13f_positions WHERE period = ?", [home])
             con.execute("""
                 INSERT INTO form13f_positions
@@ -368,25 +379,25 @@ def load_window(con: duckdb.DuckDBPyConnection, zip_path: Path, name: str, work:
                 SELECT $p, cusip, count(*), sum(shares), NULL, NULL, t.title, $k
                 FROM form13f_positions LEFT JOIN t USING (cusip)
                 WHERE period = $p AND cusip IS NOT NULL GROUP BY cusip, t.title""", {"p": home, "k": due})
-            con.execute("INSERT OR REPLACE INTO form13f_periods VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            con.execute("INSERT OR REPLACE INTO form13f_periods VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         [home, due, name, counts["filers"], notices, counts["restatements"], counts["new_holdings"],
-                         counts["other"], late, elsewhere, bad, 0, False, loaded_at])
+                         counts["other"], late, elsewhere, bad, outliers, 0, False, loaded_at])
             _apply_changes(con, home)
             nxt = _quarter_end(home.year + 1, 1) if home.month == 12 else _quarter_end(home.year, home.month // 3 + 1)
             if con.execute("SELECT count(*) > 0 FROM form13f_periods WHERE period = ?", [nxt]).fetchall()[0][0]:
                 _apply_changes(con, nxt)
             n_cusips = con.execute("SELECT cusips FROM form13f_periods WHERE period = ?", [home]).fetchall()[0][0]
-            for t in ("f13_eff", "f13_rows"):
+            for t in ("f13_eff", "f13_rows", "f13_px"):
                 con.execute(f"DROP TABLE IF EXISTS {t}")
             ledger.mark(con, f"13f@{name}", STAGE, SCHEMA_VERSION, "done", input_sha256=sha256,
                         output_ref=f"period={home};cusips={n_cusips};filers={counts['filers']};late={late};"
-                                   f"elsewhere={elsewhere};bad_cusip_rows={bad}")
+                                   f"elsewhere={elsewhere};bad_cusip_rows={bad};outlier_rows={outliers}")
             con.commit()
         except BaseException:
             con.rollback()
             raise
         return {"period": home, "cusips": n_cusips, "filers": counts["filers"], "late": late,
-                "elsewhere": elsewhere, "bad_cusip_rows": bad}
+                "elsewhere": elsewhere, "bad_cusip_rows": bad, "outlier_rows": outliers}
     except (duckdb.Error, ValueError, KeyError, zipfile.BadZipFile) as e:
         raise Form13fError(f"{name}: {type(e).__name__}: {e}"[:500]) from None
     finally:

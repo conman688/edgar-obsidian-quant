@@ -439,6 +439,7 @@ CREATE TABLE IF NOT EXISTS form13f_periods (
     late          INTEGER   NOT NULL,   -- reports for the quarter filed after the deadline: not used
     elsewhere     INTEGER   NOT NULL,   -- on-time reports for another quarter found in this window
     bad_cusip_rows INTEGER  NOT NULL,   -- SH lines whose CUSIP is not 9 characters or fails its check digit
+    outlier_rows  INTEGER   NOT NULL,   -- SH lines dropped: price (value / shares) far from the CUSIP's median
     cusips        INTEGER   NOT NULL,
     has_changes   BOOLEAN   NOT NULL,   -- the quarter before was loaded: new/exited are counted
     loaded_at     TIMESTAMP NOT NULL

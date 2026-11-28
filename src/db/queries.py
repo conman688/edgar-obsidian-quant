@@ -563,11 +563,11 @@ def cusip_periods_sql() -> str:
 
 
 def institutional_sql() -> str:
-    """Per mapped company, the newest 13F quarter whose deadline is <= as_of (never the quarter
-    end), read under the CUSIP valid at that quarter's end. A company no manager reported has 0
+    """Per mapped company, the newest 13F quarter with on-time reports whose deadline is <= as_of
+    (never the quarter end), read under the CUSIP valid at that quarter's end. A company no manager reported has 0
     holders. Binds $as_of."""
     return f"""
-    WITH p AS (SELECT * FROM form13f_periods WHERE deadline <= $as_of ORDER BY period DESC LIMIT 1),
+    WITH p AS (SELECT * FROM form13f_periods WHERE deadline <= $as_of AND filers > 0 ORDER BY period DESC LIMIT 1),
          m AS (SELECT c.cik, c.cusip FROM ({cusip_periods_sql()}) c CROSS JOIN p
                WHERE c.valid_from <= p.period AND p.period < c.valid_to AND c.price_from <= p.period
                  AND p.period <= c.price_to + INTERVAL {CUSIP_SLACK_DAYS} DAY)
