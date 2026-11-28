@@ -431,6 +431,17 @@ def test_an_adr_or_one_share_class_gets_no_share_of_shares(con, tmp_path, title,
     assert (r["inst_pct"] is None) == (note is not None)
 
 
+def test_the_note_says_why_there_is_no_share_of_shares(con, tmp_path):
+    add_buy(con, CIK, "b1")
+    w = {"01mar2024-31may2024_form13f.zip": zip13f([hr("0000000001-24-000001", 1, date(2024, 5, 1), Q1,
+                                                       [(ACME_CUSIP, 70, "SH", "", "SPONSORED ADR")])])}
+    load(con, tmp_path, w)
+    sync_vault(con, tmp_path / "vault", AS_OF)
+    note = (tmp_path / "vault" / "Companies" / "ACME.md").read_text()
+    assert "(filed by 2024-05-15): 1, no share of shares (13F counts depositary shares)." in note
+    assert dict(split_note(note)[0])["inst_pct_note"] == "adr"
+
+
 def test_more_shares_than_outstanding_are_flagged(con, tmp_path):
     w = {"01mar2024-31may2024_form13f.zip": zip13f([hr("0000000001-24-000001", 1, date(2024, 5, 1), Q1,
                                                        [(ACME_CUSIP, 1_200_000, "SH", "")])])}

@@ -362,7 +362,7 @@ def sync_vault(con: duckdb.DuckDBPyConnection, vault: Path, as_of: date, filters
             "insider_sell_90d_usd": _r(r["insider_sell_90d_usd"], 0),
             "net_insider_flow_90d_usd": _r(r["net_insider_flow_90d_usd"], 0), "signals": list(r["signals"]),
             "short_interest_pct": _r(r["short_interest_pct"]), "days_to_cover": _r(r["days_to_cover"], 2),
-            "inst_holders": r["inst_holders"], "inst_pct": _r(r["inst_pct"]),
+            "inst_holders": r["inst_holders"], "inst_pct": _r(r["inst_pct"]), "inst_pct_note": r["inst_pct_note"],
             "drawdown_52w": _r(r["drawdown_52w"]),
             "mcap": _r(r["mcap"], 0), "as_of": as_of, "price_date": r["price_date"], "issues": list(r["issues"]), "flags": list(r["flags"]),
             "rf_new_sentences": len(rl["new"]) if rl and rl["status"] == "ok" else None,

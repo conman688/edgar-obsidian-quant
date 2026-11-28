@@ -52,7 +52,7 @@ Shown for reading only: it never changes status or rank. See [[FINRA short inter
 
 ## Institutional holders (13F)
 
-{% if c.inst_period %}13F managers reporting a position at {{ c.inst_period }} (filed by {{ c.inst_known_at }}): {{ c.inst_holders }}{% if c.inst_pct is not none %}, {{ c.inst_pct | pct }} of shares{% endif %}{% if c.inst_holders_new is not none %}; {{ c.inst_holders_new }} new and {{ c.inst_holders_exited }} gone among managers who filed both quarters{% endif %}.
+{% if c.inst_period %}13F managers reporting a position at {{ c.inst_period }} (filed by {{ c.inst_known_at }}): {{ c.inst_holders }}{% if c.inst_pct is not none %}, {{ c.inst_pct | pct }} of shares{% if c.inst_pct_note == "above_100pct" %} (above 100%: managers sharing discretion can report the same shares){% endif %}{% elif c.inst_pct_note %}, no share of shares ({% if c.inst_pct_note == "adr" %}13F counts depositary shares{% elif c.inst_pct_note == "share_class" %}13F counts one share class{% else %}the share count is not trusted{% endif %}){% endif %}{% if c.inst_holders_new is not none %}; {{ c.inst_holders_new }} new and {{ c.inst_holders_exited }} gone among managers who filed both quarters{% endif %}.
 {% else %}No 13F quarter known for this company: no CUSIP matched to its ticker, or no quarter loaded.
 {% endif %}
 Shown for reading only: it never changes status or rank. 13F lists long positions of managers with $100M or more, so no position reported does not mean not held. See [[SEC Form 13F data sets]].
