@@ -408,6 +408,57 @@ CREATE TABLE IF NOT EXISTS cboe_daily (
     PRIMARY KEY (index_id, trade_date)
 );
 """),
+    (13, """
+-- M12-B6: 13F institutional holdings, one row per quarter and CUSIP. A quarter counts only the
+-- reports filed by its deadline (quarter end + 45 days, next business day), so a row never
+-- changes and is known from that deadline. Shares on SH lines only: no options, no PRN.
+CREATE TABLE IF NOT EXISTS form13f_quarters (
+    period          DATE    NOT NULL,
+    cusip           VARCHAR NOT NULL,
+    holders         INTEGER NOT NULL,
+    shares          BIGINT  NOT NULL,
+    title           VARCHAR,            -- the most common title of class (ADR, CL A, COM, ...)
+    known_at        DATE    NOT NULL,
+    PRIMARY KEY (period, cusip)
+);
+-- One row per quarter: what its window held by the deadline.
+CREATE TABLE IF NOT EXISTS form13f_periods (
+    period        DATE      PRIMARY KEY,
+    deadline      DATE      NOT NULL,
+    source_file   VARCHAR   NOT NULL,
+    filers        INTEGER   NOT NULL,   -- managers with a holdings or combination report
+    notices       INTEGER   NOT NULL,   -- 13F-NT: holdings reported by another manager
+    restatements  INTEGER   NOT NULL,
+    new_holdings  INTEGER   NOT NULL,
+    other_amendments INTEGER NOT NULL,  -- no amendment type: not used
+    late          INTEGER   NOT NULL,   -- reports for the quarter filed after the deadline: not used
+    elsewhere     INTEGER   NOT NULL,   -- on-time reports for another quarter found in this window
+    bad_cusip_rows INTEGER  NOT NULL,   -- SH lines whose CUSIP is not 9 characters or fails its check digit
+    outlier_rows  INTEGER   NOT NULL,   -- SH lines dropped: price (value / shares) off the CUSIP's median in the filing's unit
+    outlier_filers INTEGER  NOT NULL,   -- reports dropped whole: as many lines off the median as in the filing's unit
+    cusips        INTEGER   NOT NULL,
+    loaded_at     TIMESTAMP NOT NULL
+);
+-- Every loaded quarter's positions per manager. New and exited managers are counted from it per
+-- company when read, across the company's CUSIP at each quarter. cusip NULL marks a manager with
+-- a report and no SH lines; a report dropped whole has no rows.
+CREATE TABLE IF NOT EXISTS form13f_positions (
+    period     DATE    NOT NULL,
+    filer_cik  INTEGER NOT NULL,
+    cusip      VARCHAR,
+    shares     BIGINT
+);
+-- SEC fails-to-deliver files pair a CUSIP with the ticker it traded under (first and last
+-- settlement date seen). The only SEC source of CUSIP-ticker pairs.
+CREATE TABLE IF NOT EXISTS cusip_symbols (
+    cusip        VARCHAR NOT NULL,
+    symbol       VARCHAR NOT NULL,
+    first_seen   DATE    NOT NULL,
+    last_seen    DATE    NOT NULL,
+    description  VARCHAR,
+    PRIMARY KEY (cusip, symbol)
+);
+"""),
 ]
 
 # Macros and views are code, not data: recreated on every connect so edits take effect.

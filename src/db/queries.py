@@ -528,3 +528,91 @@ def short_interest_sql() -> str:
     WHERE s.known_at <= $as_of AND s.settlement_date > $as_of - INTERVAL {SHORT_INTEREST_MAX_AGE_DAYS} DAY
     QUALIFY row_number() OVER (PARTITION BY ps.cik ORDER BY s.settlement_date DESC) = 1
     """
+
+
+# M12-B6: 13F institutional holdings. A quarter is read once its filing deadline has passed.
+
+# A CUSIP's validity under its symbol ends this long after its last fails-to-deliver sighting
+# when the next CUSIP under that symbol was first seen much later (a reused ticker).
+CUSIP_SLACK_DAYS = 92
+
+
+def cusip_periods_sql() -> str:
+    """When each CUSIP stands for a company: its fails-to-deliver symbol is the company's current
+    ticker (price_status; a ticker two companies hold maps to neither). A CUSIP seen under another
+    symbol more than CUSIP_SLACK_DAYS after its last sighting under this one only borrowed the
+    ticker (live: the Roundhill Metaverse ETF traded as META 2021-07..2022-01, then METV to
+    2026-10) and never stands for the company. Days under a temporary symbol at a CUSIP change
+    do not count (live: HON's old CUSIP under HONZZZZ for 15 days, LRCX's under LRCXXXXX).
+    The others take turns in order of their first sighting under any symbol (live: Meta's
+    30303M102 traded as FB until 2022-06): each is valid from that sighting (the first one from
+    the start, so it covers years before its first fail) until the next one's, or until
+    CUSIP_SLACK_DAYS after its own last sighting if that is earlier. A same-ticker CUSIP change
+    (reverse split, reorganisation) keeps the company's history; an old issuer's CUSIP under a
+    reused ticker stays with the years it traded. Callers also require the quarter to fall in
+    the company's own price history."""
+    return f"""
+    WITH c AS (SELECT cusip, min(first_seen) AS first_any, max(last_seen) AS last_any FROM cusip_symbols GROUP BY cusip),
+         own AS (SELECT s.symbol, s.cusip, c.first_any, s.last_seen
+                 FROM cusip_symbols s JOIN c USING (cusip)
+                 WHERE NOT EXISTS (SELECT 1 FROM cusip_symbols o WHERE o.cusip = s.cusip AND o.symbol <> s.symbol
+                                   AND o.last_seen > s.last_seen + INTERVAL {CUSIP_SLACK_DAYS} DAY)),
+         e AS (SELECT symbol, cusip, first_any, lag(last_seen) OVER w AS prev_last, row_number() OVER w AS k
+               FROM own WINDOW w AS (PARTITION BY symbol ORDER BY first_any, cusip)),
+         v AS (SELECT symbol, cusip, k,
+                      CASE WHEN k = 1 THEN DATE '0001-01-01'
+                           ELSE least(first_any, CAST(prev_last + INTERVAL {CUSIP_SLACK_DAYS} DAY AS DATE)) END AS valid_from
+               FROM e),
+         iv AS (SELECT *, coalesce(lead(valid_from) OVER (PARTITION BY symbol ORDER BY k), DATE '9999-12-31') AS valid_to
+                FROM v),
+         t AS (SELECT ticker, min(cik) AS cik, min(first_date) AS price_from, max(last_date) AS price_to
+               FROM price_status GROUP BY ticker HAVING count(*) = 1)
+    SELECT t.cik, iv.cusip, iv.valid_from, iv.valid_to, t.price_from, t.price_to
+    FROM iv JOIN t ON t.ticker = iv.symbol
+    """
+
+
+def institutional_sql() -> str:
+    """Per mapped company, the newest 13F quarter with on-time reports whose deadline is <= as_of
+    (never the quarter end). Shares are read under the CUSIP valid at that quarter's end. A
+    manager holds the company in a quarter if it reports any CUSIP valid for the company during
+    that quarter (live HON 2026-06-30: the new CUSIP came on 2026-06-16 and some managers still
+    reported the old one). A company no manager reported has 0 holders. New and exited count
+    managers with a report in both this quarter and the one before, so a CUSIP change is not a
+    change of holders; NULL when the quarter before has no on-time reports. Binds $as_of."""
+    return f"""
+    WITH p AS (SELECT * FROM form13f_periods WHERE deadline <= $as_of AND filers > 0 ORDER BY period DESC LIMIT 1),
+         pp AS (SELECT f.period FROM form13f_periods f CROSS JOIN p
+                WHERE f.period = last_day(p.period - INTERVAL 3 MONTH) AND f.filers > 0),
+         cp AS ({cusip_periods_sql()}),
+         m AS (SELECT c.cik, c.cusip FROM cp c CROSS JOIN p
+               WHERE c.valid_from <= p.period AND p.period < c.valid_to AND c.price_from <= p.period
+                 AND p.period <= c.price_to + INTERVAL {CUSIP_SLACK_DAYS} DAY),
+         -- every CUSIP valid for the company at some time in quarter q (ending q.period)
+         cq AS (SELECT c.cik, c.cusip, p.period FROM cp c CROSS JOIN p
+                WHERE c.cik IN (SELECT cik FROM m) AND c.valid_from <= p.period
+                  AND c.valid_to > last_day(p.period - INTERVAL 3 MONTH)
+                UNION ALL
+                SELECT c.cik, c.cusip, pp.period FROM cp c CROSS JOIN pp
+                WHERE c.cik IN (SELECT cik FROM m) AND c.valid_from <= pp.period
+                  AND c.valid_to > last_day(pp.period - INTERVAL 3 MONTH)),
+         h AS (SELECT DISTINCT cq.cik, cq.period, f.filer_cik FROM cq
+               JOIN form13f_positions f ON f.cusip = cq.cusip AND f.period = cq.period),
+         both_ AS (SELECT f.filer_cik FROM form13f_positions f JOIN p USING (period)
+                   INTERSECT SELECT f.filer_cik FROM form13f_positions f JOIN pp USING (period)),
+         cur AS (SELECT h.cik, h.filer_cik FROM h JOIN p USING (period)),
+         chg AS (SELECT coalesce(c.cik, o.cik) AS cik, count(*) FILTER (WHERE o.filer_cik IS NULL) AS new_,
+                        count(*) FILTER (WHERE c.filer_cik IS NULL) AS gone
+                 FROM (SELECT * FROM cur WHERE filer_cik IN (SELECT filer_cik FROM both_)) c
+                 FULL JOIN (SELECT h.cik, h.filer_cik FROM h JOIN pp USING (period)
+                            WHERE h.filer_cik IN (SELECT filer_cik FROM both_)) o
+                   ON o.cik = c.cik AND o.filer_cik = c.filer_cik
+                 GROUP BY 1),
+         n AS (SELECT cik, count(*) AS holders FROM cur GROUP BY cik)
+    SELECT m.cik, p.period AS inst_period, p.deadline AS inst_known_at, q.title AS inst_title,
+           coalesce(n.holders, 0) AS inst_holders, coalesce(q.shares, 0) AS inst_shares,
+           CASE WHEN EXISTS (SELECT 1 FROM pp) THEN coalesce(chg.new_, 0) END AS inst_holders_new,
+           CASE WHEN EXISTS (SELECT 1 FROM pp) THEN coalesce(chg.gone, 0) END AS inst_holders_exited
+    FROM m CROSS JOIN p LEFT JOIN form13f_quarters q ON q.period = p.period AND q.cusip = m.cusip
+    LEFT JOIN chg ON chg.cik = m.cik LEFT JOIN n ON n.cik = m.cik
+    """
