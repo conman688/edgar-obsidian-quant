@@ -104,6 +104,21 @@ SOURCES["SEC Form 13F data sets"] = {
                 "amendment adds to it. Only share lines, never options or principal amounts.",
     "refresh": "Manual (`ingest 13f`); each zip and fails-to-deliver file is loaded once.",
 }
+SOURCES["SEC Schedules 13D and 13G"] = {
+    "what": "Stakes of 5% or more of a class of equity: Schedule 13D (control intent) and Schedule 13G "
+            "(passive and institutional holders). Per company, each filer's latest filing stands; one at "
+            "5% or more is a stake. Informational only.",
+    "access": "Public, no key: the quarterly EDGAR form.idx lists the filings, each fetched as a full submission "
+              "through the SEC client (8 requests a second, project User-Agent). XML schedules from 2024-12-18 "
+              "(13D and 13G); legacy SC 13D and SC 13D/A cover pages are read as text. Legacy 13G is not loaded.",
+    "terms": "SEC filings, public.",
+    "history": "Legacy 13D text from the first quarter indexed (default 2001q1); 13G from the XML schedules "
+               "(2024-12-18, a few from 2023Q4).",
+    "known_at": "The filing date, never the event date (23 of 99 sampled initial 13Ds came more than 20 business "
+                "days after their event). Since 2024-02-05 an initial 13D is due within five business days and an "
+                "amendment within two; 13G deadlines shortened from 2024-09-30.",
+    "refresh": "Manual (`ingest 13dg`); not scheduled.",
+}
 SELL_LABELS = {"discretionary": "discretionary", "planned": "10b5-1 plan", "unknown": "plan unknown"}
 HISTORY_DAYS = 365                       # insider purchases shown per company and person
 TONE_KEYS = ("negative", "litigious", "uncertainty")
@@ -378,6 +393,7 @@ def sync_vault(con: duckdb.DuckDBPyConnection, vault: Path, as_of: date, filters
             "net_insider_flow_90d_usd": _r(r["net_insider_flow_90d_usd"], 0), "signals": list(r["signals"]),
             "short_interest_pct": _r(r["short_interest_pct"]), "days_to_cover": _r(r["days_to_cover"], 2),
             "inst_holders": r["inst_holders"], "inst_pct": _r(r["inst_pct"]), "inst_pct_note": r["inst_pct_note"],
+            "holders_13d": r["holders_13d"], "holders_13g": r["holders_13g"],
             "drawdown_52w": _r(r["drawdown_52w"]),
             "mcap": _r(r["mcap"], 0), "as_of": as_of, "price_date": r["price_date"], "issues": list(r["issues"]), "flags": list(r["flags"]),
             "rf_new_sentences": len(rl["new"]) if rl and rl["status"] == "ok" else None,
@@ -411,15 +427,16 @@ def sync_vault(con: duckdb.DuckDBPyConnection, vault: Path, as_of: date, filters
 def _data_dates(con: duckdb.DuckDBPyConnection, as_of: date) -> dict:
     """The newest dated price, Form 4, XBRL fact and 8-K stored by as_of, across all companies.
     Not coverage: an import can have gaps, and a company's own inputs are in its note."""
-    (px, f4, xf, e8, si, q13), = con.execute("""
+    (px, f4, xf, e8, si, q13, sd), = con.execute("""
         SELECT (SELECT max(price_date) FROM prices WHERE price_date <= $as_of),
                (SELECT max(filed) FROM form4_transactions WHERE filed <= $as_of),
                (SELECT max(filed) FROM xbrl_facts WHERE filed <= $as_of),
                (SELECT max(filed) FROM filings_8k WHERE filed <= $as_of),
                (SELECT max(settlement_date) FROM short_interest WHERE known_at <= $as_of),
-               (SELECT max(period) FROM form13f_periods WHERE deadline <= $as_of AND filers > 0)""",
+               (SELECT max(period) FROM form13f_periods WHERE deadline <= $as_of AND filers > 0),
+               (SELECT max(filed) FROM sched13_stakes WHERE filed <= $as_of)""",
                               {"as_of": as_of}).fetchall()
-    return {"price": px, "form4": f4, "facts": xf, "form8k": e8, "short": si, "form13f": q13}
+    return {"price": px, "form4": f4, "facts": xf, "form8k": e8, "short": si, "form13f": q13, "sched13": sd}
 
 
 def _decisions(con: duckdb.DuckDBPyConnection, journals: list[dict], now: dict, as_of: date) -> list[dict]:

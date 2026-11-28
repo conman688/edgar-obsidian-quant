@@ -28,7 +28,8 @@ import pyarrow.parquet as pq
 
 from src.db.pit import Policy
 from src.db.queries import (EVENT_ITEMS, HIGH_SHORT_INTEREST, UNTRUSTED_SHARE_ISSUES, cluster_buys_sql,
-                             events_8k_sql, insider_flow_sql, institutional_sql, last_results_8k_sql, share_trend_sql, short_interest_sql, valuation_sql)
+                             events_8k_sql, insider_flow_sql, institutional_sql, last_results_8k_sql, share_trend_sql,
+                             short_interest_sql, stakes_sql, valuation_sql)
 
 
 @dataclass(frozen=True)
@@ -135,6 +136,7 @@ def informational_sql(ranked: str, insider_window_days: int = 90) -> str:
     res AS ({last_results_8k_sql()}),
     si AS ({short_interest_sql()}),
     inst AS ({institutional_sql()}),
+    st AS ({stakes_sql()}),
     x0 AS (
         SELECT r.*,
                -- FINRA counts shares at settlement: put them on the price date's split basis.
@@ -178,12 +180,17 @@ def informational_sql(ranked: str, insider_window_days: int = 90) -> str:
            list_filter([CASE WHEN fl.n_sellers >= 2 THEN 'cluster_sell' END,
                         CASE WHEN r.n_insiders IS NOT NULL AND fl.n_peer_sellers > 0 THEN 'buy_while_peers_sell' END,
                         {eight_k},
-                        CASE WHEN r.short_interest_pct >= {HIGH_SHORT_INTEREST} THEN 'high_short_interest' END],
+                        CASE WHEN r.short_interest_pct >= {HIGH_SHORT_INTEREST} THEN 'high_short_interest' END,
+                        CASE WHEN st.new_13d THEN 'new_13d' END],
                        lambda x: x IS NOT NULL) AS signals,
-           ev.accns AS form8k_accns, res.last_results_8k
+           ev.accns AS form8k_accns, res.last_results_8k,
+           -- Schedule 13D/13G stakes of 5% or more (M12-B7)
+           coalesce(st.holders_13d, 0) AS holders_13d, st.max_pct_13d, st.last_filed_13d, st.top_filer_13d,
+           coalesce(st.holders_13g, 0) AS holders_13g, st.max_pct_13g
     FROM x r LEFT JOIN fl ON fl.issuer_cik = r.cik
     LEFT JOIN ev ON ev.cik = r.cik
     LEFT JOIN res ON res.cik = r.cik
+    LEFT JOIN st ON st.cik = r.cik
     ORDER BY r.as_of, CASE r.status WHEN 'shortlist' THEN 0 WHEN 'quarantine' THEN 1 ELSE 2 END,
              r.ev_ebit NULLS LAST, r.cik
     """

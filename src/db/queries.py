@@ -602,3 +602,36 @@ def institutional_sql() -> str:
     FROM m CROSS JOIN p LEFT JOIN form13f_quarters q ON q.period = p.period AND q.cusip = m.cusip
     LEFT JOIN chg ON chg.cik = m.cik
     """
+
+
+STAKE_MIN_PCT = 5.0
+NEW_13D_DAYS = 90
+
+
+def stakes_sql() -> str:
+    """Per issuer, the stakes of 5% or more at $as_of (M12-B7): each filer's latest Schedule 13D or
+    13G filed on or before as_of (never by event date) stands, so an amendment below 5% ends the
+    stake and a filer moving from 13G to 13D counts once, under 13D. A filing listed under its
+    subject only has no filer: it stands for itself. Unreadable percents count as no stake.
+    new_13d: a holder of a 13D stake whose initial 13D was filed in the last NEW_13D_DAYS."""
+    return f"""
+    WITH s AS (SELECT *, coalesce(CAST(filer_cik AS VARCHAR), accn) AS holder FROM sched13_stakes
+               WHERE filed <= $as_of AND issuer_cik IS NOT NULL),
+         last AS (SELECT * FROM s
+                  QUALIFY row_number() OVER (PARTITION BY issuer_cik, holder
+                                             ORDER BY filed DESC, accepted DESC NULLS LAST, accn DESC) = 1),
+         on_ AS (SELECT l.*, n.holder IS NOT NULL AS new_ FROM last l
+                 LEFT JOIN (SELECT DISTINCT issuer_cik, holder FROM s
+                            WHERE form = '13D' AND NOT amendment AND filed > $as_of - INTERVAL {NEW_13D_DAYS} DAY) n
+                   USING (issuer_cik, holder)
+                 WHERE l.pct >= {STAKE_MIN_PCT})
+    SELECT issuer_cik AS cik,
+           count(*) FILTER (WHERE form = '13D') AS holders_13d,
+           max(pct) FILTER (WHERE form = '13D') AS max_pct_13d,
+           max(filed) FILTER (WHERE form = '13D') AS last_filed_13d,
+           arg_max(filer_name, pct) FILTER (WHERE form = '13D') AS top_filer_13d,
+           count(*) FILTER (WHERE form = '13G') AS holders_13g,
+           max(pct) FILTER (WHERE form = '13G') AS max_pct_13g,
+           bool_or(form = '13D' AND new_) AS new_13d
+    FROM on_ GROUP BY issuer_cik
+    """
