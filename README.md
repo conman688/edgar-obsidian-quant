@@ -333,7 +333,9 @@ Uncapped, a heavy query on an 8 GB machine with little free disk can crash the c
 - 13F holdings (M12) are known from the quarter's filing deadline (quarter end + 45 days, the next
   business day). A quarter counts only reports filed by then, so it never changes; it is never
   dated by the quarter end. CUSIPs are matched by SEC fails-to-deliver symbols to the current
-  ticker, using only the newest CUSIP seen under a symbol.
+  ticker: under one symbol they take turns by first sighting, and a CUSIP that later trades under
+  another symbol for more than 92 days only borrowed the ticker. New and exited managers are
+  counted per company across its CUSIPs, so a CUSIP change is not a change of holders.
 - FRED macro series (M12) are known at their ALFRED vintage date (`realtime_start`), so a revised
   value is read as it was published on or before `as_of`. The FRED key (`FRED_API_KEY`) goes only
   to api.stlouisfed.org, with redirects refused. Cboe closes (M12) are known at the later of the
