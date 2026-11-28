@@ -468,3 +468,13 @@ def test_a_row_number_after_the_shares_heading_is_not_read_as_shares():
     r = s13._parse_text(doc)
     assert r["pct"] == 7.5
     assert r["shares"] is None
+
+
+def test_a_row_number_printed_after_the_heading_is_skipped():
+    """Review C2 re-check, live: 128 of 151 legacy stakes stored with shares 1, 11 or 12 print the
+    row number after the heading ("... EACH REPORTING PERSON 11 2,466,421 SHARES")."""
+    doc = ("<TEXT>NAME OF REPORTING PERSON FUND LP "
+           "AGGREGATE AMOUNT BENEFICIALLY OWNED BY EACH REPORTING PERSON 11 2,466,421 SHARES OF COMMON STOCK "
+           "PERCENT OF CLASS REPRESENTED BY AMOUNT IN ROW (11) 13 6.2% TYPE OF REPORTING PERSON PN</TEXT>")
+    r = s13._parse_text(doc)
+    assert (r["shares"], r["pct"]) == (2_466_421, 6.2)
