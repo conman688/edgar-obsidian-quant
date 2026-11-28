@@ -131,7 +131,10 @@ notice) in the last year and 5.02 (any director or officer change) in the last 9
 signal too, plus the date of the last results 8-K (Item 2.02). `ingest companies` stores them
 from the same `submissions.zip`, so they refresh on Saturdays. A "Short interest" line gives
 FINRA's newest known cycle: short shares as a share of shares outstanding (signal
-`high_short_interest` at 10% or more) and days to cover. `Sources/` holds one note per added
+`high_short_interest` at 10% or more) and days to cover. An "Institutional holders (13F)" line
+gives the newest quarter past its filing deadline: managers reporting a position, their shares as
+a share of shares outstanding, and how many managers that filed both quarters started or stopped
+reporting one. `ingest 13f` loads it by hand; it is not scheduled. `Sources/` holds one note per added
 data source with its terms and known-at rule. The dashboard's "Macro" line gives the 10y-2y
 Treasury spread, NFCI, VIX, VIX9D/VIX and VVIX as known on the sync date, with regime labels
 `curve_inverted` (spread < 0), `tight_financial_conditions` (NFCI > 0) and `vol_backwardation`
@@ -327,6 +330,10 @@ Uncapped, a heavy query on an 8 GB machine with little free disk can crash the c
   (FINRA publishes after 7 business days) and the day it was first fetched, because rows are
   revised in place; it is matched to companies by current ticker. FINRA requests use a
   generic User-Agent, never the SEC one.
+- 13F holdings (M12) are known from the quarter's filing deadline (quarter end + 45 days, the next
+  business day). A quarter counts only reports filed by then, so it never changes; it is never
+  dated by the quarter end. CUSIPs are matched by SEC fails-to-deliver symbols to the current
+  ticker, using only the newest CUSIP seen under a symbol.
 - FRED macro series (M12) are known at their ALFRED vintage date (`realtime_start`), so a revised
   value is read as it was published on or before `as_of`. The FRED key (`FRED_API_KEY`) goes only
   to api.stlouisfed.org, with redirects refused. Cboe closes (M12) are known at the later of the

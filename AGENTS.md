@@ -41,6 +41,8 @@ locks the database.
 - Missing or stale inputs are named in `issues` and quarantined; they never pass as good values.
 - The SEC User-Agent (it names the user) goes only to SEC hosts. Other sources (FINRA, FRED, Cboe,
   factor files) use a generic User-Agent. The FRED API key goes only to api.stlouisfed.org and never into an error or log.
+- 13F quarters (M12) are read only from their filing deadline, never the quarter end, and count
+  only reports filed by it.
 - M12 signals (`signals`, insider-sell columns) are informational: they never change a filter,
   status, rank or the shortlist until a backtest variant positive in both halves is approved.
 - Factor files (M12-A5) are dated snapshots checked against their sha256 manifest. They explain
