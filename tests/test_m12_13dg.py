@@ -478,3 +478,36 @@ def test_a_row_number_printed_after_the_heading_is_skipped():
            "PERCENT OF CLASS REPRESENTED BY AMOUNT IN ROW (11) 13 6.2% TYPE OF REPORTING PERSON PN</TEXT>")
     r = s13._parse_text(doc)
     assert (r["shares"], r["pct"]) == (2_466_421, 6.2)
+
+
+def test_an_indexed_filing_not_fetched_yet_leaves_the_count_unknown(con):
+    """Review C3: a failed fetch, --limit or a stopped run leaves indexed filings unloaded."""
+    s, _ = load(con, stakes_docs(), fail={A1, A2})
+    assert s.failed == 2
+    r = screen_rows(con)["ACME"]                     # AS_OF 2024-09-03
+    assert r["holders_13d"] is None
+    assert screen_rows(con, date(2024, 6, 30))["ACME"]["holders_13d"] == 0      # before the first missing filing
+
+
+def test_a_date_on_or_after_the_index_was_read_is_unknown(con):
+    """Review C3: filings made after a quarter's form.idx was read are not loaded yet."""
+    s13.load_index(con, "2024q3", form_idx([]), now=datetime(2024, 8, 15, 6))
+    assert screen_rows(con, date(2024, 8, 14))["ACME"]["holders_13d"] == 0
+    assert screen_rows(con, date(2024, 8, 15))["ACME"]["holders_13d"] is None
+    assert screen_rows(con)["ACME"]["holders_13d"] is None                         # AS_OF 2024-09-03
+
+
+def test_a_filing_sec_no_longer_serves_is_skipped_not_retried(con):
+    """Live: 0000940180-01-500261 returns 404. A permanent miss must not hold coverage back."""
+    import requests
+
+    class Gone:
+        def __call__(self, url):
+            r = requests.Response()
+            r.status_code = 404
+            raise requests.HTTPError("404 Client Error: Not Found", response=r)
+    s13.load_index(con, "2024q3", form_idx([idx_line("SCHEDULE 13G", "ACME Corp", CIK, F1, A1)]))
+    s = s13.fetch_filings(con, Gone())
+    assert (s.skipped, s.failed) == (1, 0)
+    assert con.execute("SELECT status, error FROM sched13_filings").fetchall()[0][0] == "skipped"
+    assert screen_rows(con)["ACME"]["holders_13g"] == 0
