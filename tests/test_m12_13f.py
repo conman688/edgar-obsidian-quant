@@ -53,9 +53,10 @@ def zip13f(filings: list[dict]) -> bytes:
                               "", "", "",
                               "", f"MANAGER {f['filer']}", "1 MAIN ST", "", "CITY", "NY", "10001",
                               f.get("report", "13F HOLDINGS REPORT"), "028-00001", "", "", "N", ""]))
-        for cusip, shares, kind, putcall, *title in f.get("rows", []):
-            info.append("\t".join([f["accn"], str(sk), "ACME CORP", title[0] if title else "COM", cusip, "",
-                                   str(shares * 12), str(shares),
+        for cusip, shares, kind, putcall, *more in f.get("rows", []):
+            title, value = (more[0] if more else "COM"), (more[1] if len(more) > 1 else shares * 12)
+            info.append("\t".join([f["accn"], str(sk), "ACME CORP", title, cusip, "",
+                                   str(value), str(shares),
                                    kind, putcall, "SOLE", "", str(shares), "0", "0"]))
             sk += 1
     buf = io.BytesIO()
@@ -189,6 +190,31 @@ def test_a_quarter_counts_holders_and_shares_filed_by_its_deadline(con, tmp_path
     p = con.execute("SELECT filers, notices, restatements, new_holdings, late, deadline FROM form13f_periods "
                     "WHERE period = ?", [Q2]).fetchall()[0]
     assert p == (4, 0, 0, 0, 1, D2)
+
+
+def test_a_line_whose_price_is_far_from_the_others_is_dropped_and_counted(con, tmp_path):
+    """Live Jun-Aug 2026: one filer reports 6.4B AAPL shares worth $22M ($0.0035 a share against a
+    median of $289.36), another 89M MTD shares. A line off the CUSIP's median price by more than
+    10x is dropped, unless it is off by about 1,000x: value in thousands (before 2023-01-03, or
+    a filer that kept that unit)."""
+    q = zip13f([hr("0000000001-24-000001", 1, date(2024, 5, 1), Q1, [(ACME_CUSIP, 100, "SH", "", "COM", 1200)]),
+                hr("0000000002-24-000001", 2, date(2024, 5, 1), Q1, [(ACME_CUSIP, 200, "SH", "", "COM", 2400)]),
+                hr("0000000003-24-000001", 3, date(2024, 5, 1), Q1, [(ACME_CUSIP, 300, "SH", "", "COM", 3)]),     # thousands
+                hr("0000000004-24-000001", 4, date(2024, 5, 1), Q1, [(ACME_CUSIP, 9_000_000, "SH", "", "COM", 1300)]),
+                hr("0000000005-24-000001", 5, date(2024, 5, 1), Q1, [(ACME_CUSIP, 50, "SH", "", "COM", 0)])])    # no value
+    load(con, tmp_path, {"01mar2024-31may2024_form13f.zip": q})
+    assert quarter(con, Q1)[:2] == (4, 650)
+    assert con.execute("SELECT outlier_rows FROM form13f_periods").fetchall()[0][0] == 1
+
+
+def test_a_quarter_without_on_time_reports_is_never_read(con, tmp_path):
+    """Live: the first zip (2013q2) has no Q1 2013 report filed by 2013-05-15; SEC's data sets
+    begin with the XML filings. Such a quarter is stored but not shown as 0 holders."""
+    q = zip13f([hr("0000000001-24-000001", 1, date(2024, 5, 20), Q1, [(ACME_CUSIP, 100, "SH", "")])])
+    load(con, tmp_path, {"01mar2024-31may2024_form13f.zip": q})
+    assert con.execute("SELECT filers, late FROM form13f_periods").fetchall() == [(0, 1)]
+    r = screen_rows(con)["ACME"]
+    assert r["inst_period"] is None and r["inst_holders"] is None
 
 
 def test_a_restatement_replaces_and_a_new_holdings_amendment_adds(con, tmp_path):
