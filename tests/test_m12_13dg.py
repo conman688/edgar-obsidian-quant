@@ -18,6 +18,7 @@ from datetime import date, datetime
 
 import pytest
 
+from src.db import queries
 from src.db.schema import connect
 from src.ingestion import sched13 as s13
 from src.obsidian.sync import sync_vault
@@ -133,15 +134,31 @@ A1, A2, A3 = "0001649553-24-000074", "0001649553-24-000090", "0000315066-24-0019
 F1, F2, F3 = date(2024, 7, 20), date(2024, 8, 6), date(2024, 8, 20)
 
 
-def load(con, docs: dict[str, tuple[str, date, bytes]], subjects=None, fail=frozenset(), quarter="2024q3"):
-    """docs: accn -> (form, filed, raw). Each is indexed under the subject and the filer."""
-    lines = []
+def quarter_of(d: date) -> str:
+    return f"{d.year}q{(d.month - 1) // 3 + 1}"
+
+
+def load(con, docs: dict[str, tuple[str, date, bytes]], subjects=None, fail=frozenset(), quarters=("2024q3",)):
+    """docs: accn -> (form, filed, raw). Each is indexed under the subject and the filer, in the
+    quarter of its filing date; `quarters` are indexed too (as empty if nothing was filed)."""
+    lines: dict[str, list[str]] = {q: [] for q in quarters}
     for accn, (form, filed, _) in docs.items():
-        lines += [idx_line(form, "ACME Corp", (subjects or {}).get(accn, CIK), filed, accn),
-                  idx_line(form, "FUND LP", FILER, filed, accn)]
-    s13.load_index(con, quarter, form_idx(lines))
+        lines.setdefault(quarter_of(filed), []).extend(
+            [idx_line(form, "ACME Corp", (subjects or {}).get(accn, CIK), filed, accn),
+             idx_line(form, "FUND LP", FILER, filed, accn)])
+    for q, ls in lines.items():
+        s13.load_index(con, q, form_idx(ls))
     get = FakeGet({a: raw for a, (_, _, raw) in docs.items()}, fail)
     return s13.fetch_filings(con, get), get
+
+
+XML_13G_FROM = getattr(queries, "XML_13G_FROM", None)      # the real cutoff, read before any patch
+
+
+@pytest.fixture(autouse=True)
+def xml_13g_from_2024(monkeypatch):
+    """The fixtures file XML 13Gs in 2024; the real 13G era starts 2024-12-18 (tested below)."""
+    monkeypatch.setattr(queries, "XML_13G_FROM", date(2024, 1, 1), raising=False)
 
 
 @pytest.fixture
@@ -234,7 +251,7 @@ def test_an_xml_13d_amendment_and_the_namespace_and_tag_variants_parse(con):
 def test_a_legacy_13d_cover_page_gives_event_cusip_shares_and_percent(con):
     """Live 0001140361-23-000289: two cover pages, 59,516,175 shares and 8.5 % with footnote marks."""
     raw = legacy13d(A1, date(2023, 1, 4))
-    load(con, {A1: ("SC 13D", date(2023, 1, 4), raw)}, quarter="2023q1")
+    load(con, {A1: ("SC 13D", date(2023, 1, 4), raw)})
     assert stake(con, A1) == {"form": "13D", "amendment": False, "source": "text", "issuer_cik": CIK,
                               "filer_cik": FILER, "cusip": "00165C203", "event_date": date(2023, 1, 3),
                               "filed": date(2023, 1, 4), "rule": None, "persons": 2, "shares": 59_516_175,
@@ -245,13 +262,13 @@ def test_a_legacy_13d_cover_page_gives_event_cusip_shares_and_percent(con):
     ("January&nbsp;3, 2023", date(2023, 1, 3)), ("Jan. 3, 2023", date(2023, 1, 3)),
     ("01/03/2023", date(2023, 1, 3)), ("December 30 , 2022", date(2022, 12, 30)), ("not a date", None)])
 def test_legacy_event_dates(con, event, expected):
-    load(con, {A1: ("SC 13D", date(2023, 1, 4), legacy13d(A1, date(2023, 1, 4), event=event))}, quarter="2023q1")
+    load(con, {A1: ("SC 13D", date(2023, 1, 4), legacy13d(A1, date(2023, 1, 4), event=event))})
     assert stake(con, A1)["event_date"] == expected
 
 
 def test_a_legacy_13d_without_a_readable_percent_is_kept_with_nulls(con):
     raw = legacy13d(A1, date(2023, 1, 4), covers=(("FUND A", "see Item 5", "see Item 5"),), cusip="none given")
-    load(con, {A1: ("SC 13D/A", date(2023, 1, 4), raw)}, quarter="2023q1")
+    load(con, {A1: ("SC 13D/A", date(2023, 1, 4), raw)})
     d = stake(con, A1)
     assert (d["amendment"], d["pct"], d["shares"], d["cusip"]) == (True, None, None, None)
 
@@ -260,7 +277,7 @@ def test_the_issuer_comes_from_the_xml_and_the_filer_from_the_header(con):
     """A legacy filing has no issuer field: its subject company is the issuer. A filing listed
     under one company only (live: 7 legacy SC 13D/A rows in 2025Q1) has no FILED BY."""
     raw = legacy13d(A1, date(2023, 1, 4), filer=None)
-    load(con, {A1: ("SC 13D", date(2023, 1, 4), raw)}, quarter="2023q1")
+    load(con, {A1: ("SC 13D", date(2023, 1, 4), raw)})
     d = stake(con, A1)
     assert (d["issuer_cik"], d["filer_cik"]) == (CIK, None)
 
@@ -322,9 +339,40 @@ def test_a_filer_moving_from_13g_to_13d_counts_once_under_13d(con):
     assert (r["holders_13d"], r["holders_13g"]) == (1, 0)
 
 
-def test_a_company_without_filings_has_zero_holders(con):
+def test_no_13dg_data_loaded_is_unknown_not_zero_holders(con):
+    """Review C1: the live DB after migration 14 has no filings until `ingest 13dg` runs."""
     r = screen_rows(con)["ACME"]
+    assert (r["holders_13d"], r["holders_13g"]) == (None, None)
+
+
+def test_an_indexed_quarter_without_filings_for_the_company_has_zero_holders(con):
+    load(con, {})
+    r = screen_rows(con)["ACME"]                                 # AS_OF 2024-09-03, 2024q3 indexed
     assert (r["holders_13d"], r["holders_13g"], r["max_pct_13d"]) == (0, 0, None)
+
+
+def test_a_date_outside_the_indexed_quarters_is_unknown(con):
+    load(con, {}, quarters=("2024q2", "2024q3"))
+    assert screen_rows(con, date(2024, 10, 1))["ACME"]["holders_13d"] is None       # 2024q4 not indexed
+    assert screen_rows(con, date(2024, 3, 29))["ACME"]["holders_13d"] is None       # before 2024q2
+    assert screen_rows(con, date(2024, 5, 1))["ACME"]["holders_13d"] == 0
+
+
+def test_13g_before_the_xml_era_is_unknown(con, monkeypatch):
+    """Legacy 13G is not loaded (user, 2026-11-27): passive holders are known only from 2024-12-18."""
+    assert XML_13G_FROM == date(2024, 12, 18)
+    monkeypatch.setattr(queries, "XML_13G_FROM", XML_13G_FROM)
+    load(con, stakes_docs())
+    r = screen_rows(con)["ACME"]
+    assert (r["holders_13d"], r["holders_13g"], r["max_pct_13g"]) == (1, None, None)
+
+
+def test_the_note_says_when_13dg_is_not_loaded(con, tmp_path):
+    add_buy(con, CIK, "b1")
+    sync_vault(con, tmp_path / "vault", AS_OF)
+    note = (tmp_path / "vault" / "Companies" / "ACME.md").read_text()
+    assert "No Schedule 13D or 13G filings are loaded for 2024-09-03." in note
+    assert dict(split_note(note)[0])["holders_13d"] is None
 
 
 def test_13dg_data_never_changes_status_rank_or_shortlist():
@@ -407,3 +455,16 @@ def test_a_stake_last_filed_over_three_years_ago_is_not_counted(con):
     load(con, docs)
     assert screen_rows(con)["ACME"]["holders_13d"] == 1                       # 2024-09-03: 3.3 years
     assert screen_rows(con, date(2024, 5, 30))["ACME"]["holders_13d"] == 1    # 1,094 days: still counted
+
+
+
+def test_a_row_number_after_the_shares_heading_is_not_read_as_shares():
+    """Review C2. Live: 106 legacy stakes have shares exactly 11, 11 have 12 and 34 have 1: an
+    empty row 11 followed by "12. CHECK BOX", or "1" backtracked out of "12"."""
+    doc = ("<TEXT>CUSIP No. 037833100 (1) NAMES OF REPORTING PERSONS FUND LP "
+           "11 AGGREGATE AMOUNT BENEFICIALLY OWNED BY EACH REPORTING PERSON 12. CHECK BOX IF THE AGGREGATE "
+           "AMOUNT IN ROW (11) EXCLUDES CERTAIN SHARES [ ] 13 PERCENT OF CLASS REPRESENTED BY AMOUNT IN ROW (11) "
+           "7.5% 14 TYPE OF REPORTING PERSON PN</TEXT>")
+    r = s13._parse_text(doc)
+    assert r["pct"] == 7.5
+    assert r["shares"] is None
