@@ -128,7 +128,7 @@ def ftd_acme(symbol="ACME") -> dict[str, bytes]:
 
 
 def quarter(con, period, cusip=ACME_CUSIP):
-    r = con.execute("SELECT holders, shares, holders_new, holders_exited, known_at FROM form13f_quarters "
+    r = con.execute("SELECT holders, shares, known_at FROM form13f_quarters "
                     "WHERE period = ? AND cusip = ?", [period, cusip]).fetchall()
     return r[0] if r else None
 
@@ -181,12 +181,14 @@ def test_an_unknown_window_name_is_refused():
 def test_a_quarter_counts_holders_and_shares_filed_by_its_deadline(con, tmp_path):
     s = load(con, tmp_path)
     assert s.windows == 2 and s.failed == 0
-    assert quarter(con, Q1) == (3, 600, None, None, D1)        # no earlier quarter loaded
+    assert quarter(con, Q1) == (3, 600, D1)
+    early = screen_rows(con, date(2024, 8, 13))["ACME"]       # Q1: no earlier quarter loaded
+    assert (early["inst_holders_new"], early["inst_holders_exited"]) == (None, None)
     # Q2: 1, 4 and 5 hold (3 filed after Aug 14 and is left out).
-    holders, shares, new, exited, known = quarter(con, Q2)
-    assert (holders, shares, known) == (3, 1010, D2)
+    assert quarter(con, Q2) == (3, 1010, D2)
     # Among managers with a report in both quarters (1, 2, 4): 4 is new, 2 left. 5 is not "new".
-    assert (new, exited) == (1, 1)
+    r = screen_rows(con)["ACME"]
+    assert (r["inst_holders_new"], r["inst_holders_exited"]) == (1, 1)
     p = con.execute("SELECT filers, notices, restatements, new_holdings, late, deadline FROM form13f_periods "
                     "WHERE period = ?", [Q2]).fetchall()[0]
     assert p == (4, 0, 0, 0, 1, D2)
@@ -209,7 +211,7 @@ def test_a_line_whose_price_is_far_from_the_others_is_dropped_and_counted(con, t
                 hr("0000000008-24-000001", 8, date(2024, 5, 1), Q1, [(ACME_CUSIP, 1_000_000, "SH", "", "COM", 1680)])])
     load(con, tmp_path, {"01mar2024-31may2024_form13f.zip": q})
     assert quarter(con, Q1)[:2] == (6, 670)
-    assert con.execute("SELECT outlier_rows FROM form13f_periods").fetchall()[0][0] == 2
+    assert con.execute("SELECT outlier_rows, outlier_filers FROM form13f_periods").fetchall()[0] == (2, 2)
 
 
 def test_a_line_kept_as_thousands_from_a_filing_whose_other_lines_are_outliers_is_dropped(con, tmp_path):
@@ -226,6 +228,23 @@ def test_a_line_kept_as_thousands_from_a_filing_whose_other_lines_are_outliers_i
                     (other, 4_000_000, "SH", "", "COM", 400)]))             # 1e-7 of $400: dropped
     load(con, tmp_path, {"01mar2024-31may2024_form13f.zip": zip13f(rows)})
     assert quarter(con, Q1)[:2] == (4, 1000)
+    assert con.execute("SELECT outlier_rows, outlier_filers FROM form13f_periods").fetchall()[0] == (2, 1)
+
+
+def test_a_report_dropped_whole_is_absent_not_a_manager_that_sold_out(con, tmp_path):
+    """Review C1 fix: a report dropped whole is unknown, so its manager is neither in the quarter
+    nor among the managers that left."""
+    other = "594918104"
+    good = [hr(f"000000000{i}-24-00000{q}", i, date(2024, 5 + 3 * (q - 1), 1), per,
+               [(ACME_CUSIP, 100 * i, "SH", "", "COM", 1200 * i), (other, 10 * i, "SH", "", "COM", 4000 * i)])
+            for i in range(1, 4) for q, per in ((1, Q1), (2, Q2))]
+    q1 = [f for f in good if f["period"] == Q1] + [hr("0000000009-24-000001", 9, date(2024, 5, 1), Q1,
+                                                    [(ACME_CUSIP, 50, "SH", "", "COM", 600)])]
+    q2 = [f for f in good if f["period"] == Q2] + [hr("0000000009-24-000002", 9, date(2024, 8, 1), Q2,
+                                                    [(ACME_CUSIP, 50_000_000, "SH", "", "COM", 600)])]
+    load(con, tmp_path, {"01mar2024-31may2024_form13f.zip": zip13f(q1), "01jun2024-31aug2024_form13f.zip": zip13f(q2)})
+    r = screen_rows(con)["ACME"]
+    assert (r["inst_holders"], r["inst_holders_new"], r["inst_holders_exited"]) == (3, 0, 0)
 
 
 def test_a_quarter_without_on_time_reports_is_never_read(con, tmp_path):
@@ -298,7 +317,8 @@ def test_windows_load_in_date_order_so_changes_see_the_quarter_before(con, tmp_p
     w = two_quarters()
     later_first = dict(reversed(list(w.items())))
     load(con, tmp_path, later_first)
-    assert quarter(con, Q2)[2:4] == (1, 1)
+    r = screen_rows(con)["ACME"]
+    assert (r["inst_holders_new"], r["inst_holders_exited"]) == (1, 1)
 
 
 def test_amendments_are_read_from_the_cover_page_not_the_submission_type(con, tmp_path):

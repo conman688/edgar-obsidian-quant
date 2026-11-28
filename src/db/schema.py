@@ -412,16 +412,11 @@ CREATE TABLE IF NOT EXISTS cboe_daily (
 -- M12-B6: 13F institutional holdings, one row per quarter and CUSIP. A quarter counts only the
 -- reports filed by its deadline (quarter end + 45 days, next business day), so a row never
 -- changes and is known from that deadline. Shares on SH lines only: no options, no PRN.
--- holders_new / holders_exited count only managers with a report in both this quarter and
--- the one before; NULL when the quarter before was not loaded. A CUSIP every such manager left
--- has a row with holders 0.
 CREATE TABLE IF NOT EXISTS form13f_quarters (
     period          DATE    NOT NULL,
     cusip           VARCHAR NOT NULL,
     holders         INTEGER NOT NULL,
     shares          BIGINT  NOT NULL,
-    holders_new     INTEGER,
-    holders_exited  INTEGER,
     title           VARCHAR,            -- the most common title of class (ADR, CL A, COM, ...)
     known_at        DATE    NOT NULL,
     PRIMARY KEY (period, cusip)
@@ -439,14 +434,14 @@ CREATE TABLE IF NOT EXISTS form13f_periods (
     late          INTEGER   NOT NULL,   -- reports for the quarter filed after the deadline: not used
     elsewhere     INTEGER   NOT NULL,   -- on-time reports for another quarter found in this window
     bad_cusip_rows INTEGER  NOT NULL,   -- SH lines whose CUSIP is not 9 characters or fails its check digit
-    outlier_rows  INTEGER   NOT NULL,   -- SH lines dropped: price (value / shares) far from the CUSIP's median
+    outlier_rows  INTEGER   NOT NULL,   -- SH lines dropped: price (value / shares) off the CUSIP's median in the filing's unit
+    outlier_filers INTEGER  NOT NULL,   -- reports dropped whole: as many lines off the median as in the filing's unit
     cusips        INTEGER   NOT NULL,
-    has_changes   BOOLEAN   NOT NULL,   -- the quarter before was loaded: new/exited are counted
     loaded_at     TIMESTAMP NOT NULL
 );
--- Every loaded quarter's positions per manager, so a quarter's new/exited counts depend only on
--- its own zip and the one before, in any load order. cusip NULL marks a manager with a report
--- and no SH lines.
+-- Every loaded quarter's positions per manager. New and exited managers are counted from it per
+-- company when read, across the company's CUSIP at each quarter. cusip NULL marks a manager with
+-- a report and no SH lines; a report dropped whole has no rows.
 CREATE TABLE IF NOT EXISTS form13f_positions (
     period     DATE    NOT NULL,
     filer_cik  INTEGER NOT NULL,

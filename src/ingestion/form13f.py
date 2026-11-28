@@ -95,11 +95,6 @@ def _quarter_end(y: int, q: int) -> date:
     return date(y, 3 * q, calendar.monthrange(y, 3 * q)[1])
 
 
-def _prev_quarter(period: date) -> date:
-    q = (period.month - 1) // 3 + 1
-    return _quarter_end(period.year - 1, 4) if q == 1 else _quarter_end(period.year, q - 1)
-
-
 def home_period(start: date, end: date) -> date:
     """The one quarter whose deadline falls inside the window."""
     homes = [_quarter_end(y, q) for y in range(start.year - 1, end.year + 1) for q in range(1, 5)
@@ -261,42 +256,6 @@ def _effective(ontime: list[tuple], cover: dict) -> tuple[list[tuple[str, int]],
     return eff, {**counts, "filers": len(by_filer)}
 
 
-def _apply_changes(con: duckdb.DuckDBPyConnection, period: date) -> None:
-    """holders_new / holders_exited for `period` from the stored positions of it and the quarter
-    before. Run whenever either quarter is (re)loaded, so the result is the same in any order."""
-    prev = _prev_quarter(period)
-    has_prev = con.execute("SELECT count(*) > 0 FROM form13f_positions WHERE period = ?", [prev]).fetchall()[0][0]
-    known = con.execute("SELECT deadline FROM form13f_periods WHERE period = ?", [period]).fetchall()[0][0]
-    con.execute("DELETE FROM form13f_quarters WHERE period = ? AND holders = 0", [period])
-    con.execute("UPDATE form13f_quarters SET holders_new = NULL, holders_exited = NULL WHERE period = ?", [period])
-    if has_prev:
-        con.execute("""
-            CREATE OR REPLACE TEMP TABLE f13_both AS
-            SELECT DISTINCT filer_cik FROM form13f_positions WHERE period = $p
-            INTERSECT SELECT DISTINCT filer_cik FROM form13f_positions WHERE period = $q""", {"p": period, "q": prev})
-        con.execute("""
-            CREATE OR REPLACE TEMP TABLE f13_chg AS
-            WITH cur AS (SELECT filer_cik, cusip FROM form13f_positions WHERE period = $p AND cusip IS NOT NULL
-                         AND filer_cik IN (SELECT filer_cik FROM f13_both)),
-                 old AS (SELECT filer_cik, cusip FROM form13f_positions WHERE period = $q AND cusip IS NOT NULL
-                         AND filer_cik IN (SELECT filer_cik FROM f13_both)),
-                 n AS (SELECT cusip, count(*) AS n FROM (SELECT * FROM cur EXCEPT SELECT * FROM old) GROUP BY cusip),
-                 g AS (SELECT cusip, count(*) AS n FROM (SELECT * FROM old EXCEPT SELECT * FROM cur) GROUP BY cusip)
-            SELECT cusip, coalesce(n.n, 0) AS new_, coalesce(g.n, 0) AS gone FROM n FULL JOIN g USING (cusip)""",
-                    {"p": period, "q": prev})
-        con.execute("""UPDATE form13f_quarters q SET holders_new = coalesce(c.new_, 0), holders_exited = coalesce(c.gone, 0)
-                       FROM (SELECT q2.cusip, c.new_, c.gone FROM form13f_quarters q2 LEFT JOIN f13_chg c USING (cusip)
-                             WHERE q2.period = $p) c
-                       WHERE q.period = $p AND q.cusip = c.cusip""", {"p": period})
-        con.execute("""INSERT INTO form13f_quarters
-                       SELECT $p, c.cusip, 0, 0, 0, c.gone, NULL, $k FROM f13_chg c
-                       WHERE c.gone > 0 AND c.cusip NOT IN (SELECT cusip FROM form13f_quarters WHERE period = $p)""",
-                    {"p": period, "k": known})
-        con.execute("DROP TABLE IF EXISTS f13_both; DROP TABLE IF EXISTS f13_chg")
-    n = con.execute("SELECT count(*) FROM form13f_quarters WHERE period = ?", [period]).fetchall()[0][0]
-    con.execute("UPDATE form13f_periods SET has_changes = ?, cusips = ? WHERE period = ?", [has_prev, n, period])
-
-
 def load_window(con: duckdb.DuckDBPyConnection, zip_path: Path, name: str, work: Path,
                 loaded_at: datetime, sha256: str | None = None) -> dict:
     """Aggregate one data-set zip into its quarter's positions and rows and mark it done, in one
@@ -355,19 +314,45 @@ def load_window(con: duckdb.DuckDBPyConnection, zip_path: Path, name: str, work:
                 WHERE upper(trim(i.SSHPRNAMTTYPE)) = 'SH' AND coalesce(trim(i.PUTCALL), '') = ''""")
             bad = sum(n for c, n in con.execute("SELECT cusip, count(*) FROM f13_rows GROUP BY cusip").fetchall()
                       if not valid_cusip(c or ""))
-            # Every filer prices at the same quarter end, so a line whose price (value / shares)
-            # is off the CUSIP's median by more than OUTLIER_DECADES is a filer error in shares
-            # or value (live: 6.4B AAPL shares worth $22M). That close to 1,000x off is value in
-            # thousands (the unit before 2023-01-03, or a filer that kept it), and is kept.
+            # Every filer prices at the same quarter end, so a line's price (value / shares) sits at
+            # the CUSIP's median, or 1,000x off it when the filer reports value in thousands (the
+            # unit before 2023-01-03, or a filer that kept it). Each priced line gets its unit (0,
+            # -3 or +3 decades, within OUTLIER_DECADES) or none (an error in shares or value; live:
+            # 6.4B AAPL shares worth $22M). A filing has one unit, its most common: a line in
+            # another unit is dropped. When a filing has as many lines without a unit as in it, the
+            # whole filing is dropped (live: XXEC, 19 of 23 lines 1e-4..1e-6 of the median and 4
+            # in the 1,000x band from shares x1000). Lines without a value stay.
             d = OUTLIER_DECADES
-            outlier_where = f"""value > 0 AND shares > 0 AND m.px > 0 AND NOT (
-                abs(log10(value / shares / m.px)) <= {d} OR abs(log10(value / shares / m.px) + 3) <= {d}
-                OR abs(log10(value / shares / m.px) - 3) <= {d})"""
             con.execute("""CREATE OR REPLACE TEMP TABLE f13_px AS SELECT cusip, median(value / shares) AS px
                            FROM f13_rows WHERE value > 0 AND shares > 0 GROUP BY cusip""")
-            outliers = con.execute(f"SELECT count(*) FROM f13_rows r JOIN f13_px m USING (cusip) WHERE {outlier_where}"
-                                   ).fetchall()[0][0]
-            con.execute(f"DELETE FROM f13_rows r USING f13_px m WHERE m.cusip = r.cusip AND {outlier_where}")
+            con.execute(f"""
+                CREATE OR REPLACE TEMP TABLE f13_u AS
+                WITH a AS (SELECT r.*, CASE WHEN r.value > 0 AND r.shares > 0 AND m.px > 0
+                                            THEN log10(r.value / r.shares / m.px) END AS l
+                           FROM f13_rows r LEFT JOIN f13_px m USING (cusip))
+                SELECT * EXCLUDE (l), CASE WHEN l IS NULL THEN NULL WHEN abs(l) <= {d} THEN 0
+                                           WHEN abs(l + 3) <= {d} THEN -3 WHEN abs(l - 3) <= {d} THEN 3
+                                           ELSE 99 END AS u
+                FROM a""")
+            con.execute("""
+                CREATE OR REPLACE TEMP TABLE f13_unit AS
+                WITH c AS (SELECT filer, u, count(*) AS n FROM f13_u WHERE u IS NOT NULL GROUP BY filer, u)
+                SELECT filer,
+                       arg_max(u, n * 4 + CASE u WHEN 0 THEN 2 WHEN -3 THEN 1 ELSE 0 END) FILTER (WHERE u <> 99) AS unit,
+                       coalesce(max(n) FILTER (WHERE u <> 99), 0) AS n_unit,
+                       coalesce(sum(n) FILTER (WHERE u = 99), 0) AS n_bad
+                FROM c GROUP BY filer""")
+            n_lines = con.execute("SELECT count(*) FROM f13_rows").fetchall()[0][0]
+            dropped_filers = con.execute("SELECT count(*) FROM f13_unit WHERE n_bad > 0 AND n_bad >= n_unit"
+                                         ).fetchall()[0][0]
+            con.execute("""
+                CREATE OR REPLACE TEMP TABLE f13_rows AS
+                SELECT r.filer, r.cusip, r.shares, r.title, r.value FROM f13_u r LEFT JOIN f13_unit f USING (filer)
+                WHERE coalesce(NOT (f.n_bad > 0 AND f.n_bad >= f.n_unit), true)
+                  AND (r.u IS NULL OR r.u = f.unit)""")
+            outliers = n_lines - con.execute("SELECT count(*) FROM f13_rows").fetchall()[0][0]
+            con.execute("DELETE FROM f13_eff WHERE filer IN (SELECT filer FROM f13_unit "
+                        "WHERE n_bad > 0 AND n_bad >= n_unit)")
             con.execute("DELETE FROM form13f_positions WHERE period = ?", [home])
             con.execute("""
                 INSERT INTO form13f_positions
@@ -379,28 +364,25 @@ def load_window(con: duckdb.DuckDBPyConnection, zip_path: Path, name: str, work:
             con.execute("""
                 INSERT INTO form13f_quarters
                 WITH t AS (SELECT cusip, mode(title ORDER BY title) AS title FROM f13_rows GROUP BY cusip)
-                SELECT $p, cusip, count(*), sum(shares), NULL, NULL, t.title, $k
+                SELECT $p, cusip, count(*), sum(shares), t.title, $k
                 FROM form13f_positions LEFT JOIN t USING (cusip)
                 WHERE period = $p AND cusip IS NOT NULL GROUP BY cusip, t.title""", {"p": home, "k": due})
+            n_cusips = con.execute("SELECT count(*) FROM form13f_quarters WHERE period = ?", [home]).fetchall()[0][0]
             con.execute("INSERT OR REPLACE INTO form13f_periods VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         [home, due, name, counts["filers"], notices, counts["restatements"], counts["new_holdings"],
-                         counts["other"], late, elsewhere, bad, outliers, 0, False, loaded_at])
-            _apply_changes(con, home)
-            nxt = _quarter_end(home.year + 1, 1) if home.month == 12 else _quarter_end(home.year, home.month // 3 + 1)
-            if con.execute("SELECT count(*) > 0 FROM form13f_periods WHERE period = ?", [nxt]).fetchall()[0][0]:
-                _apply_changes(con, nxt)
-            n_cusips = con.execute("SELECT cusips FROM form13f_periods WHERE period = ?", [home]).fetchall()[0][0]
-            for t in ("f13_eff", "f13_rows", "f13_px"):
+                         counts["other"], late, elsewhere, bad, outliers, dropped_filers, n_cusips, loaded_at])
+            for t in ("f13_eff", "f13_rows", "f13_px", "f13_u", "f13_unit"):
                 con.execute(f"DROP TABLE IF EXISTS {t}")
             ledger.mark(con, f"13f@{name}", STAGE, SCHEMA_VERSION, "done", input_sha256=sha256,
                         output_ref=f"period={home};cusips={n_cusips};filers={counts['filers']};late={late};"
-                                   f"elsewhere={elsewhere};bad_cusip_rows={bad};outlier_rows={outliers}")
+                                   f"elsewhere={elsewhere};bad_cusip_rows={bad};outlier_rows={outliers};"
+                                   f"outlier_filers={dropped_filers}")
             con.commit()
         except BaseException:
             con.rollback()
             raise
         return {"period": home, "cusips": n_cusips, "filers": counts["filers"], "late": late,
-                "elsewhere": elsewhere, "bad_cusip_rows": bad, "outlier_rows": outliers}
+                "elsewhere": elsewhere, "bad_cusip_rows": bad, "outlier_rows": outliers, "outlier_filers": dropped_filers}
     except (duckdb.Error, ValueError, KeyError, zipfile.BadZipFile) as e:
         raise Form13fError(f"{name}: {type(e).__name__}: {e}"[:500]) from None
     finally:
