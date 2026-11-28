@@ -212,6 +212,22 @@ def test_a_line_whose_price_is_far_from_the_others_is_dropped_and_counted(con, t
     assert con.execute("SELECT outlier_rows FROM form13f_periods").fetchall()[0][0] == 2
 
 
+def test_a_line_kept_as_thousands_from_a_filing_whose_other_lines_are_outliers_is_dropped(con, tmp_path):
+    """Review C1. Live Jun-Aug 2026, XXEC, Inc. (CIK 1828822): 19 of its 23 lines are 1e-4..1e-6 of the
+    median price and dropped. 187.2M GNTX shares worth $7.7M (1.6e-3 of the median) and 77.3M
+    HTFL shares (1.1e-3) fall in the 1,000x band and are kept: GNTX 392.5M 13F shares against
+    205.3M outstanding (inst_pct 1.91; 1.00 without that line)."""
+    other = "594918104"
+    rows = [hr(f"000000000{i}-24-000001", i, date(2024, 5, 1), Q1,
+               [(ACME_CUSIP, 100 * i, "SH", "", "COM", 1200 * i), (other, 10 * i, "SH", "", "COM", 4000 * i)])
+            for i in range(1, 5)]
+    rows.append(hr("0000000009-24-000001", 9, date(2024, 5, 1), Q1,
+                   [(ACME_CUSIP, 1_000_000, "SH", "", "COM", 12_000),       # 1e-3 of $12: shares x1000
+                    (other, 4_000_000, "SH", "", "COM", 400)]))             # 1e-7 of $400: dropped
+    load(con, tmp_path, {"01mar2024-31may2024_form13f.zip": zip13f(rows)})
+    assert quarter(con, Q1)[:2] == (4, 1000)
+
+
 def test_a_quarter_without_on_time_reports_is_never_read(con, tmp_path):
     """Live: the first zip (2013q2) has no Q1 2013 report filed by 2013-05-15; SEC's data sets
     begin with the XML filings. Such a quarter is stored but not shown as 0 holders."""
@@ -402,6 +418,45 @@ def test_an_old_issuer_under_a_reused_ticker_never_maps_to_the_new_company(con, 
     load(con, tmp_path, w, ftd)
     r = screen_rows(con)["ACME"]          # Q1 is the newest quarter loaded; shares are known by AS_OF
     assert r["inst_period"] == Q1 and r["inst_holders"] == 1 and r["inst_pct"] == pytest.approx(70 / 1_000_000)
+
+
+def test_a_same_ticker_cusip_change_makes_no_new_or_exited_holders(con, tmp_path):
+    """Review C2. Live: after a CUSIP change the company's holders under the new CUSIP are a median
+    94% "new" (baseline 12.9%), with ~0 exited: HON 2026-06-30 1,902 new of 1,988; LRCX 2024-12-31
+    1,244 of 1,501; GE 2021-09-30 1,283 of 1,383 (525 company-quarters with 20+ holders)."""
+    old = "594918104"
+    w = {"01mar2024-31may2024_form13f.zip": zip13f([hr("0000000001-24-000001", 1, date(2024, 5, 1), Q1,
+                                                       [(old, 70, "SH", "")])]),
+         "01jun2024-31aug2024_form13f.zip": zip13f([hr("0000000001-24-000002", 1, date(2024, 8, 1), Q2,
+                                                       [(ACME_CUSIP, 80, "SH", "")])])}
+    ftd = {"cnsfails202301a.zip": zipftd([(date(2023, 1, 5), old, "ACME", "ACME CORP"),
+                                          (date(2024, 4, 20), old, "ACME", "ACME CORP")]),
+           "cnsfails202405a.zip": zipftd([(date(2024, 5, 1), ACME_CUSIP, "ACME", "ACME CORP NEW")])}
+    load(con, tmp_path, w, ftd)
+    r = screen_rows(con)["ACME"]
+    assert r["inst_period"] == Q2 and r["inst_holders"] == 1
+    assert (r["inst_holders_new"], r["inst_holders_exited"]) == (0, 0)      # manager 1 held it all along
+
+
+def test_a_cusip_that_left_the_ticker_never_stands_for_the_company_before_it(con, tmp_path):
+    """Review C3. Live META (CIK 1326801): the Roundhill Metaverse ETF (53656F417) traded as META
+    2021-07..2022-01, then METV. It is the first CUSIP under META, so it was valid from year 1 to
+    2022-04-30: Meta's 2013-06..2022-03 quarters read the ETF (2022-03-31: 84 holders, 4.5M shares;
+    Meta's own 30303M102, under FB until 2022-06: 3,069 holders, 1.65B shares)."""
+    etf = "594918104"
+    w = {"01mar2024-31may2024_form13f.zip": zip13f([
+        hr("0000000001-24-000001", 1, date(2024, 5, 1), Q1, [(ACME_CUSIP, 70, "SH", "")]),
+        hr("0000000002-24-000001", 2, date(2024, 5, 1), Q1, [(ACME_CUSIP, 30, "SH", "")]),
+        hr("0000000003-24-000001", 3, date(2024, 5, 1), Q1, [(etf, 9, "SH", "")])])}
+    ftd = {"cnsfails202306a.zip": zipftd([(date(2023, 6, 5), etf, "ACME", "ROUNDHILL ACME ETF"),
+                                          (date(2023, 6, 6), ACME_CUSIP, "OLDT", "ACME CORP")]),
+           "cnsfails202401b.zip": zipftd([(date(2024, 1, 31), etf, "ACME", "ROUNDHILL ACME ETF")]),
+           "cnsfails202402a.zip": zipftd([(date(2024, 2, 5), etf, "ACMV", "ROUNDHILL ACME ETF")]),
+           "cnsfails202405b.zip": zipftd([(date(2024, 5, 31), ACME_CUSIP, "OLDT", "ACME CORP")]),
+           "cnsfails202406a.zip": zipftd([(date(2024, 6, 3), ACME_CUSIP, "ACME", "ACME CORP")])}
+    load(con, tmp_path, w, ftd)
+    r = screen_rows(con, date(2024, 6, 3))["ACME"]                # Q1, read after May 15
+    assert r["inst_period"] == Q1 and r["inst_holders"] == 2
 
 
 def test_a_ticker_two_companies_hold_maps_to_neither(con, tmp_path):
