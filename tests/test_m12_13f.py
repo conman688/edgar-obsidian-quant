@@ -32,7 +32,7 @@ COVER_HEAD = ("ACCESSION_NUMBER\tREPORTCALENDARORQUARTER\tISAMENDMENT\tAMENDMENT
 INFO_HEAD = ("ACCESSION_NUMBER\tINFOTABLE_SK\tNAMEOFISSUER\tTITLEOFCLASS\tCUSIP\tFIGI\tVALUE\tSSHPRNAMT\tSSHPRNAMTTYPE\t"
              "PUTCALL\tINVESTMENTDISCRETION\tOTHERMANAGER\tVOTING_AUTH_SOLE\tVOTING_AUTH_SHARED\tVOTING_AUTH_NONE")
 FTD_HEAD = "SETTLEMENT DATE|CUSIP|SYMBOL|QUANTITY (FAILS)|DESCRIPTION|PRICE"
-ACME_CUSIP = "000123104"
+ACME_CUSIP = "037833100"         # a valid check digit (AAPL's CUSIP, used here for ACME)
 
 
 def dmy(d: date) -> str:
@@ -40,18 +40,22 @@ def dmy(d: date) -> str:
 
 
 def zip13f(filings: list[dict]) -> bytes:
-    """A data-set zip. Each filing: accn, filed, type, filer, period, amend (type or ""),
-    report ("13F HOLDINGS REPORT" by default), rows [(cusip, shares, "SH"/"PRN", putcall)]."""
+    """A data-set zip. Each filing: accn, filed, type, filer, period, amend (type or ""), isamend
+    ("Y", or "" as most real originals leave it), amend_no, report ("13F HOLDINGS REPORT" by
+    default), rows [(cusip, shares, "SH"/"PRN", putcall[, title of class])]."""
     sub, cov, info = [SUB_HEAD], [COVER_HEAD], [INFO_HEAD]
     sk = 1
     for f in filings:
         sub.append(f"{f['accn']}\t{dmy(f['filed'])}\t{f['type']}\t{f['filer']:010d}\t{dmy(f['period'])}")
         amend = f.get("amend", "")
-        cov.append("\t".join([f["accn"], dmy(f["period"]), "Y" if amend else "", "1" if amend else "", amend, "", "", "",
+        isamend = f.get("isamend", "Y" if amend else "")
+        cov.append("\t".join([f["accn"], dmy(f["period"]), isamend, str(f.get("amend_no", 1)) if isamend else "", amend,
+                              "", "", "",
                               "", f"MANAGER {f['filer']}", "1 MAIN ST", "", "CITY", "NY", "10001",
                               f.get("report", "13F HOLDINGS REPORT"), "028-00001", "", "", "N", ""]))
-        for cusip, shares, kind, putcall in f.get("rows", []):
-            info.append("\t".join([f["accn"], str(sk), "ACME CORP", "COM", cusip, "", str(shares * 12), str(shares),
+        for cusip, shares, kind, putcall, *title in f.get("rows", []):
+            info.append("\t".join([f["accn"], str(sk), "ACME CORP", title[0] if title else "COM", cusip, "",
+                                   str(shares * 12), str(shares),
                                    kind, putcall, "SOLE", "", str(shares), "0", "0"]))
             sk += 1
     buf = io.BytesIO()
@@ -72,9 +76,9 @@ def zipftd(rows: list[tuple[date, str, str, str]]) -> bytes:
     return buf.getvalue()
 
 
-def hr(accn, filer, filed, period, rows, type_="13F-HR", amend="", report="13F HOLDINGS REPORT"):
+def hr(accn, filer, filed, period, rows, type_="13F-HR", amend="", report="13F HOLDINGS REPORT", **kw):
     return {"accn": accn, "filer": filer, "filed": filed, "period": period, "rows": rows, "type": type_,
-            "amend": amend, "report": report}
+            "amend": amend, "report": report, **kw}
 
 
 class FakeSec:
@@ -192,7 +196,7 @@ def test_a_restatement_replaces_and_a_new_holdings_amendment_adds(con, tmp_path)
         hr("0000000001-24-000001", 1, date(2024, 5, 1), Q1, [(ACME_CUSIP, 100, "SH", "")]),
         hr("0000000001-24-000009", 1, date(2024, 5, 10), Q1, [(ACME_CUSIP, 150, "SH", "")],
            type_="13F-HR/A", amend="RESTATEMENT"),
-        hr("0000000001-24-000010", 1, date(2024, 5, 12), Q1, [("888888888", 7, "SH", "")],
+        hr("0000000001-24-000010", 1, date(2024, 5, 12), Q1, [("594918104", 7, "SH", "")],
            type_="13F-HR/A", amend="NEW HOLDINGS"),
         hr("0000000001-24-000011", 1, date(2024, 5, 20), Q1, [(ACME_CUSIP, 999, "SH", "")],   # after the deadline
            type_="13F-HR/A", amend="RESTATEMENT"),
@@ -209,7 +213,7 @@ def test_a_restatement_replaces_and_a_new_holdings_amendment_adds(con, tmp_path)
     ])
     load(con, tmp_path, {"01mar2024-31may2024_form13f.zip": q})
     assert quarter(con, Q1)[:2] == (3, 150 + 50 + 12)
-    assert quarter(con, Q1, "888888888")[:2] == (1, 7)
+    assert quarter(con, Q1, "594918104")[:2] == (1, 7)
     p = con.execute("SELECT filers, notices, restatements, new_holdings, late FROM form13f_periods").fetchall()[0]
     assert p == (3, 1, 2, 2, 1)
 
@@ -250,6 +254,81 @@ def test_windows_load_in_date_order_so_changes_see_the_quarter_before(con, tmp_p
     assert quarter(con, Q2)[2:4] == (1, 1)
 
 
+def test_amendments_are_read_from_the_cover_page_not_the_submission_type(con, tmp_path):
+    """Review (B6 design, 1): ISAMENDMENT is empty on most real originals, and one real 13F-HR is
+    ISAMENDMENT Y / NEW HOLDINGS. An amendment without a type is counted and left out."""
+    q = zip13f([
+        hr("0000000001-24-000001", 1, date(2024, 5, 1), Q1, [(ACME_CUSIP, 100, "SH", "")]),
+        hr("0000000001-24-000002", 1, date(2024, 5, 2), Q1, [(ACME_CUSIP, 30, "SH", "")],
+           type_="13F-HR", amend="NEW HOLDINGS", isamend="Y"),
+        hr("0000000001-24-000003", 1, date(2024, 5, 3), Q1, [(ACME_CUSIP, 999, "SH", "")],
+           type_="13F-HR/A", amend="", isamend="Y"),
+        hr("0000000002-24-000001", 2, date(2024, 5, 1), Q1, [(ACME_CUSIP, 5, "SH", "")], isamend="N"),
+    ])
+    load(con, tmp_path, {"01mar2024-31may2024_form13f.zip": q})
+    assert quarter(con, Q1)[:2] == (2, 135)
+    p = con.execute("SELECT filers, restatements, new_holdings, other_amendments FROM form13f_periods").fetchall()[0]
+    assert p == (2, 0, 1, 1)
+
+
+@pytest.mark.parametrize("flip", [False, True])
+def test_same_day_amendments_follow_the_amendment_number_not_the_accession(con, tmp_path, flip):
+    """Review (B6 design, 2): accession numbers are not chronological across filing agents."""
+    fs = [hr("0000000001-24-000001", 1, date(2024, 5, 1), Q1, [(ACME_CUSIP, 100, "SH", "")]),
+          hr("0000000009-24-000005", 1, date(2024, 5, 9), Q1, [(ACME_CUSIP, 111, "SH", "")],
+             type_="13F-HR/A", amend="RESTATEMENT", amend_no=1),
+          hr("0000000003-24-000001", 1, date(2024, 5, 9), Q1, [(ACME_CUSIP, 222, "SH", "")],
+             type_="13F-HR/A", amend="RESTATEMENT", amend_no=2),
+          hr("0000000002-24-000001", 1, date(2024, 5, 9), Q1, [("594918104", 1, "SH", "")],
+             type_="13F-HR/A", amend="NEW HOLDINGS", amend_no=3),
+          hr("0000000008-24-000001", 1, date(2024, 5, 9), Q1, [("594918104", 50, "SH", "")],
+             type_="13F-HR/A", amend="NEW HOLDINGS", amend_no=1)]       # before restatement no. 2
+    load(con, tmp_path, {"01mar2024-31may2024_form13f.zip": zip13f(fs[::-1] if flip else fs)})
+    assert quarter(con, Q1)[:2] == (1, 222)
+    assert quarter(con, Q1, "594918104")[:2] == (1, 1)
+
+
+def test_cusips_are_upper_cased_and_bad_ones_counted(con, tmp_path):
+    """Review (B6 design, 3): 6,986 real SH rows in Jun-Aug 2026 had lower-case CUSIPs. A CUSIP
+    that is not 9 characters or fails its check digit is counted (it can never map)."""
+    q = zip13f([hr("0000000001-24-000001", 1, date(2024, 5, 1), Q1,
+                   [("12345678a", 1, "SH", ""), ("12345", 1, "SH", ""), ("037833109", 1, "SH", "")]),
+                hr("0000000002-24-000001", 2, date(2024, 5, 1), Q1, [("12345678A", 2, "SH", "")])])
+    load(con, tmp_path, {"01mar2024-31may2024_form13f.zip": q})
+    assert quarter(con, Q1, "12345678A")[:2] == (2, 3)
+    assert con.execute("SELECT bad_cusip_rows FROM form13f_periods").fetchall()[0][0] == 4
+
+
+@pytest.mark.parametrize("cusip, ok", [("037833100", True), ("594918104", True), ("38259P508", True),
+                                       ("037833109", False), ("12345678A", False), ("0378331", False)])
+def test_cusip_check_digit(cusip, ok):
+    assert f13.valid_cusip(cusip) is ok
+
+
+def test_a_report_for_another_quarter_filed_on_time_in_this_window_is_counted(con, tmp_path):
+    """Review (B6 design, 1): every report filed by its deadline should sit in its quarter's own
+    zip; one that does not would be lost, so it is counted (0 on real data is the check)."""
+    q = zip13f([hr("0000000001-24-000001", 1, date(2024, 5, 1), Q1, [(ACME_CUSIP, 1, "SH", "")]),
+                hr("0000000002-24-000001", 2, date(2024, 5, 31), date(2024, 5, 31), [(ACME_CUSIP, 1, "SH", "")])])
+    load(con, tmp_path, {"01mar2024-31may2024_form13f.zip": q})
+    assert con.execute("SELECT elsewhere FROM form13f_periods").fetchall()[0][0] == 1
+
+
+def test_loading_the_zips_in_reverse_order_gives_the_same_tables(tmp_path):
+    """Review (B6 design, 5): a quarter's rows depend only on its zip and the one before."""
+    def tables(order, d):
+        c = connect(":memory:")
+        w = two_quarters()
+        names = list(w)[::-1] if order else list(w)
+        for n in names:                                   # one run per zip, in the given order
+            f13.load(c, FakeSec({n: w[n]}, ftd_acme()), d, now=datetime(2026, 11, 27, 12))
+        return (c.execute("SELECT * FROM form13f_quarters ORDER BY ALL").fetchall(),
+                c.execute("SELECT * EXCLUDE (loaded_at) FROM form13f_periods ORDER BY ALL").fetchall())
+    rev, fwd = tables(True, tmp_path / "a"), tables(False, tmp_path / "b")
+    assert rev == fwd
+    assert any(r[4] is not None for r in fwd[0])           # Q2's new/exited were counted
+
+
 # --- CUSIP to company ---------------------------------------------------------------
 
 def test_fails_to_deliver_files_give_each_cusip_its_symbols(con, tmp_path):
@@ -263,14 +342,47 @@ def test_fails_to_deliver_files_give_each_cusip_its_symbols(con, tmp_path):
                     (ACME_CUSIP, "ACME", date(2024, 7, 1), date(2024, 7, 1))]
 
 
-def test_an_old_cusip_whose_ticker_was_reused_never_maps_to_the_new_issuer(con, tmp_path):
-    ftd = {"cnsfails201501a.zip": zipftd([(date(2015, 1, 5), "777777107", "ACME", "OLD ACME MINING")]),
-           "cnsfails202407a.zip": zipftd([(date(2024, 7, 1), ACME_CUSIP, "ACME", "ACME CORP COM")])}
-    load(con, tmp_path, {}, ftd)
-    assert con.execute(f"SELECT cik, cusip FROM ({f13.cusip_cik_sql()})").fetchall() == [(CIK, ACME_CUSIP)]
+# --- screen ------------------------------------------------------------------------
+
+def test_a_same_ticker_cusip_change_keeps_the_history(con, tmp_path):
+    """Review (B6 design, 4): a reverse split or reorganisation changes the CUSIP, not the ticker."""
+    old = "594918104"
+    w = {"01mar2024-31may2024_form13f.zip": zip13f([hr("0000000001-24-000001", 1, date(2024, 5, 1), Q1,
+                                                       [(old, 70, "SH", "")])]),
+         "01jun2024-31aug2024_form13f.zip": zip13f([hr("0000000001-24-000002", 1, date(2024, 8, 1), Q2,
+                                                       [(ACME_CUSIP, 80, "SH", "")])])}
+    ftd = {"cnsfails202301a.zip": zipftd([(date(2023, 1, 5), old, "ACME", "ACME CORP"),
+                                          (date(2024, 4, 20), old, "ACME", "ACME CORP")]),
+           "cnsfails202405a.zip": zipftd([(date(2024, 5, 1), ACME_CUSIP, "ACME", "ACME CORP NEW")])}
+    load(con, tmp_path, w, ftd)
+    assert screen_rows(con, date(2024, 6, 3))["ACME"]["inst_holders"] == 1          # Q1, the old CUSIP
+    r = screen_rows(con)["ACME"]
+    assert r["inst_period"] == Q2 and r["inst_pct"] == pytest.approx(80 / 1_000_000)
 
 
-# --- screen ---------------------------------------------------------------------------
+def test_an_old_issuer_under_a_reused_ticker_never_maps_to_the_new_company(con, tmp_path):
+    """The old CUSIP was last seen in 2015; the company's prices start 2024-01-02 and its own
+    CUSIP is first seen 2024-07-01. Q1 2024 is the new company's, not the old issuer's."""
+    w = {"01mar2024-31may2024_form13f.zip": zip13f([
+        hr("0000000001-24-000001", 1, date(2024, 5, 1), Q1, [(ACME_CUSIP, 70, "SH", "")]),
+        hr("0000000002-24-000001", 2, date(2024, 5, 1), Q1, [("594918104", 9, "SH", "")])])}
+    ftd = {"cnsfails201501a.zip": zipftd([(date(2015, 1, 5), "594918104", "ACME", "OLD ACME MINING")]),
+           "cnsfails202407a.zip": zipftd([(date(2024, 7, 1), ACME_CUSIP, "ACME", "ACME CORP")])}
+    load(con, tmp_path, w, ftd)
+    r = screen_rows(con, date(2024, 6, 3))["ACME"]
+    assert r["inst_holders"] == 1 and r["inst_pct"] == pytest.approx(70 / 1_000_000)
+
+
+def test_a_ticker_two_companies_hold_maps_to_neither(con, tmp_path):
+    """Review (B6 design, 4): SUPN is held by two CIKs on the 11-21 backup."""
+    add_company(con, CIK + 1, "ACME", cheap_company())
+    load(con, tmp_path)
+    from src.screen import screen
+    rel = screen(con, AS_OF)
+    rows = [r for r in (dict(zip(rel.columns, t)) for t in rel.fetchall()) if r["ticker"] == "ACME"]
+    assert len(rows) == 2 and all(r["inst_holders"] is None for r in rows)
+
+
 
 def test_the_newest_quarter_past_its_deadline_is_read(con, tmp_path):
     load(con, tmp_path)
@@ -305,6 +417,26 @@ def test_institutional_share_is_not_a_share_of_an_untrusted_count(tmp_path):
     load(c, tmp_path)
     r = screen_rows(c)["ACME"]
     assert "stale_shares" in r["issues"] and r["inst_holders"] == 3 and r["inst_pct"] is None
+
+
+@pytest.mark.parametrize("title, note", [("SPONSORED ADR", "adr"), ("ADS", "adr"), ("CL A", "share_class"),
+                                         ("CLASS B", "share_class"), ("COM", None)])
+def test_an_adr_or_one_share_class_gets_no_share_of_shares(con, tmp_path, title, note):
+    """Review (B6 design, 6): 13F counts ADSs or one class; the cover counts all shares."""
+    w = {"01mar2024-31may2024_form13f.zip": zip13f([hr("0000000001-24-000001", 1, date(2024, 5, 1), Q1,
+                                                       [(ACME_CUSIP, 70, "SH", "", title)])])}
+    load(con, tmp_path, w)
+    r = screen_rows(con)["ACME"]
+    assert r["inst_holders"] == 1 and r["inst_pct_note"] == note
+    assert (r["inst_pct"] is None) == (note is not None)
+
+
+def test_more_shares_than_outstanding_are_flagged(con, tmp_path):
+    w = {"01mar2024-31may2024_form13f.zip": zip13f([hr("0000000001-24-000001", 1, date(2024, 5, 1), Q1,
+                                                       [(ACME_CUSIP, 1_200_000, "SH", "")])])}
+    load(con, tmp_path, w)
+    r = screen_rows(con)["ACME"]
+    assert r["inst_pct"] == pytest.approx(1.2) and r["inst_pct_note"] == "above_100pct"
 
 
 def test_13f_data_never_changes_status_rank_or_shortlist(tmp_path):
