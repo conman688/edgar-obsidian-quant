@@ -26,7 +26,8 @@ from typing import Callable
 from src import backtest, config, ops
 from src.db.pit import concept_sql
 from src.db.schema import connect
-from src.ingestion import companyfacts, events_8k, form4_sources, form13f, macro, prices, reference, short_interest
+from src.ingestion import (companyfacts, events_8k, factors, form4_sources, form13f, macro, prices, reference,
+                           short_interest)
 from src.ingestion.sec import SecClient, sha256_file
 from src.ingestion.filing_text import fetch_sections
 from src.ingestion.related_party import fetch_related_party
@@ -335,12 +336,25 @@ def cmd_backtest(args, con=None) -> None:
         if computed:
             print(f"  {policy} {d}: snapshot ({time.perf_counter() - t0:,.0f}s)", flush=True)
 
+    snap = Path(args.factors) if args.factors else factors.latest(config.DATA_DIR / "factors")
+    snap = factors.load(snap) if snap else None
+    print(f"factor snapshot: {snap.path if snap else 'none (run fetch-factors for the attribution section)'}")
     md, _ = backtest.run(con, args.start, args.end, Path(args.cache), args.cost_bps,
-                         leak_check=not args.no_leak_check, progress=progress)
+                         leak_check=not args.no_leak_check, progress=progress, factors=snap)
     path, note = backtest.write_report(md, date.today(), Path(args.reports), config.VAULT_DIR)
     print(md)
     print(f"wrote {path}" + (f" and {note}" if note else " (EOQ_VAULT_DIR not set: no vault note)"))
     print(f"total {time.perf_counter() - t0:,.0f}s")
+
+
+def cmd_fetch_factors(args, con=None) -> None:
+    """Factor returns for the backtest's attribution section (M12-A5). Touches no database."""
+    root, today = Path(args.dir), date.today()
+    kept = (root / today.isoformat() / "manifest.json").exists()
+    snap = factors.load(factors.fetch(factors.FactorClient(), root, today))
+    print(f"factors: snapshot {snap.path}" + (" (kept: already fetched today)" if kept else ""))
+    for name, f in snap.files.items():
+        print(f"  {name}: {f['months']:,} months, {f['first_month']} to {f['newest_month']}, sha256 {f['sha256'][:12]}")
 
 
 def cmd_fetch_text(args, con=None) -> None:
@@ -509,7 +523,13 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--cache", default=str(config.DATA_DIR / "backtest"), help="snapshot cache folder")
     b.add_argument("--reports", default="reports")
     b.add_argument("--no-leak-check", action="store_true", help="skip the look-ahead control run")
+    b.add_argument("--factors", help="factor snapshot folder (default: the newest under data/factors)")
     b.set_defaults(func=cmd_backtest)
+
+    ff = sub.add_parser("fetch-factors", help="download French, q5 and AQR factor returns as a dated snapshot "
+                                              "for the backtest's attribution (no database)")
+    ff.add_argument("--dir", default=str(config.DATA_DIR / "factors"), help="snapshot root folder")
+    ff.set_defaults(func=cmd_fetch_factors)
 
     ft = sub.add_parser("fetch-text", help="fetch Item 1A and the related-party note of the latest two 10-Ks "
                                            "of the vault's companies")
