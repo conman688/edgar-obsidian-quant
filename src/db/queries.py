@@ -574,10 +574,12 @@ def cusip_periods_sql() -> str:
 
 def institutional_sql() -> str:
     """Per mapped company, the newest 13F quarter with on-time reports whose deadline is <= as_of
-    (never the quarter end), read under the CUSIP valid at that quarter's end. A company no manager
-    reported has 0 holders. New and exited count managers with a report in both this quarter and
-    the one before, under the company's CUSIP at each (a CUSIP change is not a change of holders);
-    NULL when the quarter before has no on-time reports. Binds $as_of."""
+    (never the quarter end). Shares are read under the CUSIP valid at that quarter's end. A
+    manager holds the company in a quarter if it reports any CUSIP valid for the company during
+    that quarter (live HON 2026-06-30: the new CUSIP came on 2026-06-16 and some managers still
+    reported the old one). A company no manager reported has 0 holders. New and exited count
+    managers with a report in both this quarter and the one before, so a CUSIP change is not a
+    change of holders; NULL when the quarter before has no on-time reports. Binds $as_of."""
     return f"""
     WITH p AS (SELECT * FROM form13f_periods WHERE deadline <= $as_of AND filers > 0 ORDER BY period DESC LIMIT 1),
          pp AS (SELECT f.period FROM form13f_periods f CROSS JOIN p
@@ -586,21 +588,31 @@ def institutional_sql() -> str:
          m AS (SELECT c.cik, c.cusip FROM cp c CROSS JOIN p
                WHERE c.valid_from <= p.period AND p.period < c.valid_to AND c.price_from <= p.period
                  AND p.period <= c.price_to + INTERVAL {CUSIP_SLACK_DAYS} DAY),
-         mp AS (SELECT c.cik, c.cusip FROM cp c CROSS JOIN pp
-                WHERE c.cik IN (SELECT cik FROM m) AND c.valid_from <= pp.period AND pp.period < c.valid_to),
+         -- every CUSIP valid for the company at some time in quarter q (ending q.period)
+         cq AS (SELECT c.cik, c.cusip, p.period FROM cp c CROSS JOIN p
+                WHERE c.cik IN (SELECT cik FROM m) AND c.valid_from <= p.period
+                  AND c.valid_to > last_day(p.period - INTERVAL 3 MONTH)
+                UNION ALL
+                SELECT c.cik, c.cusip, pp.period FROM cp c CROSS JOIN pp
+                WHERE c.cik IN (SELECT cik FROM m) AND c.valid_from <= pp.period
+                  AND c.valid_to > last_day(pp.period - INTERVAL 3 MONTH)),
+         h AS (SELECT DISTINCT cq.cik, cq.period, f.filer_cik FROM cq
+               JOIN form13f_positions f ON f.cusip = cq.cusip AND f.period = cq.period),
          both_ AS (SELECT f.filer_cik FROM form13f_positions f JOIN p USING (period)
                    INTERSECT SELECT f.filer_cik FROM form13f_positions f JOIN pp USING (period)),
-         cur AS (SELECT DISTINCT m.cik, f.filer_cik FROM m JOIN form13f_positions f ON f.cusip = m.cusip
-                 JOIN p ON f.period = p.period WHERE f.filer_cik IN (SELECT filer_cik FROM both_)),
-         old AS (SELECT DISTINCT mp.cik, f.filer_cik FROM mp JOIN form13f_positions f ON f.cusip = mp.cusip
-                 JOIN pp ON f.period = pp.period WHERE f.filer_cik IN (SELECT filer_cik FROM both_)),
+         cur AS (SELECT h.cik, h.filer_cik FROM h JOIN p USING (period)),
          chg AS (SELECT coalesce(c.cik, o.cik) AS cik, count(*) FILTER (WHERE o.filer_cik IS NULL) AS new_,
                         count(*) FILTER (WHERE c.filer_cik IS NULL) AS gone
-                 FROM cur c FULL JOIN old o ON o.cik = c.cik AND o.filer_cik = c.filer_cik GROUP BY 1)
+                 FROM (SELECT * FROM cur WHERE filer_cik IN (SELECT filer_cik FROM both_)) c
+                 FULL JOIN (SELECT h.cik, h.filer_cik FROM h JOIN pp USING (period)
+                            WHERE h.filer_cik IN (SELECT filer_cik FROM both_)) o
+                   ON o.cik = c.cik AND o.filer_cik = c.filer_cik
+                 GROUP BY 1),
+         n AS (SELECT cik, count(*) AS holders FROM cur GROUP BY cik)
     SELECT m.cik, p.period AS inst_period, p.deadline AS inst_known_at, q.title AS inst_title,
-           coalesce(q.holders, 0) AS inst_holders, coalesce(q.shares, 0) AS inst_shares,
+           coalesce(n.holders, 0) AS inst_holders, coalesce(q.shares, 0) AS inst_shares,
            CASE WHEN EXISTS (SELECT 1 FROM pp) THEN coalesce(chg.new_, 0) END AS inst_holders_new,
            CASE WHEN EXISTS (SELECT 1 FROM pp) THEN coalesce(chg.gone, 0) END AS inst_holders_exited
     FROM m CROSS JOIN p LEFT JOIN form13f_quarters q ON q.period = p.period AND q.cusip = m.cusip
-    LEFT JOIN chg ON chg.cik = m.cik
+    LEFT JOIN chg ON chg.cik = m.cik LEFT JOIN n ON n.cik = m.cik
     """
