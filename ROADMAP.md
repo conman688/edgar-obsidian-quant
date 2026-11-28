@@ -469,8 +469,14 @@ Phase A: high value, low effort (do first, in this order)
    database table; `fetch-factors` is manual.
 
 Phase B: medium effort (after Phase A)
-6. 13F institutional holdings and quarterly changes (SEC 13F data sets, from 2013-07; table layout
-   **unread**; SEC refreshed all sets in March 2024).
+6. 13F institutional holdings and quarterly changes (SEC 13F data sets). Verified 2026-11-27: 54
+   zips by filing window (2013q2..2023q4, 01jan2024-29feb2024, then three months ending Feb/May/
+   Aug/Nov), one TSV layout 2013-2026, all re-posted 2024-03-12 or later. CUSIPs map to tickers
+   through SEC fails-to-deliver files (2009-07 on). Status: built on `feat/m12-13f`, review
+   `reviews/M12-B6-13f.md`.
+   - A quarter counts the reports filed by its deadline (end + 45 days), known from it.
+   - Mapped at 2026-06-30: 4,140 of 4,154 trading priced companies.
+   - Informational only; manual `ingest 13f`, not scheduled.
 7. Schedule 13D/13G stakes and amendments (deadlines changed with the 2023 amendments; structured
    XML from 2024-12-18, so pre/post filings have different lags).
 8. Form 144 notices of proposed insider sales, paired with the Phase A sell signal.
