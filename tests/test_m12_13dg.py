@@ -452,7 +452,7 @@ def test_a_stake_last_filed_over_three_years_ago_is_not_counted(con):
     docs = {old: ("SC 13D", date(2021, 6, 1), legacy13d(old, date(2021, 6, 1), filer=FILER2)),
             A1: ("SCHEDULE 13D", date(2024, 7, 1), submission_xml(A1, "SCHEDULE 13D", date(2024, 7, 1),
                                                                   xml13d(persons=((80_000.0, 8.0),))))}
-    load(con, docs)
+    load(con, docs, quarters=("2024q2", "2024q3"))   # 2024-05-30 is in 2024q2
     assert screen_rows(con)["ACME"]["holders_13d"] == 1                       # 2024-09-03: 3.3 years
     assert screen_rows(con, date(2024, 5, 30))["ACME"]["holders_13d"] == 1    # 1,094 days: still counted
 

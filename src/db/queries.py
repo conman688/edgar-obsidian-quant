@@ -625,17 +625,23 @@ XML_13G_FROM = date(2024, 12, 18)       # structured 13D/13G required; legacy 13
 
 
 def stakes_coverage_sql() -> str:
-    """One row: whether 13D and 13G counts are known at $as_of (review C1). 13D is known inside the
-    indexed quarters; 13G only from XML_13G_FROM too. Outside, a count of 0 would pass a missing
-    input as a good value."""
+    """One row: whether 13D and 13G counts are known at $as_of (review C1, C3). 13D is known from
+    the first indexed quarter, inside an indexed quarter, before the day that quarter's form.idx
+    was read (later filings are not in it), and before the oldest indexed filing naming a priced
+    company that is not loaded yet (a failed fetch, --limit or a stopped run). 13G also needs
+    XML_13G_FROM. Outside, a count of 0 would pass a missing input as a good value."""
     return f"""
-    WITH q AS (SELECT DISTINCT make_date(CAST(left(quarter, 4) AS INTEGER),
-                                         3 * CAST(right(quarter, 1) AS INTEGER) - 2, 1) AS q_start
+    WITH q AS (SELECT make_date(CAST(left(quarter, 4) AS INTEGER), 3 * CAST(right(quarter, 1) AS INTEGER) - 2, 1)
+                          AS q_start, CAST(indexed_at AS DATE) AS read_on
                FROM sched13_quarters),
-         r AS (SELECT min(q_start) AS lo, max(q_start) + INTERVAL 3 MONTH AS hi FROM q)
-    SELECT coalesce($as_of >= lo AND $as_of < hi, false) AS has_13d,
-           coalesce($as_of >= lo AND $as_of < hi AND $as_of >= DATE '{XML_13G_FROM}', false) AS has_13g
-    FROM r
+         missing AS (SELECT min(filed) AS first_missing FROM sched13_index
+                     WHERE accn IN (SELECT accn FROM sched13_index WHERE cik IN (SELECT cik FROM price_status))
+                       AND accn NOT IN (SELECT accn FROM sched13_filings WHERE status IN ('done', 'skipped'))),
+         k AS (SELECT coalesce($as_of >= (SELECT min(q_start) FROM q)
+                               AND EXISTS (SELECT 1 FROM q WHERE q_start <= $as_of AND $as_of < q_start + INTERVAL 3 MONTH
+                                                             AND $as_of < read_on)
+                               AND coalesce($as_of < (SELECT first_missing FROM missing), true), false) AS known)
+    SELECT known AS has_13d, known AND $as_of >= DATE '{XML_13G_FROM}' AS has_13g FROM k
     """
 
 

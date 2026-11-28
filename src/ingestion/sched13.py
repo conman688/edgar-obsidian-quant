@@ -50,14 +50,16 @@ def parse_form_index(text: str) -> list[tuple[str, int, str, date, str]]:
     return out
 
 
-def load_index(con: duckdb.DuckDBPyConnection, quarter: str, text: str) -> int:
+def load_index(con: duckdb.DuckDBPyConnection, quarter: str, text: str, now: datetime | None = None) -> int:
+    """Replace one quarter's lines. `now` is when the index was read: filings made from that day
+    on are not in it, so counts are unknown from then until the quarter is read again."""
     rows = [(quarter, *r) for r in parse_form_index(text)]
     con.begin()
     try:
         con.execute("DELETE FROM sched13_index WHERE quarter = ?", [quarter])
         if rows:                        # a quarter can list none of FORMS
             con.executemany("INSERT OR IGNORE INTO sched13_index VALUES (?, ?, ?, ?, ?, ?)", rows)
-        con.execute("INSERT OR REPLACE INTO sched13_quarters VALUES (?, ?, ?)", [quarter, len(rows), datetime.now()])
+        con.execute("INSERT OR REPLACE INTO sched13_quarters VALUES (?, ?, ?)", [quarter, len(rows), now or datetime.now()])
         con.commit()
     except BaseException:
         con.rollback()
@@ -232,6 +234,12 @@ def fetch_filings(con: duckdb.DuckDBPyConnection, get: Callable[[str], bytes], l
                 ledger_rows.append((accn, "done", None, now))
                 stats.done += 1
             except Exception as e:
+                if getattr(getattr(e, "response", None), "status_code", None) == 404:
+                    # SEC no longer serves it (live: 0000940180-01-500261): retrying never helps,
+                    # and a pending filing holds coverage back.
+                    ledger_rows.append((accn, "skipped", "404 at SEC", now))
+                    stats.skipped += 1
+                    continue
                 ledger_rows.append((accn, "failed", repr(e)[:300], now))
                 stats.failed += 1
         con.begin()
