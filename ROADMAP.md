@@ -519,6 +519,8 @@ Phase B: medium effort (after Phase A)
      - Legacy 13D and 13D/A for 2001-2024: about 150,000 filings, about 5 hours.
      - Legacy 13G: about 550,000 filings for 2001-2024, about 19 hours. Not planned. Most 13G(b) stakes repeat
        13F.
+   - **Scope (user, 2026-11-27):** the XML era plus legacy 13D and 13D/A text. Legacy 13G is not
+     loaded.
 8. Form 144 notices of proposed insider sales, paired with the Phase A sell signal.
 9. NT 10-K / NT 10-Q late-filing flags (**not yet researched**).
 10. Financial Statement and Notes data sets (`txt` table: going-concern and default text at scale;
