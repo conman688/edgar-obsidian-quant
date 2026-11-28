@@ -374,3 +374,14 @@ def test_ingest_13dg_is_a_manual_job_outside_the_schedule(con, monkeypatch, caps
     assert cli.INGEST_JOBS["13dg"] == [cli.ingest_13dg]
     assert cli.ingest_13dg not in cli.INGEST_JOBS["all"]
     assert all("13dg" not in step for steps in cli.RUN_STEPS.values() for step in steps)
+
+
+def test_an_xml_with_a_dtd_is_refused_and_retried(con):
+    """Entity declarations are never expanded (billion laughs, external entities): the filing
+    fails with the reason and is retried, as related_party does for XBRL instances."""
+    body = xml13g().replace('<?xml version="1.0" encoding="UTF-8"?>',
+                            '<?xml version="1.0"?><!DOCTYPE x [<!ENTITY a "aaaaaaaaaa">]>')
+    s, _ = load(con, {A1: ("SCHEDULE 13G", F1, submission_xml(A1, "SCHEDULE 13G", F1, body))})
+    assert (s.done, s.failed) == (0, 1) and stake(con, A1) is None
+    err = con.execute("SELECT status, error FROM sched13_filings WHERE accn = ?", [A1]).fetchall()[0]
+    assert err[0] == "failed" and "DTD" in err[1]
