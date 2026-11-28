@@ -479,6 +479,46 @@ def test_a_cusip_that_left_the_ticker_never_stands_for_the_company_before_it(con
     assert r["inst_period"] == Q1 and r["inst_holders"] == 2
 
 
+def test_an_old_cusip_briefly_under_a_temporary_symbol_still_carries_the_history(con, tmp_path):
+    """Live HON (C2/C3 re-check): at its 2026 CUSIP change, fails-to-deliver list the old CUSIP
+    438516106 under HONZZZZ for 15 days after its last HON day (LRCX: LRCXXXXX, 1 day). It did not
+    move to another security, so Q1 still reads it and nobody is new."""
+    old = "594918104"
+    w = {"01mar2024-31may2024_form13f.zip": zip13f([hr("0000000001-24-000001", 1, date(2024, 5, 1), Q1,
+                                                       [(old, 70, "SH", "")])]),
+         "01jun2024-31aug2024_form13f.zip": zip13f([hr("0000000001-24-000002", 1, date(2024, 8, 1), Q2,
+                                                       [(ACME_CUSIP, 80, "SH", "")])])}
+    ftd = {"cnsfails202301a.zip": zipftd([(date(2023, 1, 5), old, "ACME", "ACME CORP"),
+                                          (date(2024, 4, 29), old, "ACME", "ACME CORP")]),
+           "cnsfails202405a.zip": zipftd([(date(2024, 4, 30), old, "ACMEZZZZ", "ACME CORP"),
+                                          (date(2024, 5, 14), old, "ACMEZZZZ", "ACME CORP"),
+                                          (date(2024, 4, 30), ACME_CUSIP, "ACME", "ACME CORP NEW")])}
+    load(con, tmp_path, w, ftd)
+    assert screen_rows(con, date(2024, 6, 3))["ACME"]["inst_holders"] == 1          # Q1, the old CUSIP
+    r = screen_rows(con)["ACME"]
+    assert (r["inst_holders"], r["inst_holders_new"], r["inst_holders_exited"]) == (1, 0, 0)
+
+
+def test_managers_still_reporting_the_old_cusip_in_the_change_quarter_hold_and_stay(con, tmp_path):
+    """Live HON 2026-06-30: the new CUSIP is first seen 2026-06-16, so at the quarter end some
+    managers report the new CUSIP and others the old one (833 looked "exited", GE 2021-09-30 416).
+    A manager reporting any CUSIP valid for the company during the quarter holds it."""
+    old = "594918104"
+    w = {"01mar2024-31may2024_form13f.zip": zip13f([
+            hr("0000000001-24-000001", 1, date(2024, 5, 1), Q1, [(old, 70, "SH", "")]),
+            hr("0000000002-24-000001", 2, date(2024, 5, 1), Q1, [(old, 30, "SH", "")])]),
+         "01jun2024-31aug2024_form13f.zip": zip13f([
+            hr("0000000001-24-000002", 1, date(2024, 8, 1), Q2, [(ACME_CUSIP, 80, "SH", "")]),
+            hr("0000000002-24-000002", 2, date(2024, 8, 1), Q2, [(old, 30, "SH", "")])])}
+    ftd = {"cnsfails202301a.zip": zipftd([(date(2023, 1, 5), old, "ACME", "ACME CORP"),
+                                          (date(2024, 6, 7), old, "ACME", "ACME CORP")]),
+           "cnsfails202406a.zip": zipftd([(date(2024, 6, 10), ACME_CUSIP, "ACME", "ACME CORP NEW")])}
+    load(con, tmp_path, w, ftd)
+    r = screen_rows(con)["ACME"]
+    assert r["inst_period"] == Q2
+    assert (r["inst_holders"], r["inst_holders_new"], r["inst_holders_exited"]) == (2, 0, 0)
+
+
 def test_a_ticker_two_companies_hold_maps_to_neither(con, tmp_path):
     """Review (B6 design, 4): SUPN is held by two CIKs on the 11-21 backup."""
     add_company(con, CIK + 1, "ACME", cheap_company())
